@@ -1,0 +1,174 @@
+##log
+test_logs_worker_master.log
+
+## python
+*__git_hash__.py
+FULL_VERSION
+VERSION_POSTFIX
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+version.py
+
+## docs
+docs/sg_execution_times.rst
+docs/index.rst
+docs/readme.md
+docs/autoapi/
+docs/tutorials/dataset_tutorial/data1
+docs/tutorials/dataset_tutorial/data2
+
+## build
+dist/
+docs/build/
+build/
+
+## dev
+.coverage
+coverage.xml
+.mypy_cache
+
+## ro dataset
+*.arrow
+state.json
+dataset_info.json
+*.duckdb
+*.sqlite
+
+## lmdb dataset
+*.lmdb
+
+# torch
+*.pth*
+*.pt
+torchelastic*
+*.safetensors
+*.config.json
+
+# ros
+*.mcap
+metadata.yaml
+*.db
+rosbag2*
+
+# General
+
+## executable
+*.exe
+*.bin
+
+## tmp & debug
+dummy/
+
+## pkl
+*.pkl
+*.pickle
+
+## IPython notebook checkpoints
+.ipynb_checkpoints
+*.virtual_documents
+
+## vscode
+.vscode/**
+.vscode/extensions.json
+!.vscode/settings_recommended.json
+.history/
+
+## Editor temporaries
+*.swa
+*.swb
+*.swc
+*.swd
+*.swe
+*.swf
+*.swg
+*.swh
+*.swi
+*.swj
+*.swk
+*.swl
+*.swm
+*.swn
+*.swo
+*.swp
+*~
+.~lock.*
+*.lock
+
+## macOS dir files
+.DS_Store
+
+## Ninja files
+.ninja_deps
+.ninja_log
+compile_commands.json
+
+## backup
+*.bak
+*.back
+
+## NFS handle files
+**/.nfs*
+
+## Sublime Text settings
+*.sublime-workspace
+*.sublime-project
+
+## Eclipse Project settings
+*.*project
+.settings
+
+## QtCreator files
+*.user
+
+## PyCharm files
+.idea
+
+## GDB history
+.gdb_history
+
+## archives
+*.zip
+*.tar
+*.gz
+
+## core dump files
+**/core.[1-9]*
+
+## system
+*.pid
+
+## flags
+*._COPYING_
+
+# Compiled
+
+## Compiled Object files
+*.slo
+*.lo
+*.o
+*.cuo
+*.obj
+
+## Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+## Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+## Compiled protocol buffers
+*.pb.h
+*.pb.cc
+*_pb2.py
+
+## Compiled python
+*.py[cdo]
+
+## Compiled MATLAB
+*.mex*

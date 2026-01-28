@@ -1,0 +1,43 @@
+[project]
+name = "robo_orchard_inference_app"
+dynamic = ["version"]
+description = "Inference App for the RoboOrchard project."
+readme = "README.md"
+authors = [{ name = "The RoboOrchard Team" }]
+dependencies = [
+    "robo_orchard_core[tools]",
+    "typer",
+    "streamlit>=1.52",
+    "streamlit_code_editor",
+    "streamlit-tags",
+    "psutil",
+    "polling2",
+    "roslibpy",
+]
+
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/HorizonRobotics/RoboOrchard"
+Repository = "https://github.com/HorizonRobotics/RoboOrchard"
+Source = "https://github.com/HorizonRobotics/RoboOrchard"
+Issues = "https://github.com/HorizonRobotics/RoboOrchard/issues"
+
+[project.entry-points."robo_orchard.plugins"]
+inference-app = "robo_orchard_inference_app.cli:app"
+
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+robo_orchard_inference_app = "robo_orchard_inference_app"

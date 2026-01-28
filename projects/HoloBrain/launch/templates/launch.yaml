@@ -1,0 +1,99 @@
+session_name: holobrain
+options:
+  mouse: on
+  history-limit: 100000
+
+environment:
+  DOCKER_NAME: holobrain
+  DOCKER_VENV_PATH: /home/users/$USER/venv/robot-venv
+  DOCKER_ROBO_ORCHARD_PATH: /home/users/$USER/code/roboorchard
+  # camera serial number.
+  LEFT_WRIST_CAMERA_SERIAL_NO: "233522070652"
+  RIGHT_WRIST_CAMERA_SERIAL_NO: "243322074840"
+  ENV_CENTER_CAMERA_SERIAL_NO: "242222071855"
+
+shell_command_before:
+  - docker exec -it
+    -e TERM=xterm-256color
+    -e DOCKER_VENV_PATH="$DOCKER_VENV_PATH"
+    -e DOCKER_ROBO_ORCHARD_PATH="$DOCKER_ROBO_ORCHARD_PATH"
+    -e LEFT_WRIST_CAMERA_SERIAL_NO="$LEFT_WRIST_CAMERA_SERIAL_NO"
+    -e RIGHT_WRIST_CAMERA_SERIAL_NO="$RIGHT_WRIST_CAMERA_SERIAL_NO"
+    -e ENV_CENTER_CAMERA_SERIAL_NO="$ENV_CENTER_CAMERA_SERIAL_NO"
+    $DOCKER_NAME /bin/bash
+  - source $DOCKER_VENV_PATH/bin/activate && source $DOCKER_ROBO_ORCHARD_PATH/ros2_package/install/setup.bash
+  - git config --global --add safe.directory $DOCKER_ROBO_ORCHARD_PATH
+windows:
+  - window_name: basic service
+    layout: tiled
+    panes:
+      - shell_command:  # file_server
+        - CMD="robo-orchard file-server --port 8000 --dir /"
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # foxglove bridge
+        - CMD="ros2 launch foxglove_bridge foxglove_bridge_launch.xml"
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # ros bridge server
+        - CMD="ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+        - history -s "$CMD"
+        - eval "$CMD"
+
+  - window_name: camera service
+    layout: tiled
+    panes:
+      - shell_command:  # left wrist cameras
+        - CMD="ros2 launch realsense2_camera rs_launch.py camera_namespace:='agilex' camera_name:='left_camera' align_depth.enable:=true initial_reset:=true diagnostics_period:=2.0 serial_no:=\"'$LEFT_WRIST_CAMERA_SERIAL_NO'\""
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # right wrist cameras
+        - CMD="ros2 launch realsense2_camera rs_launch.py camera_namespace:='agilex' camera_name:='right_camera' align_depth.enable:=true initial_reset:=true diagnostics_period:=2.0 serial_no:=\"'$RIGHT_WRIST_CAMERA_SERIAL_NO'\""
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # env center cameras
+        - CMD="ros2 launch realsense2_camera rs_launch.py camera_namespace:='agilex' camera_name:='middle_camera' align_depth.enable:=true initial_reset:=true diagnostics_period:=2.0 serial_no:=\"'$ENV_CENTER_CAMERA_SERIAL_NO'\""
+        - history -s "$CMD"
+        - eval "$CMD"
+
+  - window_name: data service
+    layout: tiled
+    shell_command_before:
+      - cd $DOCKER_ROBO_ORCHARD_PATH/projects/HoloBrain
+    panes:
+      - shell_command:  # image encoder
+        - CMD="bash data/encoder/launch_image_encoder.sh"
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # depth encoder
+        - CMD="bash data/encoder/launch_depth_encoder.sh"
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # tf publisher
+        - CMD="bash data/tf/launch_tf_publisher.sh"
+        - history -s "$CMD"
+        - eval "$CMD"
+      - shell_command:  # data recorder service
+        - CMD="bash data/recorder/launch_data_recorder_service.sh"
+        - history -s "$CMD"
+        - eval "$CMD"
+
+  - window_name: robot control
+    layout: tiled
+    shell_command_before:
+      - cd $DOCKER_ROBO_ORCHARD_PATH/projects/HoloBrain
+    panes:
+      - shell_command:  # piper dagger
+        - CMD="bash teleop/rename-can.sh && bash teleop/dagger.sh"
+        - history -s "$CMD"
+        - eval "$CMD"
+
+  - window_name: app
+    layout: tiled
+    shell_command_before:
+      - cd $DOCKER_ROBO_ORCHARD_PATH/projects/HoloBrain
+    panes:
+      - shell_command:  # App
+        - CMD="bash app/launch_inference_app.sh"
+        - history -s "$CMD"
+        - eval "$CMD"

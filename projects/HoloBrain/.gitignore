@@ -1,0 +1,9 @@
+*.json
+workspace
+cache
+.cache
+.app_cache
+.workspace
+ros2bag
+*.png
+*curves*

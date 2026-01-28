@@ -1,0 +1,69 @@
+repos:
+
+  - repo: local
+    hooks:
+      - id: trailing-whitespace
+        name: Trailing whitespace
+        entry: trailing-whitespace-fixer
+        language: system
+        types: [python]
+
+  - repo: local
+    hooks:
+      - id: check-added-large-files
+        name: Check for added large files
+        description: Prevent giant files from being committed
+        entry: check-added-large-files
+        language: python
+        args: ["--maxkb=1024"]
+
+  - repo: local
+    hooks:
+      - id: check-merge-conflict
+        name: Check merge conflict
+        description: Prevent unresolve conflict
+        entry: check-merge-conflict
+        language: system
+        args: [--assume-in-merge]
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        description: ruff format
+        entry: ruff format
+        language: python
+        files: \.(py)$
+        types: [file, python]
+        args: [--config=pyproject.toml, --force-exclude]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        description: ruff check
+        entry: ruff check
+        language: python
+        files: \.(py)$
+        types: [file, python]
+        args: [--config=pyproject.toml, --force-exclude, --fix]
+
+  - repo: local
+    hooks:
+      - id: nbstripout
+        name: nbstripout notebook output
+        description: trip
+        entry: nbstripout
+        language: system
+        exclude: (?x)(^3rdparty/)
+        files: \.(ipynb)$
+        types: [file]
+
+  - repo: local
+    hooks:
+      - id: check-license-header
+        name: Check Python file license header
+        entry: python3 scm/qac/check_license_header.py
+        language: python
+        types: [python]
+        exclude: (?x)(^3rdparty/|^docs/|^scm/)

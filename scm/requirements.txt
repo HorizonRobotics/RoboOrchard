@@ -1,0 +1,63 @@
+# test
+twine>=6.1.0
+pytest==8.0.2
+pytest-xdist>=3.6.1
+pytest-cov>=6.0.0
+pytest-html
+pytest-timeout
+pytest-asyncio
+pytest-mock
+allure-pytest
+filelock
+# doc
+sphinx
+sphinx-comments
+sphinx_markdown_tables
+sphinx-gallery>=0.18.0
+sphinx_rtd_theme
+sphinx_bootstrap_theme
+sphinx-autoapi
+recommonmark>=0.7.1
+furo>=2024.8.6
+sphinx-markdown-tables>=0.0.17
+matplotlib
+interrogate
+myst-parser
+nbsphinx
+sphinx_copybutton
+sphinx_codeautolink
+jinja2
+pandoc
+autodoc-pydantic
+sphinx-toolbox
+sphinx-autodoc-typehints
+autodocsumm
+
+# config
+toml
+# pre-commit
+pre-commit
+pre-commit-hooks
+nbstripout
+# lint
+ruff>=0.9.9
+pybind11-stubgen
+# type check
+pyright[nodejs]
+
+# build
+packaging>=25.0
+twine>=6.1.0
+setuptools>=77.0.3
+
+# numpy
+numpy<2
+
+# ray
+ray[default]
+
+# lerobot dataset dependency
+av==15.0.0
+
+# ros2
+setuptools>=77.0.3,<80.0.0

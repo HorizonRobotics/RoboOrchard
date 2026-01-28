@@ -1,0 +1,5 @@
+# srv/StartRecording.srv
+string destination      # 存储路径或任务ID
+---
+bool success            # 是否成功启动
+string message          # 状态信息或完整文件路径

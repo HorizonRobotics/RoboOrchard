@@ -1,0 +1,9 @@
+[submodule "python/robo_orchard_lab"]
+	path = python/robo_orchard_lab
+	url = ../robo_orchard_lab.git
+[submodule "python/robo_orchard_core"]
+	path = python/robo_orchard_core
+	url = ../robo_orchard_core.git
+[submodule "python/robo_orchard_schemas"]
+	path = python/robo_orchard_schemas
+	url = ../robo_orchard_schemas.git

@@ -1,0 +1,10 @@
+geometry_msgs/Pose pose
+float32 axis_x
+float32 axis_y
+bool axis_click
+float32 gripper
+float32 trigger
+bool a_button
+bool b_button
+bool menu_button
+int32 status

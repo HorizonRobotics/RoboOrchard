@@ -1,0 +1,15 @@
+:root {
+  --switcher-border-color: #e0e0e0;
+  --switcher-text-color: #333;
+  --switcher-background-color: transparent;
+
+  --switcher-arrow-icon: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23333333' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+}
+
+[data-theme="dark"] {
+  --switcher-border-color: #4a4a4a;
+  --switcher-text-color: #f0f0f0;
+  --switcher-background-color: transparent;
+
+  --switcher-arrow-icon: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23f0f0f0' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+}

@@ -1,0 +1,5 @@
+
+recursive-include robo_orchard_data_ros2 *.py
+recursive-exclude robo_orchard_data_ros2 *.pyc
+recursive-include resource *.json
+exclude resource/robo_orchard_data_ros2

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robo_orchard_teleop_msg_ros2</name>
+  <version>0.0.0</version>
+  <description>ROS2 message definitions for teleoperation systems, including control mode and takeover event messages for robotic systems.</description>
+  <maintainer email="hongyu.xie@horizon.auto">hongyu.xie</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
