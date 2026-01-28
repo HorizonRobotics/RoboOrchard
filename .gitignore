@@ -71,7 +71,7 @@ dummy/
 
 ## vscode
 .vscode/**
-.vscode/extensions.json
+!.vscode/extensions.json
 !.vscode/settings_recommended.json
 .history/
 
