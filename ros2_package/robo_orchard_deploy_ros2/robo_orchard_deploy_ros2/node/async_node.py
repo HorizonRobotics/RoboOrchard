@@ -83,13 +83,41 @@ class DeployNode(Node):
             f"{self.config.server_url}"
         )
 
-        self.remaining_actions = None
         if self.config.max_delay_horizon is None:
             self.max_delay_horizon = (
                 self.config.control_config.control_frequency / 2
             )
         else:
             self.max_delay_horizon = self.config.max_delay_horizon
+
+    def _extract_remaining_actions(self):
+        """Extract remaining actions based on the current action index."""
+        if self.current_actions is None:
+            return None, None
+        action_horizon = self.current_actions.get("action_horizon", 0)
+        left_actions = self.current_actions.get("left_arm_actions", [])
+        right_actions = self.current_actions.get("right_arm_actions", [])
+        if len(left_actions) != len(right_actions):
+            self.get_logger().error(
+                "Left and right arm actions length mismatch."
+                "Check the model server output."
+            )
+            return None, None
+        actual_horizon = len(left_actions)
+        if action_horizon > actual_horizon:
+            self.get_logger().warning(
+                "Action horizon is greater than actual actions length."
+            )
+            action_horizon = actual_horizon
+        if self.current_action_idx < actual_horizon - 1:
+            left_remaining = left_actions[self.current_action_idx + 1 :].copy()
+            right_remaining = right_actions[
+                self.current_action_idx + 1 :
+            ].copy()
+            remaining_actions = np.hstack([left_remaining, right_remaining])
+            return remaining_actions, self.current_action_idx
+        else:
+            return None, None
 
     def _model_infer_timer_callback(self):
         """Timer callback to request model inference in given frequency.
@@ -108,25 +136,12 @@ class DeployNode(Node):
             return
 
         remaining_actions_start_idx = None
+
         with self.shared_state_lock:
-            if (
-                self.current_actions is not None
-                and self.current_action_idx
-                < self.current_actions.get("action_horizon", 0) - 1
-            ):
-                left_remaining = self.current_actions.get(
-                    "left_arm_actions", []
-                )[self.current_action_idx + 1 :].copy()
-                right_remaining = self.current_actions.get(
-                    "right_arm_actions", []
-                )[self.current_action_idx + 1 :].copy()
-                self.remaining_actions = np.hstack(
-                    [left_remaining, right_remaining]
-                )
-                remaining_actions_start_idx = self.current_action_idx
-            else:
-                self.remaining_actions = []
-        current_observations["remaining_actions"] = self.remaining_actions
+            remaining_actions, remaining_actions_start_idx = (
+                self._extract_remaining_actions()
+            )
+        current_observations["remaining_actions"] = remaining_actions
         predict_actions = self.model_inferencer.request_inference(
             current_observations
         )
