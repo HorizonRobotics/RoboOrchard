@@ -90,8 +90,8 @@ class MainControlComponent(ComponentBase):
                 multi_status_indicator(
                     current_status=state.is_inference_service_running,
                     status_config={
-                        True: StatusConfig(text="推理", color="green"),
-                        False: StatusConfig(text="推理", color="grey"),
+                        True: StatusConfig(text="Inference", color="green"),
+                        False: StatusConfig(text="Inference", color="grey"),
                     },
                 )
 
