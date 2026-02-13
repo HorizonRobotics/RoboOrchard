@@ -24,4 +24,4 @@ docker run -itd \
     -v /dev:/dev \
     -v ~/data:/data:rw \
     -v ~/workspace/docker_env:/home/users/$USER:rw \
-    horizonrobotics/holobrain:ubuntu22.04-py3.10-ros-humble-torch2.8.0
+    horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0

@@ -4,12 +4,14 @@ This project provides the real robot system integration code for the [HoloBrain]
 
 For model training and evaluation, please refer to the HoloBrain project in [RoboOrchardLab](https://github.com/HorizonRobotics/RoboOrchardLab/tree/master/projects/holobrain).
 
+Please refer to the [docs](https://horizonrobotics.github.io/robot_lab/holobrain/real_env/) for more details.
+
 # Quick Start
 
 ## Docker pull
 
 ```bash
-docker pull horizonrobotics/holobrain:ubuntu22.04-py3.10-ros-humble-torch2.8.0
+docker pull horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0
 ```
 
 ## Launch scripts

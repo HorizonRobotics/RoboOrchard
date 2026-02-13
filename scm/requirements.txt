@@ -32,6 +32,7 @@ autodoc-pydantic
 sphinx-toolbox
 sphinx-autodoc-typehints
 autodocsumm
+sphinx-design
 
 # config
 toml
