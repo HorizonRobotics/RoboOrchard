@@ -105,6 +105,10 @@ pip install -r launch/requirements.txt
 cp launch/templates/launch.yaml launch/
 ```
 
+> [!NOTE]
+> Ensure `DOCKER_ROBO_ORCHARD_PATH` and `DOCKER_VENV_PATH` in `launch/launch.yaml` point to locations visible inside your container.
+> Update the camera serial numbers to match your hardware.
+
 3. Execute the launch script:
 
 ```bash

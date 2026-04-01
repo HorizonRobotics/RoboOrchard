@@ -6,7 +6,7 @@ options:
 environment:
   DOCKER_NAME: holobrain
   DOCKER_VENV_PATH: /home/users/$USER/venv/robot-venv
-  DOCKER_ROBO_ORCHARD_PATH: /home/users/$USER/code/roboorchard
+  DOCKER_ROBO_ORCHARD_PATH: /home/users/$USER/code/RoboOrchard
   # camera serial number.
   LEFT_WRIST_CAMERA_SERIAL_NO: "233522070652"
   RIGHT_WRIST_CAMERA_SERIAL_NO: "243322074840"
