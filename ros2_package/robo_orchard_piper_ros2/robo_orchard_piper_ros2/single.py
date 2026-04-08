@@ -123,19 +123,21 @@ class PiperSingleControlNode(Node):
         return self._enable_flag and ctrl_mode == 0x01
 
     def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
-        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
+        arm_status = self.piper.GetArmStatus().arm_status
+        ctrl_mode = arm_status.ctrl_mode
         if ctrl_mode == 0x02:
+            if arm_status.teach_status == 1:
+                return False
             self.get_logger().warn(
-                f"ctrl_mode is {ctrl_mode}, try to reset..."
+                f"ctrl_mode is {ctrl_mode}, switch directly to ctrl mode..."
             )
-            if force_reset:
-                if not reset_piper_ctrl_mode(self.piper, 0x01):
-                    return False
-            else:
+            if not reset_piper_ctrl_mode(self.piper, 0x01):
                 return False
         else:
             enable_arm_ctrl(self.piper)
         set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
+        if self.piper.GetArmStatus().arm_status.ctrl_mode != 0x01:
+            return False
         self._enable_flag = True
         return True
 

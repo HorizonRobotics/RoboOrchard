@@ -2,12 +2,6 @@ Handeye Calibration
 ===================
 We provide a hand-eye calibration toolkit designed to determine the spatial transformation between the robot arm and the camera(i.e., camera extrinsics). The tool supports both eye-in-hand and eye-to-hand configurations. By utilizing teleoperation (e.g., ALOHA) or a predefined set of waypoints, the system captures the ArUco marker pose at various poses within the camera's field of view and the robot arm end-effector pose at the same time. This process yields a series of pose pairs, from which the final calibration matrix is computed.
 
-.. figure:: ../_static/images/calib.gif
-   :alt: handeye calibration
-   :align: center
-
-   Sample Data Collection Process
-
 - Get aruco_ros package and build it
 
 .. code-block:: bash

@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import atexit
+from dataclasses import dataclass
 from typing import Callable, Literal
 
 import roslibpy
@@ -22,6 +23,14 @@ import roslibpy
 from robo_orchard_inference_app.config import ROSBridgeCfg
 from robo_orchard_inference_app.logger import Logger
 from robo_orchard_inference_app.state import InferenceState
+
+PIPER_STATUS_MSG_TYPE = "robo_orchard_piper_msg_ros2/PiperStatusMsg"
+
+
+@dataclass
+class MasterArmStatus:
+    ctrl_mode: int | None = None
+    teach_status: int | None = None
 
 
 class RosServiceHelper:
@@ -47,7 +56,29 @@ class RosServiceHelper:
         self.state = inference_state
         self.logger = logger
         self._is_recording = False
+        self._master_status_topics: dict[str, object] = {}
+        self._master_arm_status: dict[str, MasterArmStatus] = {}
+        self._init_master_status_topics()
         atexit.register(self.cleanup)
+
+    def _init_master_status_topics(self):
+        for side, topic_name in self.cfg.master_status_topics.items():
+            topic = roslibpy.Topic(
+                self.ros_client, topic_name, PIPER_STATUS_MSG_TYPE
+            )
+            topic.subscribe(
+                lambda message, side=side: self._update_master_arm_status(
+                    side, message
+                )
+            )
+            self._master_status_topics[side] = topic
+            self._master_arm_status[side] = MasterArmStatus()
+
+    def _update_master_arm_status(self, side: str, message: dict):
+        self._master_arm_status[side] = MasterArmStatus(
+            ctrl_mode=message.get("ctrl_mode"),
+            teach_status=message.get("teach_status"),
+        )
 
     def _check_client_connected(self) -> bool:
         """Checks if the ROS client is connected.
@@ -174,6 +205,59 @@ class RosServiceHelper:
             timeout=25.0,
         )
 
+    def _get_invalid_sides_for_teach_status(
+        self, valid_teach_statuses: set[int]
+    ) -> list[str]:
+        invalid_sides = []
+        for side, status in self._master_arm_status.items():
+            if status.teach_status not in valid_teach_statuses:
+                invalid_sides.append(side)
+        return invalid_sides
+
+    def _log_invalid_teach_statuses(
+        self, action: str, valid_teach_statuses: set[int]
+    ) -> None:
+        for side in self._get_invalid_sides_for_teach_status(
+            valid_teach_statuses
+        ):
+            status = self._master_arm_status[side]
+            self.logger.error(
+                f"Cannot switch to {action}: {side} master teach_status="
+                f"{status.teach_status}, expected one of "
+                f"{sorted(valid_teach_statuses)}."
+            )
+
+    def _recover_master_ctrl_modes_for_auto(self) -> bool:
+        for side, status in self._master_arm_status.items():
+            if status.ctrl_mode != 0x02:
+                continue
+            service_name = self.cfg.master_enable_ctrl_service_names.get(side)
+            if service_name is None:
+                self.logger.error(
+                    "Missing enable_ctrl service configuration for "
+                    f"{side} master."
+                )
+                return False
+            if not self._call_services(
+                service_names=[service_name],
+                success_msg=(
+                    f"Recovered {side} master ctrl_mode to CAN control."
+                ),
+                timeout=25.0,
+            ):
+                self.logger.error(
+                    f"Failed to recover {side} master ctrl_mode "
+                    "from teach mode."
+                )
+                return False
+        return True
+
+    def is_any_master_in_teach_mode(self) -> bool:
+        return any(
+            status.teach_status == 1
+            for status in self._master_arm_status.values()
+        )
+
     def disable_arm(self) -> bool:
         """Sends a request to disable the robot arm."""
         return self._call_services(
@@ -244,15 +328,67 @@ class RosServiceHelper:
             ),
         )
 
-    def disable_inference(self) -> bool:
+    def disable_inference(
+        self, allow_missing_service: bool = False, quiet_benign: bool = False
+    ) -> bool:
         """Sends a request to disable the inference service."""
-        return self._call_services(
-            service_names=self.cfg.disable_inference_service_name,
-            success_msg="Inference service disabled!",
-            success_callback=lambda: setattr(
-                self.state, "is_inference_service_running", False
-            ),
-        )
+        if not self._check_client_connected():
+            return False
+
+        service_names = self.cfg.disable_inference_service_name
+        available_services: list[str] = self.ros_client.get_services()
+        has_successful_disable_call = False
+
+        for service_name in service_names:
+            if service_name not in available_services:
+                if allow_missing_service:
+                    if not quiet_benign:
+                        self.logger.info(
+                            "Inference disable service unavailable: "
+                            f"{service_name}"
+                        )
+                    continue
+                self.logger.error(f"Service {service_name} not found!")
+                return False
+            try:
+                service = roslibpy.Service(
+                    self.ros_client, service_name, "std_srvs/srv/Trigger"
+                )
+                request = roslibpy.ServiceRequest(None)
+                result = service.call(request, timeout=5.0)
+                if result.get("success", False):
+                    has_successful_disable_call = True
+                    continue
+                if not result.get("success", False):
+                    msg = result.get("message", "No message provided.")
+                    msg_lower = msg.lower()
+                    benign_failure_markers = (
+                        "not running",
+                        "already stopped",
+                        "already disabled",
+                    )
+                    if any(
+                        marker in msg_lower
+                        for marker in benign_failure_markers
+                    ):
+                        if not quiet_benign:
+                            self.logger.info(
+                                f"Inference service already stopped: {msg}"
+                            )
+                        continue
+                    self.logger.error(f"Service {service_name} failed: {msg}")
+                    return False
+            except roslibpy.core.RosTimeoutError:
+                self.logger.error(f"Timeout calling service: {service_name}")
+                return False
+            except Exception as e:
+                self.logger.error(f"Error calling {service_name}: {e}")
+                return False
+
+        if has_successful_disable_call:
+            self.logger.info("Inference service disabled!")
+        self.state.is_inference_service_running = False
+        return True
 
     def set_control_mode(
         self, mode: Literal["auto", "takeover", "stop"]
@@ -273,6 +409,31 @@ class RosServiceHelper:
             success_msg=message_map[mode],
             success_callback=lambda: setattr(self.state, "control_mode", mode),
         )
+
+    def takeover_control(self) -> bool:
+        valid_teach_statuses = {1}
+        invalid_sides = self._get_invalid_sides_for_teach_status(
+            valid_teach_statuses
+        )
+        if invalid_sides:
+            self._log_invalid_teach_statuses("takeover", valid_teach_statuses)
+            return False
+        return self.set_control_mode("takeover")
+
+    def release_to_auto(self) -> bool:
+        valid_teach_statuses = {0, 2}
+        invalid_sides = self._get_invalid_sides_for_teach_status(
+            valid_teach_statuses
+        )
+        if invalid_sides:
+            self._log_invalid_teach_statuses("auto", valid_teach_statuses)
+            return False
+        if not self._recover_master_ctrl_modes_for_auto():
+            return False
+        return self.set_control_mode("auto")
+
+    def stop_control(self) -> bool:
+        return self.set_control_mode("stop")
 
     def start_recording(self, uri: str) -> bool:
         flag = self._call_services(
@@ -301,6 +462,11 @@ class RosServiceHelper:
             try:
                 self.stop_recording()
             except:  # noqa: E722
+                pass
+        for topic in self._master_status_topics.values():
+            try:
+                topic.unsubscribe()
+            except Exception:
                 pass
 
     def record_handeye_calib_pose(self) -> bool:

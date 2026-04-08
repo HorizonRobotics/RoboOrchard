@@ -11,10 +11,14 @@
     bash launch_async_infer.sh
     ```
 
-3. Set instruction
+3. Control deployment in inference_app
 
-    deploy node will set defualt instruction as "Do something.", you could get current instruction in ROS param server by `ros2 param get /robot/inference_service/sync_node instruction` or `ros2 param get /robot/inference_service/async_rtc_node instruction`, you could also set it by `bash scripts/set_instruction.sh sync/async "xxxxxx"`
+    Now you could control deployment by inference_app:
 
-4. Enable/Disable deployment
+    - Start inference.
+    - Stop inference.
+    - Reset all arm controllers listed in the inference app launch configuration.
 
-    Now you could enable/disable deployment by inference_app
+    In the default HoloBrain setup, the reset service list includes both master and puppet arms on the left and right sides.
+
+    If your deployment needs a different reset scope, update `reset_arm_service_name` in `projects/HoloBrain/app/gen_inference_app_launch_config.py`.

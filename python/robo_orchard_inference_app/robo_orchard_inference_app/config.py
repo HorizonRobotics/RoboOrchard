@@ -114,6 +114,10 @@ class ROSBridgeCfg(pydantic.BaseModel):
     enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     disable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     reset_arm_service_name: list[str] = pydantic.Field(default_factory=list)
+    master_status_topics: dict[str, str] = pydantic.Field(default_factory=dict)
+    master_enable_ctrl_service_names: dict[str, str] = pydantic.Field(
+        default_factory=dict
+    )
 
     # recorder
     recorder_name: str = "/mcap_recorder_service"

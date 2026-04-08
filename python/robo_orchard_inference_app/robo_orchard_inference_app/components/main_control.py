@@ -64,9 +64,7 @@ class MainControlComponent(ComponentBase):
             return
 
         with st.expander("ℹ️ Current State", expanded=False):
-            control_mode_col, arm_status_col, inference_service_col = (
-                st.columns([1, 1, 1])
-            )
+            control_mode_col, inference_service_col = st.columns([1, 1])
             state = self.collecting_state.inference_state
 
             with control_mode_col:
@@ -76,14 +74,6 @@ class MainControlComponent(ComponentBase):
                         takeover=StatusConfig(text="TakeOver", color="red"),
                         auto=StatusConfig(text="Auto", color="green"),
                         stop=StatusConfig(text="Stop", color="grey"),
-                    ),
-                )
-            with arm_status_col:
-                multi_status_indicator(
-                    current_status=state.arm_ctrl_status,
-                    status_config=dict(
-                        enabled=StatusConfig(text="Enable", color="green"),
-                        disabled=StatusConfig(text="Disable", color="red"),
                     ),
                 )
             with inference_service_col:
@@ -242,45 +232,21 @@ class MainControlComponent(ComponentBase):
                 (show_name, value),
             ) in zip(mode_cols, modes, strict=False):
                 with col:
+                    on_click = {
+                        "takeover": self.ros_helper.takeover_control,
+                        "auto": self.ros_helper.release_to_auto,
+                        "stop": self.ros_helper.stop_control,
+                    }[value]
                     st.button(
                         show_name.capitalize(),
-                        on_click=self.ros_helper.set_control_mode,
-                        args=(value,),
+                        on_click=on_click,
                         use_container_width=True,
                         key=f"{self.key_prefix}_set_control_mode_{value}",
                     )
 
-            # --- Arm Control ---
-            st.subheader("Arm Control")
-            arm_cols = st.columns([1, 1, 1])
-            with arm_cols[0]:
-                if st.button(
-                    "Enable",
-                    key=f"{self.key_prefix}_enable_arm_ctrl",
-                    disabled=self.collecting_state.is_recording,
-                    use_container_width=True,
-                ):
-                    self.change_arm_ctrl_dialog(enable=True)
-            with arm_cols[1]:
-                if st.button(
-                    "Disable",
-                    key=f"{self.key_prefix}_disable_arm_ctrl",
-                    disabled=self.collecting_state.is_recording,
-                    use_container_width=True,
-                ):
-                    self.change_arm_ctrl_dialog(enable=False)
-            with arm_cols[2]:
-                if st.button(
-                    "Reset",
-                    key=f"{self.key_prefix}_reset_arm_ctrl",
-                    disabled=self.collecting_state.is_recording,
-                    use_container_width=True,
-                ):
-                    self.reset_arm_ctrl_callback()
-
             # --- Inference service ---
             st.subheader("Inference Control")
-            inference_cols = st.columns([1, 1])
+            inference_cols = st.columns([1, 1, 1])
             with inference_cols[0]:
                 st.button(
                     "Start",
@@ -298,26 +264,39 @@ class MainControlComponent(ComponentBase):
                     use_container_width=True,
                 )
 
-    @st.dialog("Confirm Arm State Change", dismissible=False)
-    def change_arm_ctrl_dialog(self, enable: bool):
-        """Confirmation dialog for enabling/disabling the arm."""
-        st.warning(
-            "Ensure the robot arm is in a safe position before proceeding.",
-            icon="⚠️",
+            with inference_cols[2]:
+                st.button(
+                    "Reset",
+                    key=f"{self.key_prefix}_reset_arm_ctrl",
+                    disabled=self._is_reset_disabled(),
+                    on_click=self.reset_arm_ctrl_callback,
+                    use_container_width=True,
+                )
+
+    def _is_reset_disabled(self) -> bool:
+        state = self.collecting_state.inference_state
+        return self.collecting_state.is_recording or (
+            state.control_mode in {"takeover", "stop"}
         )
-        col1, col2 = st.columns(2)
-        if col1.button("Continue", use_container_width=True, type="primary"):
-            if enable:
-                self.ros_helper.enable_arm()
-            else:
-                self.ros_helper.disable_arm()
-            st.rerun()
-        if col2.button("Cancel", use_container_width=True):
-            st.rerun()
 
     def reset_arm_ctrl_callback(self):
         """Resets the robot arm controllers."""
-        self.ros_helper.disable_inference()
+        state = self.collecting_state.inference_state
+        if (
+            state.control_mode == "auto"
+            and self.ros_helper.is_any_master_in_teach_mode()
+        ):
+            self.logger.warning(
+                "Reset is blocked: master arm is in teach mode."
+            )
+            return
+        if not self.ros_helper.disable_inference(
+            allow_missing_service=True, quiet_benign=True
+        ):
+            self.logger.warning(
+                "Reset is blocked: failed to disable inference service."
+            )
+            return
         self.ros_helper.reset_arm()
 
     def _render_handeye_calib_panel(self):
