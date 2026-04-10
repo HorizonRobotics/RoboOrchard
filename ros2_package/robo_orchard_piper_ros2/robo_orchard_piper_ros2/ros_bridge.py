@@ -37,8 +37,7 @@ __all__ = [
     "joint_control",
     "get_enable_flag",
     "enable_arm_ctrl",
-    "disable_arm_ctrl",
-    "reset_piper_ctrl_mode",
+    "switch_piper_ctrl_mode",
     "set_ctrl_method",
 ]
 
@@ -60,7 +59,6 @@ def create_piper(can_port: str) -> C_PiperInterface:
     _ = get_arm_ctrl_state(piper)
     _ = get_arm_ee_pose(piper)
     _ = get_enable_flag(piper)
-    _ = get_disable_flag(piper)
     _ = get_arm_status(piper)
 
     return piper
@@ -316,33 +314,21 @@ def enable_arm_ctrl(
     raise TimeoutError
 
 
-def get_disable_flag(piper: C_PiperInterface):
-    msg = piper.GetArmLowSpdInfoMsgs()
-
-    enable_flag = (
-        not msg.motor_1.foc_status.driver_enable_status
-        and not msg.motor_2.foc_status.driver_enable_status
-        and not msg.motor_3.foc_status.driver_enable_status
-        and not msg.motor_4.foc_status.driver_enable_status
-        and not msg.motor_5.foc_status.driver_enable_status
-        and not msg.motor_6.foc_status.driver_enable_status
-    )
-    return enable_flag
-
-
-def disable_arm_ctrl(piper: C_PiperInterface, timeout: float = 5):
-    timeout = 5
+def switch_piper_ctrl_mode(
+    piper: C_PiperInterface,
+    target_mode: int,
+    timeout: float = 5,
+):
     start_time = time.time()
 
     while True:
+        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
+            return
+
         elapsed_time = time.time() - start_time
+        piper.MotionCtrl_2(target_mode, 0x01, 100, 0x00)
 
-        piper.DisableArm(7)
-        piper.GripperCtrl(0, 1000, 0x02, 0)
-
-        flag = get_disable_flag(piper)
-
-        if flag:
+        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
             return
 
         if elapsed_time > timeout:
@@ -351,24 +337,6 @@ def disable_arm_ctrl(piper: C_PiperInterface, timeout: float = 5):
         time.sleep(1)
 
     raise TimeoutError
-
-
-def reset_piper_ctrl_mode(
-    piper: C_PiperInterface, target_mode: int, max_retry: int = 5
-) -> bool:
-    if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
-        return True
-
-    for _ in range(5):
-        disable_arm_ctrl(piper, timeout=5)
-        enable_arm_ctrl(piper, timeout=5)
-
-        piper.MotionCtrl_2(target_mode, 0x01, 100, 0x00)
-
-        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
-            return True
-
-    return False
 
 
 def set_ctrl_method(piper: C_PiperInterface, is_mit: bool = False):

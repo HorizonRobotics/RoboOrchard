@@ -258,17 +258,6 @@ class RosServiceHelper:
             for status in self._master_arm_status.values()
         )
 
-    def disable_arm(self) -> bool:
-        """Sends a request to disable the robot arm."""
-        return self._call_services(
-            service_names=self.cfg.disable_arm_service_name,
-            success_msg="/DisableArm command sent successfully!",
-            success_callback=lambda: setattr(
-                self.state, "arm_ctrl_status", "disabled"
-            ),
-            timeout=25.0,
-        )
-
     def reset_arm(self) -> bool:
         """Sends a request to reset the robot arm controllers to zero."""
         return self._call_services(

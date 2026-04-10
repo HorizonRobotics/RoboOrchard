@@ -21,21 +21,61 @@ import types
 def _install_stub_modules():
     fake_rclpy = types.ModuleType("rclpy")
     fake_rclpy.node = types.ModuleType("rclpy.node")
-    fake_rclpy.node.Node = object
-    sys.modules.setdefault("rclpy", fake_rclpy)
-    sys.modules.setdefault("rclpy.node", fake_rclpy.node)
+
+    class FakeNode:
+        def __init__(self, *args, **kwargs):
+            self._parameters = {}
+            self._created_services = []
+
+        def declare_parameter(self, name, value):
+            self._parameters[name] = value
+
+        def get_parameter(self, name):
+            value = self._parameters[name]
+            parameter_value = types.SimpleNamespace(
+                string_value=value if isinstance(value, str) else "",
+                bool_value=bool(value) if isinstance(value, bool) else False,
+                integer_value=value if isinstance(value, int) else 0,
+            )
+            return types.SimpleNamespace(
+                get_parameter_value=lambda: parameter_value
+            )
+
+        def get_logger(self):
+            return types.SimpleNamespace(
+                info=lambda *args, **kwargs: None,
+                warn=lambda *args, **kwargs: None,
+                error=lambda *args, **kwargs: None,
+            )
+
+        def create_publisher(self, *args, **kwargs):
+            return types.SimpleNamespace(publish=lambda *a, **k: None)
+
+        def create_service(self, service_type, name, callback):
+            self._created_services.append(name)
+            return types.SimpleNamespace(name=name, callback=callback)
+
+        def create_subscription(self, *args, **kwargs):
+            return types.SimpleNamespace()
+
+        def create_timer(self, *args, **kwargs):
+            return types.SimpleNamespace()
+
+    fake_rclpy.node.Node = FakeNode
+    sys.modules["rclpy"] = fake_rclpy
+    sys.modules["rclpy.node"] = fake_rclpy.node
 
     geometry_msgs = types.ModuleType("geometry_msgs")
     geometry_msgs.msg = types.ModuleType("geometry_msgs.msg")
     geometry_msgs.msg.PoseStamped = type("PoseStamped", (), {})
-    sys.modules.setdefault("geometry_msgs", geometry_msgs)
-    sys.modules.setdefault("geometry_msgs.msg", geometry_msgs.msg)
+    sys.modules["geometry_msgs"] = geometry_msgs
+    sys.modules["geometry_msgs.msg"] = geometry_msgs.msg
 
     sensor_msgs = types.ModuleType("sensor_msgs")
     sensor_msgs.msg = types.ModuleType("sensor_msgs.msg")
     sensor_msgs.msg.JointState = type("JointState", (), {})
-    sys.modules.setdefault("sensor_msgs", sensor_msgs)
-    sys.modules.setdefault("sensor_msgs.msg", sensor_msgs.msg)
+    sys.modules["sensor_msgs"] = sensor_msgs
+    sys.modules["sensor_msgs.msg"] = sensor_msgs.msg
 
     std_srvs = types.ModuleType("std_srvs")
     std_srvs.srv = types.ModuleType("std_srvs.srv")
@@ -44,26 +84,29 @@ def _install_stub_modules():
         (),
         {"Request": object, "Response": object},
     )
-    sys.modules.setdefault("std_srvs", std_srvs)
-    sys.modules.setdefault("std_srvs.srv", std_srvs.srv)
+    sys.modules["std_srvs"] = std_srvs
+    sys.modules["std_srvs.srv"] = std_srvs.srv
 
     piper_msg = types.ModuleType("robo_orchard_piper_msg_ros2")
     piper_msg.msg = types.ModuleType("robo_orchard_piper_msg_ros2.msg")
     piper_msg.msg.PiperStatusMsg = type("PiperStatusMsg", (), {})
-    sys.modules.setdefault("robo_orchard_piper_msg_ros2", piper_msg)
-    sys.modules.setdefault("robo_orchard_piper_msg_ros2.msg", piper_msg.msg)
+    sys.modules["robo_orchard_piper_msg_ros2"] = piper_msg
+    sys.modules["robo_orchard_piper_msg_ros2.msg"] = piper_msg.msg
 
     fake_bridge = types.ModuleType("robo_orchard_piper_ros2.ros_bridge")
-    fake_bridge.create_piper = lambda *args, **kwargs: None
-    fake_bridge.disable_arm_ctrl = lambda *args, **kwargs: None
+    fake_bridge.create_piper = lambda *args, **kwargs: types.SimpleNamespace(
+        GetArmStatus=lambda: types.SimpleNamespace(
+            arm_status=types.SimpleNamespace(ctrl_mode=0x01, teach_status=0)
+        )
+    )
     fake_bridge.enable_arm_ctrl = lambda *args, **kwargs: None
     fake_bridge.get_arm_ee_pose = lambda *args, **kwargs: None
     fake_bridge.get_arm_state = lambda *args, **kwargs: None
     fake_bridge.get_arm_status = lambda *args, **kwargs: None
     fake_bridge.joint_control = lambda *args, **kwargs: None
-    fake_bridge.reset_piper_ctrl_mode = lambda *args, **kwargs: True
+    fake_bridge.switch_piper_ctrl_mode = lambda *args, **kwargs: True
     fake_bridge.set_ctrl_method = lambda *args, **kwargs: None
-    sys.modules.setdefault("robo_orchard_piper_ros2.ros_bridge", fake_bridge)
+    sys.modules["robo_orchard_piper_ros2.ros_bridge"] = fake_bridge
 
 
 _install_stub_modules()
@@ -102,17 +145,17 @@ def test_enable_arm_ctrl_in_active_teach_mode_does_not_attempt_recovery(
 
     calls = []
 
-    def fake_reset(*args, **kwargs):
-        calls.append("reset")
-        return True
-
     def fake_enable(*args, **kwargs):
         calls.append("enable")
 
     def fake_set_ctrl_method(*args, **kwargs):
         calls.append("set_ctrl_method")
 
-    monkeypatch.setattr(single_module, "reset_piper_ctrl_mode", fake_reset)
+    monkeypatch.setattr(
+        single_module,
+        "switch_piper_ctrl_mode",
+        lambda *args, **kwargs: calls.append("switch_ctrl_mode"),
+    )
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
@@ -130,8 +173,8 @@ def test_enable_arm_ctrl_in_post_teach_mode_succeeds_after_ctrl_mode_recovery(
 
     calls = []
 
-    def fake_reset(*args, **kwargs):
-        calls.append("reset")
+    def fake_switch(*args, **kwargs):
+        calls.append("switch_ctrl_mode")
         node._arm_status.ctrl_mode = 0x01
         return True
 
@@ -141,7 +184,11 @@ def test_enable_arm_ctrl_in_post_teach_mode_succeeds_after_ctrl_mode_recovery(
     def fake_set_ctrl_method(*args, **kwargs):
         calls.append("set_ctrl_method")
 
-    monkeypatch.setattr(single_module, "reset_piper_ctrl_mode", fake_reset)
+    monkeypatch.setattr(
+        single_module,
+        "switch_piper_ctrl_mode",
+        fake_switch,
+    )
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
@@ -149,18 +196,18 @@ def test_enable_arm_ctrl_in_post_teach_mode_succeeds_after_ctrl_mode_recovery(
 
     assert ret is True
     assert node._enable_flag is True
-    assert calls == ["reset", "set_ctrl_method"]
+    assert calls == ["switch_ctrl_mode", "set_ctrl_method"]
 
 
-def test_enable_arm_ctrl_in_post_teach_mode_fails_if_ctrl_mode_stays_0x02(
+def test_enable_arm_ctrl_in_post_teach_mode_does_not_fail_on_immediate_status(
     monkeypatch,
 ):
     node = _build_node(ctrl_mode=0x02, teach_status=2)
 
     calls = []
 
-    def fake_reset(*args, **kwargs):
-        calls.append("reset")
+    def fake_switch(*args, **kwargs):
+        calls.append("switch_ctrl_mode")
         return True
 
     def fake_enable(*args, **kwargs):
@@ -169,12 +216,53 @@ def test_enable_arm_ctrl_in_post_teach_mode_fails_if_ctrl_mode_stays_0x02(
     def fake_set_ctrl_method(*args, **kwargs):
         calls.append("set_ctrl_method")
 
-    monkeypatch.setattr(single_module, "reset_piper_ctrl_mode", fake_reset)
+    monkeypatch.setattr(
+        single_module,
+        "switch_piper_ctrl_mode",
+        fake_switch,
+    )
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
     ret = node.enable_arm_ctrl(force_reset=True)
 
-    assert ret is False
+    assert ret is True
+    assert node._enable_flag is True
+    assert calls == ["switch_ctrl_mode", "set_ctrl_method"]
+
+
+def test_enable_ctrl_service_fails_when_ctrl_mode_switch_times_out(
+    monkeypatch,
+):
+    node = _build_node(ctrl_mode=0x02, teach_status=2)
+    logs = []
+    node.get_logger = lambda: types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warn=lambda *args, **kwargs: None,
+        error=lambda message: logs.append(message),
+    )
+
+    def fake_switch(*args, **kwargs):
+        raise TimeoutError("ctrl mode switch timed out")
+
+    monkeypatch.setattr(single_module, "switch_piper_ctrl_mode", fake_switch)
+    monkeypatch.setattr(
+        single_module, "set_ctrl_method", lambda *args, **kwargs: None
+    )
+
+    response = types.SimpleNamespace(success=None, message=None)
+
+    ret = node._enable_ctrl_service_callback(object(), response)
+
+    assert ret is response
+    assert response.success is False
+    assert "unexpected error occurred" in response.message.lower()
+    assert "ctrl mode switch timed out" in response.message
     assert node._enable_flag is False
-    assert calls == ["reset", "set_ctrl_method"]
+    assert logs == ["Error while enabling arm: ctrl mode switch timed out"]
+
+
+def test_node_does_not_register_disable_ctrl_service():
+    node = PiperSingleControlNode()
+
+    assert node._created_services == ["enable_ctrl", "reset_ctrl"]

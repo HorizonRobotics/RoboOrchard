@@ -112,7 +112,6 @@ class ROSBridgeCfg(pydantic.BaseModel):
 
     # arm control
     enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
-    disable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     reset_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     master_status_topics: dict[str, str] = pydantic.Field(default_factory=dict)
     master_enable_ctrl_service_names: dict[str, str] = pydantic.Field(

@@ -64,10 +64,6 @@ def main():
                 "/robot/left_master/enable_ctrl",
                 "/robot/right_master/enable_ctrl",
             ],
-            disable_arm_service_name=[
-                "/robot/left_master/disable_ctrl",
-                "/robot/right_master/disable_ctrl",
-            ],
             reset_arm_service_name=[
                 "/robot/left_master/reset_ctrl",
                 "/robot/left/reset_ctrl",

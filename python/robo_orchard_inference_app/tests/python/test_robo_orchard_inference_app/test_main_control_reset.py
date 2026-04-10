@@ -32,7 +32,7 @@ def _install_stub_modules():
     st.toast = lambda *args, **kwargs: None
     st.cache_resource = lambda func: func
     st.rerun = lambda: None
-    st.dialog = lambda *args, **kwargs: (lambda func: func)
+    st.dialog = lambda *args, **kwargs: lambda func: func
     sys.modules.setdefault("streamlit", st)
     st_components = types.ModuleType("streamlit.components")
     st_components_v1 = types.ModuleType("streamlit.components.v1")

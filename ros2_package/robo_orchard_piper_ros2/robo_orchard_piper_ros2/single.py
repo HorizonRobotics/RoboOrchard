@@ -26,14 +26,13 @@ from std_srvs.srv import Trigger
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
     create_piper,
-    disable_arm_ctrl,
     enable_arm_ctrl,
     get_arm_ee_pose,
     get_arm_state,
     get_arm_status,
     joint_control,
-    reset_piper_ctrl_mode,
     set_ctrl_method,
+    switch_piper_ctrl_mode,
 )
 
 
@@ -105,9 +104,6 @@ class PiperSingleControlNode(Node):
             Trigger, "enable_ctrl", self._enable_ctrl_service_callback
         )
         self.create_service(
-            Trigger, "disable_ctrl", self._disable_ctrl_service_callback
-        )
-        self.create_service(
             Trigger, "reset_ctrl", self._reset_ctrl_service_callback
         )
 
@@ -125,37 +121,23 @@ class PiperSingleControlNode(Node):
     def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
         arm_status = self.piper.GetArmStatus().arm_status
         ctrl_mode = arm_status.ctrl_mode
+        is_post_teach_recovery = ctrl_mode == 0x02
         if ctrl_mode == 0x02:
             if arm_status.teach_status == 1:
                 return False
             self.get_logger().warn(
                 f"ctrl_mode is {ctrl_mode}, switch directly to ctrl mode..."
             )
-            if not reset_piper_ctrl_mode(self.piper, 0x01):
-                return False
+            switch_piper_ctrl_mode(self.piper, 0x01)
         else:
             enable_arm_ctrl(self.piper)
         set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
-        if self.piper.GetArmStatus().arm_status.ctrl_mode != 0x01:
+        if (
+            not is_post_teach_recovery
+            and self.piper.GetArmStatus().arm_status.ctrl_mode != 0x01
+        ):
             return False
         self._enable_flag = True
-        return True
-
-    def disable_arm_ctrl(self, force_reset: bool = False) -> bool:
-        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
-        # 1. reset to ctrl mode
-        if ctrl_mode == 0x02:
-            self.get_logger().warn(
-                f"ctrl_mode is {ctrl_mode}, try to reset..."
-            )
-            if force_reset:
-                if not reset_piper_ctrl_mode(self.piper, 0x01):
-                    return False
-            else:
-                return False
-        # 2. disable
-        disable_arm_ctrl(self.piper)
-        self._enable_flag = False
         return True
 
     def publish_callback(self):
@@ -201,31 +183,6 @@ class PiperSingleControlNode(Node):
                 response.message = "Failed to enable arm. It might be in an unrecoverable state."  # noqa: E501
         except Exception as e:
             self.get_logger().error(f"Error while enabling arm: {e}")
-            response.success = False
-            response.message = f"An unexpected error occurred: {e}"
-        return response
-
-    def _disable_ctrl_service_callback(
-        self, request: Trigger.Request, response: Trigger.Response
-    ):
-        """Service callback to disable the arm control."""
-        self.get_logger().info("Received request to disable arm.")
-
-        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
-        if ctrl_mode != 0x02 and not self._enable_flag:
-            response.success = True
-            response.message = "Arm is already disabled."
-            return response
-
-        try:
-            if self.disable_arm_ctrl(force_reset=True):
-                response.success = True
-                response.message = "Arm disabled successfully."
-            else:
-                response.success = False
-                response.message = "Failed to disable arm. It might be in an unrecoverable state."  # noqa: E501
-        except Exception as e:
-            self.get_logger().error(f"Error while disabling arm: {e}")
             response.success = False
             response.message = f"An unexpected error occurred: {e}"
         return response
