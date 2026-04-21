@@ -37,13 +37,7 @@ Open the file and modify the **USB_PORTS** field according to your actual hardwa
 
 ### [Host] Configure Extrinsic Parameters
 
-Due to varying environmental setups, extrinsic parameters will differ. Please use the provided template to configure them:
-
-```bash
-cp data/tf/templates/gen_tf_config.py data/tf
-```
-
-Open the file and update the parameters to match your specific calibration data.
+Due to varying environmental setups, extrinsic parameters will differ. `tf_publisher` starts with an empty in-memory state and receives static transforms through the runtime `/set_static_transforms` service. Hand-eye calibration results — or any JSON following the same calibration-result schema, including hand-authored structural transforms — can be placed directly into the `tf_directory` selected from the inference app.
 
 ### [Host] Start Docker
 

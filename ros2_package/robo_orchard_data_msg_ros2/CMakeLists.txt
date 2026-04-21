@@ -10,8 +10,9 @@ find_package(ament_cmake REQUIRED)
 
 find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/SetStaticTransforms.srv"
   "srv/StartRecording.srv"
-  DEPENDENCIES # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
+  DEPENDENCIES
 )
 
 # if(BUILD_TESTING)

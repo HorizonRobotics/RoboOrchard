@@ -1,0 +1,4 @@
+string directory
+---
+bool success
+string message

@@ -36,6 +36,11 @@ class MetaRow:
             self.unique_id = str(uuid.uuid4())
 
 
+_TF_DIRECTORY_LOCK_MESSAGE = (
+    "TF directory selection is locked while recording."
+)
+
+
 class EditEpisodeMetaComponent(ComponentBase):
     """Component for editing episode metadata in the RoboOrchard inference app.
 
@@ -204,6 +209,53 @@ class EditEpisodeMetaComponent(ComponentBase):
                 self.episode_meta.instruction = instruction
                 self.rerun_callback()
 
+    def _render_tf_directory(self):
+        options = self.task_cfg.candidate_tf_directories
+        current = self.episode_meta.tf_directory
+
+        cols = st.columns([1, 3])
+        with cols[0]:
+            st.write("TF Directory")
+        with cols[1]:
+            if self.collecting_state.is_recording:
+                if current:
+                    st.write(
+                        f"{_TF_DIRECTORY_LOCK_MESSAGE} Current: {current}"
+                    )
+                else:
+                    st.write(_TF_DIRECTORY_LOCK_MESSAGE)
+                return
+
+            if not options:
+                if current:
+                    self.logger.warn(
+                        "No TF directories configured. "
+                        "Reset tf_directory selection."
+                    )
+                    self.episode_meta.tf_directory = ""
+                st.write("No TF directories configured.")
+                return
+
+            if current and current not in options:
+                self.logger.warn(
+                    "Configured TF directories have changed. "
+                    "Reset tf_directory selection."
+                )
+                self.episode_meta.tf_directory = ""
+                current = ""
+
+            index = options.index(current) if current in options else None
+            selected = st.selectbox(
+                "Select TF directory",
+                options=options,
+                index=index,
+                label_visibility="collapsed",
+                key=f"{self.key_prefix}_tf_directory",
+            )
+            if selected is not None and selected != current:
+                self.episode_meta.tf_directory = selected
+                self.rerun_callback()
+
     def _get_meta_key_options(self, key: Optional[str]) -> List[str]:
         """Get available metadata key options for selection.
 
@@ -330,13 +382,9 @@ class EditEpisodeMetaComponent(ComponentBase):
                         self.rerun_callback()
 
     def __call__(self):
-        """Render the complete episode metadata editing interface.
-
-        Calls all individual rendering methods to display the full UI for
-        editing episode metadata, including user name, task name, instruction,
-        and custom metadata key-value pairs.
-        """
+        """Render the complete episode metadata editing interface."""
         self._render_user_name()
         self._render_task_name()
         self._render_instruction()
+        self._render_tf_directory()
         self._render_metas()

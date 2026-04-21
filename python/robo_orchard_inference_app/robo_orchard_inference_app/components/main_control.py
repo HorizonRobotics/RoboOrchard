@@ -25,7 +25,10 @@ from robo_orchard_inference_app.components.edit_episode_meta import (
 )
 from robo_orchard_inference_app.components.mixin import ComponentBase
 from robo_orchard_inference_app.ros_bridge import RosServiceHelper
-from robo_orchard_inference_app.ui import StatusConfig, multi_status_indicator
+from robo_orchard_inference_app.ui import (
+    StatusConfig,
+    multi_status_indicator,
+)
 
 
 @dataclass
@@ -56,6 +59,22 @@ class MainControlComponent(ComponentBase):
             inference_state=self.collecting_state.inference_state,
             logger=self.logger,
         )
+        self._known_tf_publisher_startup_id: str | None = None
+
+    def _is_tf_publisher_online(self) -> bool:
+        return "/static_tf_publisher" in self.ros_helper.get_node_names()
+
+    def _handle_tf_publisher_recovery(self, current_online: bool) -> None:
+        if not current_online:
+            return
+
+        current_id = self.ros_helper.get_tf_publisher_startup_id()
+        if current_id is None:
+            return
+
+        if current_id != self._known_tf_publisher_startup_id:
+            self.ros_helper.invalidate_static_transform_cache()
+            self._known_tf_publisher_startup_id = current_id
 
     # --- Render State Panel ---
     def _render_state_panel(self):
@@ -89,6 +108,10 @@ class MainControlComponent(ComponentBase):
     def _render_configure_panel(self):
         with st.expander("📝 Episode Configuration", expanded=True):
             self._configure_panel()
+        self._handle_tf_publisher_recovery(self._is_tf_publisher_online())
+        self.ros_helper.sync_static_transforms(
+            self.collecting_state.episode_meta
+        )
 
     # --- Data Recording Panel ---
     def _render_recorder_panel(self):

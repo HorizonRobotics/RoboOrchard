@@ -16,6 +16,7 @@
 
 import atexit
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Literal
 
 import roslibpy
@@ -59,6 +60,7 @@ class RosServiceHelper:
         self._master_status_topics: dict[str, object] = {}
         self._master_arm_status: dict[str, MasterArmStatus] = {}
         self._init_master_status_topics()
+        self._synced_tf_fingerprint: tuple[str, frozenset] | None = None
         atexit.register(self.cleanup)
 
     def _init_master_status_topics(self):
@@ -193,6 +195,101 @@ class RosServiceHelper:
         except Exception as e:
             self.logger.error(f"Error calling {set_param_service}: {e}")
             return False
+
+    def get_node_names(self) -> list[str]:
+        if not self._check_client_connected():
+            return []
+
+        try:
+            service = roslibpy.Service(
+                self.ros_client, "/rosapi/nodes", "rosapi_msgs/srv/Nodes"
+            )
+            request = roslibpy.ServiceRequest({})
+            result = service.call(request, timeout=5.0)
+            return [
+                node
+                for node in result.get("nodes", [])
+                if isinstance(node, str)
+            ]
+        except Exception as e:
+            self.logger.error(f"Error calling /rosapi/nodes: {e}")
+            return []
+
+    def get_tf_publisher_startup_id(
+        self, node_name: str = "/static_tf_publisher"
+    ) -> str | None:
+        if not self._check_client_connected():
+            return None
+
+        get_param_service = f"{node_name}/get_parameters"
+        try:
+            service = roslibpy.Service(
+                self.ros_client,
+                get_param_service,
+                "rcl_interfaces/srv/GetParameters",
+            )
+            request = roslibpy.ServiceRequest({"names": ["startup_id"]})
+            result = service.call(request, timeout=3.0)
+            values = result.get("values", [])
+            if not values:
+                return None
+            value = values[0]
+            string_value = value.get("string_value", "")
+            if not string_value:
+                return None
+            return string_value
+        except roslibpy.core.RosTimeoutError:
+            return None
+        except Exception as e:
+            self.logger.error(
+                f"Error calling {get_param_service} for startup_id: {e}"
+            )
+            return None
+
+    def invalidate_static_transform_cache(self) -> None:
+        self._synced_tf_fingerprint = None
+
+    def _get_tf_directory_fingerprint(
+        self, directory: str
+    ) -> tuple[str, frozenset] | None:
+        try:
+            files = frozenset(
+                (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+                for f in Path(directory).glob("*.json")
+            )
+        except OSError:
+            return None
+        return (directory, files)
+
+    def sync_static_transforms(self, episode_meta) -> bool:
+        directory = episode_meta.tf_directory
+        if not directory:
+            return True
+
+        if not self.cfg.static_transform_service_name:
+            self.logger.error(
+                "static_transform_service_name is not configured; "
+                "cannot sync static transforms."
+            )
+            return False
+
+        fingerprint = self._get_tf_directory_fingerprint(directory)
+        if fingerprint is None:
+            return False
+        if fingerprint == self._synced_tf_fingerprint:
+            return True
+
+        success = self._call_services(
+            service_names=self.cfg.static_transform_service_name,
+            success_msg="Static transforms loaded successfully!",
+            service_type=(
+                "robo_orchard_data_msg_ros2/srv/SetStaticTransforms"
+            ),
+            request_data={"directory": directory},
+        )
+        if success:
+            self._synced_tf_fingerprint = fingerprint
+        return success
 
     def enable_arm(self) -> bool:
         """Sends a request to enable the robot arm."""

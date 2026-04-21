@@ -80,6 +80,7 @@ def main():
             },
             record_handeye_calib_service_name="/handeye_calib/record_data",
             save_handeye_calib_service_name="/handeye_calib/save_data",
+            static_transform_service_name="/set_static_transforms",
         ),
         ui_control=UIControlCfg(
             start_keyboard="s",

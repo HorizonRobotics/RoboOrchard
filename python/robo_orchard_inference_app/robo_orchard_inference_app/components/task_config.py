@@ -25,6 +25,10 @@ from robo_orchard_inference_app.utils import time_str_now
 class TaskConfigComponent(ComponentBase):
     """Component for managing task configuration."""
 
+    _STATIC_TRANSFORM_LOCK_MESSAGE = (
+        "Static transform task configuration is locked while recording."
+    )
+
     def _dump_task_cfg_to_disk(self):
         """Saves the current task configuration to the cache directory."""
         save_dir = os.path.join(
@@ -55,6 +59,9 @@ class TaskConfigComponent(ComponentBase):
                 data_dict[k] = []
 
         return data_dict
+
+    def _is_static_transform_config_locked(self) -> bool:
+        return self.collecting_state.is_recording
 
     def _render_username(self):
         new_collectors = st_tags(
@@ -165,11 +172,32 @@ class TaskConfigComponent(ComponentBase):
         else:
             st.write("Please add **meta key** first")
 
+    def _render_tf_directories(self):
+        is_locked = self._is_static_transform_config_locked()
+        if is_locked:
+            st.write(self._STATIC_TRANSFORM_LOCK_MESSAGE)
+            if self.task_cfg.candidate_tf_directories:
+                st.write(", ".join(self.task_cfg.candidate_tf_directories))
+            return
+
+        updated = st_tags(
+            label="Available TF Directories",
+            text="Enter directory path...",
+            value=self.task_cfg.candidate_tf_directories,
+            suggestions=[],
+            key=f"{self.key_prefix}_render_tf_directories",
+        )
+        if updated != self.task_cfg.candidate_tf_directories:
+            self.task_cfg.candidate_tf_directories = updated
+            self._dump_task_cfg_to_disk()
+            st.rerun()
+
     def __call__(self):
         """Renders the task configuration management UI."""
         with st.expander("⚙️ Task Configuration", expanded=True):
             self._render_username()
             self._render_tasks()
+            self._render_tf_directories()
             self._render_meta_keys()
             st.divider()
             self._render_instructions()

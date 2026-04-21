@@ -133,14 +133,18 @@ def _build_component(
         any_master_in_teach_mode=any_master_in_teach_mode,
         disable_inference_result=disable_inference_result,
     )
-    sys.modules["streamlit"].session_state.collecting_state = CollectingState(
+    collecting_state = CollectingState(
         inference_state=InferenceState(
             control_mode=control_mode,
             is_inference_service_running=is_inference_service_running,
         ),
         is_recording=is_recording,
     )
-    sys.modules["streamlit"].session_state.logger = FakeLogger()
+    logger = FakeLogger()
+    MainControlComponent.collecting_state = property(
+        lambda _self: collecting_state
+    )
+    MainControlComponent.logger = property(lambda _self: logger)
     return component
 
 
@@ -170,7 +174,7 @@ def test_reset_aborts_with_warning_when_auto_and_master_in_teach_mode():
     component.reset_arm_ctrl_callback()
 
     assert component.ros_helper.calls == []
-    assert len(sys.modules["streamlit"].session_state.logger.warnings) == 1
+    assert len(component.logger.warnings) == 1
 
 
 def test_reset_aborts_when_disable_inference_fails():
@@ -182,7 +186,7 @@ def test_reset_aborts_when_disable_inference_fails():
     component.reset_arm_ctrl_callback()
 
     assert component.ros_helper.calls == ["disable_inference"]
-    assert len(sys.modules["streamlit"].session_state.logger.warnings) == 1
+    assert len(component.logger.warnings) == 1
 
 
 def test_reset_is_disabled_in_takeover_mode():

@@ -28,25 +28,25 @@ def _install_stub_modules():
     version.__version__ = "0.0.0"
     version.__full_version__ = "0.0.0"
     version.__git_hash__ = "test"
-    sys.modules.setdefault("robo_orchard_inference_app.version", version)
+    sys.modules["robo_orchard_inference_app.version"] = version
 
     st = types.ModuleType("streamlit")
     st.session_state = types.SimpleNamespace()
     st.toast = lambda *args, **kwargs: None
     st.cache_resource = lambda func: func
     st.rerun = lambda: None
-    st.dialog = lambda *args, **kwargs: lambda func: func
+    st.dialog = lambda *args, **kwargs: (lambda func: func)
     sys.modules.setdefault("streamlit", st)
     st_components = types.ModuleType("streamlit.components")
     st_components_v1 = types.ModuleType("streamlit.components.v1")
     st_components_v1.iframe = lambda *args, **kwargs: None
-    sys.modules.setdefault("streamlit.components", st_components)
-    sys.modules.setdefault("streamlit.components.v1", st_components_v1)
+    sys.modules["streamlit.components"] = st_components
+    sys.modules["streamlit.components.v1"] = st_components_v1
 
     polling2 = types.ModuleType("polling2")
     polling2.TimeoutException = RuntimeError
     polling2.poll = lambda *args, **kwargs: None
-    sys.modules.setdefault("polling2", polling2)
+    sys.modules["polling2"] = polling2
 
     roslibpy = types.ModuleType("roslibpy")
 
@@ -71,11 +71,11 @@ def _install_stub_modules():
     roslibpy.Topic = object
     roslibpy.core = types.SimpleNamespace(RosTimeoutError=FakeTimeoutError)
     roslibpy.Ros = object
-    sys.modules.setdefault("roslibpy", roslibpy)
+    sys.modules["roslibpy"] = roslibpy
 
     streamlit_tags = types.ModuleType("streamlit_tags")
     streamlit_tags.st_tags = lambda *args, **kwargs: []
-    sys.modules.setdefault("streamlit_tags", streamlit_tags)
+    sys.modules["streamlit_tags"] = streamlit_tags
 
 
 _install_stub_modules()
@@ -176,11 +176,32 @@ def _load_generated_launch_cfg(monkeypatch) -> LaunchCfg:
     return LaunchCfg.model_validate_json(written["content"])
 
 
+def test_generated_launch_cfg_uses_set_static_transforms_service(
+    monkeypatch,
+):
+    launch_cfg = _load_generated_launch_cfg(monkeypatch)
+
+    assert launch_cfg.ros_bridge.static_transform_service_name == (
+        "/set_static_transforms"
+    )
+
+
 def _build_helper_from_generated_cfg(monkeypatch):
+    _install_stub_modules()
     import robo_orchard_inference_app.ros_bridge as ros_bridge_module
 
     FakeTopic.instances.clear()
-    monkeypatch.setattr(ros_bridge_module.roslibpy, "Topic", FakeTopic)
+    monkeypatch.setattr(
+        ros_bridge_module,
+        "roslibpy",
+        sys.modules["roslibpy"],
+    )
+    monkeypatch.setattr(
+        ros_bridge_module.roslibpy,
+        "Topic",
+        FakeTopic,
+        raising=False,
+    )
 
     launch_cfg = _load_generated_launch_cfg(monkeypatch)
     cfg = launch_cfg.ros_bridge
@@ -264,13 +285,26 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
 
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = helper
-    sys.modules["streamlit"].session_state.collecting_state = CollectingState(
+    collecting_state = CollectingState(
         inference_state=InferenceState(
             control_mode="auto",
             is_inference_service_running=True,
         )
     )
-    sys.modules["streamlit"].session_state.logger = logger
+    # Keep this test isolated from cross-file streamlit stubs by
+    # pinning state-bearing properties directly on the component class.
+    monkeypatch.setattr(
+        MainControlComponent,
+        "collecting_state",
+        property(lambda _self: collecting_state),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        MainControlComponent,
+        "logger",
+        property(lambda _self: logger),
+        raising=False,
+    )
 
     component.reset_arm_ctrl_callback()
 

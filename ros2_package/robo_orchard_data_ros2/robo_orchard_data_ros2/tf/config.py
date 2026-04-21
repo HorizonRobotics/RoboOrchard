@@ -16,7 +16,7 @@
 
 import pydantic
 
-__all__ = ["TFConfig", "TFNodeConfig"]
+__all__ = ["TFConfig"]
 
 
 class TFConfig(pydantic.BaseModel):
@@ -40,14 +40,3 @@ class TFConfig(pydantic.BaseModel):
     xyz: tuple[float, float, float]
     quat: tuple[float, float, float, float]
     scalar_first: bool
-
-
-class TFNodeConfig(pydantic.BaseModel):
-    """Defines a collection of coordinate frame transformations for a node.
-
-    Attributes:
-        tf (list[TFConfig]): List of coordinate transformation configurations.
-            Defaults to empty list when no transformations are specified.
-    """
-
-    tf: list[TFConfig] = pydantic.Field(default_factory=lambda: [])

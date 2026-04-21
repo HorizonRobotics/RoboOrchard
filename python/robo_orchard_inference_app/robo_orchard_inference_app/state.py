@@ -78,6 +78,7 @@ class EpisodeMeta(pydantic.BaseModel):
     user_name: str = ""
     task_name: str = ""
     instruction: str = ""
+    tf_directory: str = ""
     metas: dict[str, list[str]] = pydantic.Field(default_factory=dict)
 
 

@@ -124,6 +124,7 @@ class ROSBridgeCfg(pydantic.BaseModel):
     # hand-eye calib
     record_handeye_calib_service_name: str | None = None
     save_handeye_calib_service_name: str | None = None
+    static_transform_service_name: str | None = None
 
 
 class UIControlCfg(pydantic.BaseModel):
@@ -165,6 +166,10 @@ class TaskCfg(pydantic.BaseModel):
         default_factory=dict
     )
     """Dictionary mapping task names to instruction lists."""
+
+    candidate_tf_directories: List[str] = pydantic.Field(
+        default_factory=list
+    )
 
     metas: dict[str, list[str]] = pydantic.Field(default_factory=dict)
     """Dictionary mapping customize key to values."""
