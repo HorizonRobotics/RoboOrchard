@@ -26,6 +26,21 @@ from robo_orchard_inference_app.logger import Logger
 from robo_orchard_inference_app.state import InferenceState
 
 PIPER_STATUS_MSG_TYPE = "robo_orchard_piper_msg_ros2/PiperStatusMsg"
+_TEACH_STATUS_DESC = {
+    0: "idle (teach button not pressed)",
+    1: "in active teach mode (teach button currently pressed)",
+    2: "post-teach (teach button pressed again to exit)",
+}
+_TEACH_ACTION_HINT = {
+    "takeover": (
+        "Press the teach button on the master arm "
+        "to enter teach mode, then retry."
+    ),
+    "auto": (
+        "Press the teach button on the master arm again "
+        "to exit teach mode, then retry."
+    ),
+}
 
 
 @dataclass
@@ -318,11 +333,25 @@ class RosServiceHelper:
             valid_teach_statuses
         ):
             status = self._master_arm_status[side]
-            self.logger.error(
-                f"Cannot switch to {action}: {side} master teach_status="
-                f"{status.teach_status}, expected one of "
-                f"{sorted(valid_teach_statuses)}."
-            )
+            current = status.teach_status
+            if current is None:
+                message = (
+                    f"Cannot switch to {action}: {side} master status has "
+                    "not been received yet "
+                    "(is the arm powered and CAN bridge up?)."
+                )
+            else:
+                state_desc = _TEACH_STATUS_DESC.get(
+                    current, f"unknown teach_status={current}"
+                )
+                message = (
+                    f"Cannot switch to {action}: {side} master is "
+                    f"{state_desc}."
+                )
+            hint = _TEACH_ACTION_HINT.get(action, "")
+            if hint:
+                message = f"{message} {hint}"
+            self.logger.error(message)
 
     def _recover_master_ctrl_modes_for_auto(self) -> bool:
         for side, status in self._master_arm_status.items():

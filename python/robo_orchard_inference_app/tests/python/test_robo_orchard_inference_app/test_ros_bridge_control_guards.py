@@ -180,11 +180,16 @@ def test_takeover_requires_both_arms_in_teach_mode(monkeypatch):
         "/master/status_right": "robo_orchard_piper_msg_ros2/PiperStatusMsg",
     }
     _emit_status("left", ctrl_mode=0x02, teach_status=1)
-    _emit_status("right", ctrl_mode=0x01, teach_status=2)
+    _emit_status("right", ctrl_mode=0x01, teach_status=0)
 
     assert helper.takeover_control() is False
     assert helper.state.control_mode == "auto"
-    assert any("right" in msg for msg in helper.logger.errors)
+    assert helper.logger.errors == [
+        "Cannot switch to takeover: right master is idle "
+        "(teach button not pressed). "
+        "Press the teach button on the master arm to enter teach mode, "
+        "then retry."
+    ]
 
 
 def test_takeover_succeeds_when_both_arms_are_in_teach_mode(monkeypatch):
@@ -204,7 +209,26 @@ def test_auto_rejects_when_any_arm_still_in_teach_mode(monkeypatch):
     _emit_status("right", ctrl_mode=0x02, teach_status=2)
 
     assert helper.release_to_auto() is False
-    assert any("left" in msg for msg in helper.logger.errors)
+    assert helper.logger.errors == [
+        "Cannot switch to auto: left master is in active teach mode "
+        "(teach button currently pressed). "
+        "Press the teach button on the master arm again to exit teach mode, "
+        "then retry."
+    ]
+
+
+def test_teach_status_guard_explains_missing_master_status(monkeypatch):
+    FakeTopic.instances.clear()
+    helper = _build_helper(monkeypatch)
+    _emit_status("left", ctrl_mode=0x02, teach_status=1)
+
+    assert helper.takeover_control() is False
+    assert helper.logger.errors == [
+        "Cannot switch to takeover: right master status has not been "
+        "received yet (is the arm powered and CAN bridge up?). "
+        "Press the teach button on the master arm to enter teach mode, "
+        "then retry."
+    ]
 
 
 def test_auto_recovers_only_teach_ctrl_mode_arms_before_release(monkeypatch):

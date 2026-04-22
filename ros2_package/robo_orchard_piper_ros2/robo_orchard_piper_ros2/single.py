@@ -85,12 +85,16 @@ class PiperSingleControlNode(Node):
         # Enable flag
         self._enable_flag = False
         if self.auto_enable_arm_ctrl:
-            if self.enable_arm_ctrl():
-                self.get_logger().info("Auto enable successed!")
-            else:
-                self.get_logger().warn(
-                    "Auto enable failed! Maybe in teach mode?"
-                )
+            try:
+                if self.enable_arm_ctrl():
+                    self.get_logger().info("Auto enable successed!")
+                else:
+                    self.get_logger().warn("Auto enable failed!")
+            except TimeoutError as e:
+                msg = "Auto enable timed out."
+                if str(e):
+                    msg = f"{msg} {e}"
+                self.get_logger().warn(msg)
 
         # Publishers
         self.joint_pub = self.create_publisher(JointState, "joint_state", 1)
@@ -121,9 +125,14 @@ class PiperSingleControlNode(Node):
     def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
         arm_status = self.piper.GetArmStatus().arm_status
         ctrl_mode = arm_status.ctrl_mode
-        is_post_teach_recovery = ctrl_mode == 0x02
         if ctrl_mode == 0x02:
             if arm_status.teach_status == 1:
+                self.get_logger().warn(
+                    "Skip enable: arm is in active teach mode "
+                    "(ctrl_mode=0x02, teach_status=1). "
+                    "Press the teach button again to exit teach mode, "
+                    "then retry."
+                )
                 return False
             self.get_logger().warn(
                 f"ctrl_mode is {ctrl_mode}, switch directly to ctrl mode..."
@@ -132,11 +141,6 @@ class PiperSingleControlNode(Node):
         else:
             enable_arm_ctrl(self.piper)
         set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
-        if (
-            not is_post_teach_recovery
-            and self.piper.GetArmStatus().arm_status.ctrl_mode != 0x01
-        ):
-            return False
         self._enable_flag = True
         return True
 
@@ -168,8 +172,7 @@ class PiperSingleControlNode(Node):
         """Service callback to enable the arm control."""
         self.get_logger().info("Received request to enable arm.")
 
-        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
-        if ctrl_mode != 0x02 and self._enable_flag:
+        if self.is_controlable():
             response.success = True
             response.message = "Arm is already enabled."
             return response

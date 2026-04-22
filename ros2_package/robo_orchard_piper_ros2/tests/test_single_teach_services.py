@@ -231,6 +231,41 @@ def test_enable_arm_ctrl_in_post_teach_mode_does_not_fail_on_immediate_status(
     assert calls == ["switch_ctrl_mode", "set_ctrl_method"]
 
 
+def test_enable_arm_ctrl_in_fresh_power_on_does_not_fail_on_stale_status(
+    monkeypatch,
+):
+    # Simulate a cold boot where the piper SDK's first GetArmStatus returns
+    # a zero-initialised struct (ctrl_mode=0x00) because no CAN status frame
+    # has arrived yet, and where the post-MotionCtrl_2 status read still
+    # reflects the pre-command value.
+    node = _build_node(ctrl_mode=0x00, teach_status=0)
+
+    calls = []
+
+    def fake_enable(*args, **kwargs):
+        calls.append("enable")
+
+    def fake_set_ctrl_method(*args, **kwargs):
+        # set_ctrl_method issues MotionCtrl_2(0x01, ...) but the status
+        # frame has not refreshed yet; leave node._arm_status.ctrl_mode
+        # at its stale value to exercise the race.
+        calls.append("set_ctrl_method")
+
+    monkeypatch.setattr(
+        single_module,
+        "switch_piper_ctrl_mode",
+        lambda *args, **kwargs: calls.append("switch_ctrl_mode"),
+    )
+    monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
+    monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
+
+    ret = node.enable_arm_ctrl()
+
+    assert ret is True
+    assert node._enable_flag is True
+    assert calls == ["enable", "set_ctrl_method"]
+
+
 def test_enable_ctrl_service_fails_when_ctrl_mode_switch_times_out(
     monkeypatch,
 ):
@@ -260,6 +295,68 @@ def test_enable_ctrl_service_fails_when_ctrl_mode_switch_times_out(
     assert "ctrl mode switch timed out" in response.message
     assert node._enable_flag is False
     assert logs == ["Error while enabling arm: ctrl mode switch timed out"]
+
+
+def test_enable_ctrl_service_retries_when_flag_set_but_not_controlable(
+    monkeypatch,
+):
+    node = _build_node(ctrl_mode=0x00, teach_status=0)
+    node._enable_flag = True
+    calls = []
+    node.get_logger = lambda: types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warn=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+
+    def fake_enable_arm_ctrl(force_reset=False):
+        calls.append(force_reset)
+        node._arm_status.ctrl_mode = 0x01
+        return True
+
+    monkeypatch.setattr(node, "enable_arm_ctrl", fake_enable_arm_ctrl)
+
+    response = types.SimpleNamespace(success=None, message=None)
+
+    ret = node._enable_ctrl_service_callback(object(), response)
+
+    assert ret is response
+    assert response.success is True
+    assert response.message == "Arm enabled successfully."
+    assert calls == [True]
+
+
+def test_auto_enable_timeout_does_not_abort_node_startup(monkeypatch):
+    base_node = PiperSingleControlNode.__mro__[1]
+    original_declare_parameter = base_node.declare_parameter
+    logs = []
+
+    def fake_declare_parameter(self, name, value):
+        if name == "auto_enable_arm_ctrl":
+            value = True
+        return original_declare_parameter(self, name, value)
+
+    def fake_get_logger(self):
+        return types.SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warn=lambda message: logs.append(message),
+            error=lambda *args, **kwargs: None,
+        )
+
+    def fake_enable_arm_ctrl(self):
+        raise TimeoutError("enable timed out")
+
+    monkeypatch.setattr(base_node, "declare_parameter", fake_declare_parameter)
+    monkeypatch.setattr(base_node, "get_logger", fake_get_logger)
+    monkeypatch.setattr(
+        PiperSingleControlNode, "enable_arm_ctrl", fake_enable_arm_ctrl
+    )
+
+    node = PiperSingleControlNode()
+
+    assert node._enable_flag is False
+    assert node._created_services == ["enable_ctrl", "reset_ctrl"]
+    assert logs == ["Auto enable timed out. enable timed out"]
 
 
 def test_node_does_not_register_disable_ctrl_service():
