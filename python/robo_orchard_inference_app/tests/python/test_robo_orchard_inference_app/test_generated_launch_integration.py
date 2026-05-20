@@ -35,7 +35,7 @@ def _install_stub_modules():
     st.toast = lambda *args, **kwargs: None
     st.cache_resource = lambda func: func
     st.rerun = lambda: None
-    st.dialog = lambda *args, **kwargs: (lambda func: func)
+    st.dialog = lambda *args, **kwargs: lambda func: func
     sys.modules.setdefault("streamlit", st)
     st_components = types.ModuleType("streamlit.components")
     st_components_v1 = types.ModuleType("streamlit.components.v1")
@@ -90,26 +90,6 @@ from robo_orchard_inference_app.state import (  # noqa: E402
     CollectingState,
     InferenceState,
 )
-
-
-class FakeTopic:
-    instances = []
-
-    def __init__(self, client, name, message_type):
-        self.client = client
-        self.name = name
-        self.message_type = message_type
-        self.callback = None
-        FakeTopic.instances.append(self)
-
-    def subscribe(self, callback):
-        self.callback = callback
-
-    def unsubscribe(self):
-        self.callback = None
-
-    def emit(self, message):
-        self.callback(message)
 
 
 class FakeRosClient:
@@ -190,17 +170,10 @@ def _build_helper_from_generated_cfg(monkeypatch):
     _install_stub_modules()
     import robo_orchard_inference_app.ros_bridge as ros_bridge_module
 
-    FakeTopic.instances.clear()
     monkeypatch.setattr(
         ros_bridge_module,
         "roslibpy",
         sys.modules["roslibpy"],
-    )
-    monkeypatch.setattr(
-        ros_bridge_module.roslibpy,
-        "Topic",
-        FakeTopic,
-        raising=False,
     )
 
     launch_cfg = _load_generated_launch_cfg(monkeypatch)
@@ -223,50 +196,6 @@ def _build_helper_from_generated_cfg(monkeypatch):
     return launch_cfg, helper, logger
 
 
-def _emit_status(topic_name: str, ctrl_mode: int, teach_status: int):
-    for topic in FakeTopic.instances:
-        if topic.name == topic_name:
-            topic.emit({"ctrl_mode": ctrl_mode, "teach_status": teach_status})
-            return
-    raise AssertionError(f"Topic {topic_name} not found")
-
-
-def test_generated_launch_cfg_wires_takeover_to_auto_recovery(monkeypatch):
-    launch_cfg, helper, _ = _build_helper_from_generated_cfg(monkeypatch)
-    cfg = launch_cfg.ros_bridge
-
-    assert {
-        topic.name: topic.message_type for topic in FakeTopic.instances
-    } == {
-        cfg.master_status_topics["left"]: (
-            "robo_orchard_piper_msg_ros2/PiperStatusMsg"
-        ),
-        cfg.master_status_topics["right"]: (
-            "robo_orchard_piper_msg_ros2/PiperStatusMsg"
-        ),
-    }
-
-    _emit_status(
-        cfg.master_status_topics["left"], ctrl_mode=0x02, teach_status=2
-    )
-    _emit_status(
-        cfg.master_status_topics["right"], ctrl_mode=0x01, teach_status=2
-    )
-
-    calls = []
-    original = helper._call_services
-
-    def wrapped_call_services(*args, **kwargs):
-        calls.append(list(kwargs["service_names"]))
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(helper, "_call_services", wrapped_call_services)
-
-    assert helper.release_to_auto() is True
-    assert calls[0] == [cfg.master_enable_ctrl_service_names["left"]]
-    assert calls[1] == cfg.release_service_name
-
-
 def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
     _, helper, logger = _build_helper_from_generated_cfg(monkeypatch)
     disable_service = helper.cfg.disable_inference_service_name[0]
@@ -282,6 +211,9 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
         return True
 
     monkeypatch.setattr(helper, "reset_arm", fake_reset_arm)
+    # The disable gate runs only when an inference node is present; this
+    # test exercises the disable-fails path, so force that precondition.
+    monkeypatch.setattr(helper, "is_inference_node_active", lambda: True)
 
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = helper
@@ -312,3 +244,51 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
     assert logger.warnings == [
         "Reset is blocked: failed to disable inference service."
     ]
+
+
+def test_generated_launch_cfg_reset_proceeds_without_inference_node(
+    monkeypatch,
+):
+    _, helper, logger = _build_helper_from_generated_cfg(monkeypatch)
+    # Rig the disable service to fail; with no inference node the gate
+    # must skip the disable step entirely, so reset still proceeds.
+    disable_service = helper.cfg.disable_inference_service_name[0]
+    helper.ros_client.service_results[disable_service] = {
+        "success": False,
+        "message": "failed",
+    }
+
+    reset_calls = []
+
+    def fake_reset_arm():
+        reset_calls.append("reset_arm")
+        return True
+
+    monkeypatch.setattr(helper, "reset_arm", fake_reset_arm)
+    monkeypatch.setattr(helper, "is_inference_node_active", lambda: False)
+
+    component = MainControlComponent.__new__(MainControlComponent)
+    component.ros_helper = helper
+    collecting_state = CollectingState(
+        inference_state=InferenceState(
+            control_mode="auto",
+            is_inference_service_running=False,
+        )
+    )
+    monkeypatch.setattr(
+        MainControlComponent,
+        "collecting_state",
+        property(lambda _self: collecting_state),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        MainControlComponent,
+        "logger",
+        property(lambda _self: logger),
+        raising=False,
+    )
+
+    component.reset_arm_ctrl_callback()
+
+    assert reset_calls == ["reset_arm"]
+    assert logger.warnings == []

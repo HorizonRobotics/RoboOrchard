@@ -16,6 +16,7 @@
 
 
 import time
+from enum import IntEnum
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -34,6 +35,22 @@ from robo_orchard_piper_ros2.ros_bridge import (
     set_ctrl_method,
     switch_piper_ctrl_mode,
 )
+
+
+class CanControlMode(IntEnum):
+    """CAN control mode values reported by Piper SDK."""
+
+    IDLE_MODE = 0x00
+    CAN_MODE = 0x01
+    TEACH_MODE = 0x02
+
+
+class TeachStatusMode(IntEnum):
+    """Teach status values reported by Piper SDK."""
+
+    TEACHING_CLOSED = 0x00
+    IN_TEACHING = 0x01
+    POST_TEACHING = 0x02
 
 
 class PiperSingleControlNode(Node):
@@ -120,27 +137,38 @@ class PiperSingleControlNode(Node):
 
     def is_controlable(self):
         ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
-        return self._enable_flag and ctrl_mode == 0x01
+        return self._enable_flag and ctrl_mode == CanControlMode.CAN_MODE
 
-    def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
+    def enable_arm_ctrl(self) -> bool:
         arm_status = self.piper.GetArmStatus().arm_status
         ctrl_mode = arm_status.ctrl_mode
-        if ctrl_mode == 0x02:
-            if arm_status.teach_status == 1:
+        if ctrl_mode == CanControlMode.TEACH_MODE:
+            # TEACH_MODE + IN_TEACHING means the robot is in active teach mode.
+            if arm_status.teach_status == TeachStatusMode.IN_TEACHING:
                 self.get_logger().warn(
                     "Skip enable: arm is in active teach mode "
-                    "(ctrl_mode=0x02, teach_status=1). "
+                    "(ctrl_mode=TEACH_MODE, teach_status=IN_TEACHING). "
                     "Press the teach button again to exit teach mode, "
                     "then retry."
                 )
                 return False
-            self.get_logger().warn(
-                f"ctrl_mode is {ctrl_mode}, switch directly to ctrl mode..."
-            )
-            switch_piper_ctrl_mode(self.piper, 0x01)
+            # TEACH_MODE + POST_TEACHING means the robot has exited teach mode.
+            elif arm_status.teach_status == TeachStatusMode.POST_TEACHING:
+                self.get_logger().warn("Switch to CAN control mode.")
+                switch_piper_ctrl_mode(
+                    self.piper,
+                    CanControlMode.CAN_MODE,
+                    is_mit=self.enable_mit_ctrl,
+                )
+            else:
+                self.get_logger().warn(
+                    f"Invalid teach status: {arm_status.teach_status}"
+                )
+                return False
+        # Non-TEACH_MODE status is treated as cold start or normal enable.
         else:
             enable_arm_ctrl(self.piper)
-        set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
+            set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
         self._enable_flag = True
         return True
 
@@ -178,12 +206,14 @@ class PiperSingleControlNode(Node):
             return response
 
         try:
-            if self.enable_arm_ctrl(force_reset=True):
+            if self.enable_arm_ctrl():
                 response.success = True
                 response.message = "Arm enabled successfully."
             else:
                 response.success = False
-                response.message = "Failed to enable arm. It might be in an unrecoverable state."  # noqa: E501
+                response.message = (
+                    "Failed to enable arm. Check the arm state and retry."  # noqa: E501
+                )
         except Exception as e:
             self.get_logger().error(f"Error while enabling arm: {e}")
             response.success = False
@@ -196,7 +226,22 @@ class PiperSingleControlNode(Node):
         """Service callback to reset the arm control."""
         self.get_logger().info("Received request to reset arm.")
         if not self.is_controlable():
-            error_msg = "Arm is not controllable, reset failed."
+            ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
+            if ctrl_mode == CanControlMode.TEACH_MODE:
+                error_msg = (
+                    "Reset failed: arm is in teach mode. "
+                    "Exit teach mode first."
+                )
+            elif not self._enable_flag:
+                error_msg = (
+                    "Reset failed: arm control is not enabled. "
+                    "Enable the arm first."
+                )
+            else:
+                error_msg = (
+                    "Reset failed: arm is not in CAN control mode "
+                    f"(ctrl_mode=0x{ctrl_mode:02x})."
+                )
             self.get_logger().error(error_msg)
             response.success = False
             response.message = error_msg

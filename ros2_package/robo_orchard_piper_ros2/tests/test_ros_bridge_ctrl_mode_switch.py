@@ -75,7 +75,7 @@ def test_switch_piper_ctrl_mode_retries_until_target_mode_is_observed(
     clock = {"now": 0.0}
 
     def fake_motion(*args, **kwargs):
-        motion_calls.append(args)
+        motion_calls.append((args, kwargs))
         if len(motion_calls) == 3:
             arm_status.ctrl_mode = 0x01
 
@@ -91,8 +91,9 @@ def test_switch_piper_ctrl_mode_retries_until_target_mode_is_observed(
         lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
     )
 
-    ros_bridge.switch_piper_ctrl_mode(piper, 0x01, timeout=5.0)
+    ros_bridge.switch_piper_ctrl_mode(piper, 0x01, is_mit=True, timeout=5.0)
     assert len(motion_calls) == 3
+    assert all(kwargs == {"is_mit_mode": 0xAD} for _, kwargs in motion_calls)
 
 
 def test_switch_piper_ctrl_mode_times_out_when_target_mode_stays_unmatched(
@@ -104,7 +105,9 @@ def test_switch_piper_ctrl_mode_times_out_when_target_mode_stays_unmatched(
 
     piper = types.SimpleNamespace(
         GetArmStatus=lambda: types.SimpleNamespace(arm_status=arm_status),
-        MotionCtrl_2=lambda *args, **kwargs: motion_calls.append(args),
+        MotionCtrl_2=lambda *args, **kwargs: motion_calls.append(
+            (args, kwargs)
+        ),
     )
 
     monkeypatch.setattr(ros_bridge.time, "time", lambda: clock["now"])
@@ -115,6 +118,9 @@ def test_switch_piper_ctrl_mode_times_out_when_target_mode_stays_unmatched(
     )
 
     with pytest.raises(TimeoutError):
-        ros_bridge.switch_piper_ctrl_mode(piper, 0x01, timeout=0.5)
+        ros_bridge.switch_piper_ctrl_mode(
+            piper, 0x01, is_mit=False, timeout=0.5
+        )
 
     assert motion_calls
+    assert all(kwargs == {"is_mit_mode": 0x00} for _, kwargs in motion_calls)

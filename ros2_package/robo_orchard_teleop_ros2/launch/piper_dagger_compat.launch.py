@@ -111,6 +111,42 @@ def generate_launch_description():
             }
         ],
     )
+    left_aloha_orchestrator_node = Node(
+        package="robo_orchard_teleop_ros2",
+        executable="aloha_orchestrator",
+        name="robot_left_aloha_orchestrator",
+        namespace="/robot/left/aloha_orchestrator",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            {
+                "enable_services": [
+                    "/robot/left/enable_ctrl",
+                    "/robot/left_master/enable_ctrl",
+                ],
+                "muxer_release_service": "/robot/left/takeover_muxer/release_control",  # noqa: E501
+                "muxer_takeover_service": "/robot/left/takeover_muxer/trigger_takeover",  # noqa: E501
+            }
+        ],
+    )
+    right_aloha_orchestrator_node = Node(
+        package="robo_orchard_teleop_ros2",
+        executable="aloha_orchestrator",
+        name="robot_right_aloha_orchestrator",
+        namespace="/robot/right/aloha_orchestrator",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            {
+                "enable_services": [
+                    "/robot/right/enable_ctrl",
+                    "/robot/right_master/enable_ctrl",
+                ],
+                "muxer_release_service": "/robot/right/takeover_muxer/release_control",  # noqa: E501
+                "muxer_takeover_service": "/robot/right/takeover_muxer/trigger_takeover",  # noqa: E501
+            }
+        ],
+    )
 
     # 2. Aloha Hardware Controller Node
     left_master_controller_node = Node(
@@ -229,5 +265,7 @@ def generate_launch_description():
             right_takeover_muxer_node,
             right_master_controller_node,
             right_controller_node,
+            left_aloha_orchestrator_node,
+            right_aloha_orchestrator_node,
         ]
     )

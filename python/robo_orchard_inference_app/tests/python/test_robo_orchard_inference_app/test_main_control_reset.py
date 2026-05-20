@@ -93,24 +93,22 @@ from robo_orchard_inference_app.state import (  # noqa: E402
 class FakeRosHelper:
     def __init__(
         self,
-        any_master_in_teach_mode=False,
         disable_inference_result=True,
+        inference_node_active=True,
     ):
         self.calls = []
-        self.any_master_in_teach_mode = any_master_in_teach_mode
         self.disable_inference_result = disable_inference_result
+        self.inference_node_active = inference_node_active
 
-    def disable_inference(
-        self, allow_missing_service=False, quiet_benign=False
-    ):
+    def is_inference_node_active(self):
+        return self.inference_node_active
+
+    def disable_inference(self):
         self.calls.append("disable_inference")
         return self.disable_inference_result
 
     def reset_arm(self):
         self.calls.append("reset_arm")
-
-    def is_any_master_in_teach_mode(self):
-        return self.any_master_in_teach_mode
 
 
 class FakeLogger:
@@ -124,14 +122,14 @@ class FakeLogger:
 def _build_component(
     is_inference_service_running: bool,
     control_mode: str = "auto",
-    any_master_in_teach_mode: bool = False,
     is_recording: bool = False,
     disable_inference_result: bool = True,
+    inference_node_active: bool = True,
 ):
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = FakeRosHelper(
-        any_master_in_teach_mode=any_master_in_teach_mode,
         disable_inference_result=disable_inference_result,
+        inference_node_active=inference_node_active,
     )
     collecting_state = CollectingState(
         inference_state=InferenceState(
@@ -148,38 +146,32 @@ def _build_component(
     return component
 
 
-def test_reset_always_attempts_disable_before_reset():
-    component = _build_component(is_inference_service_running=False)
-
-    component.reset_arm_ctrl_callback()
-
-    assert component.ros_helper.calls == ["disable_inference", "reset_arm"]
-
-
-def test_reset_disables_inference_before_reset_when_running():
-    component = _build_component(is_inference_service_running=True)
-
-    component.reset_arm_ctrl_callback()
-
-    assert component.ros_helper.calls == ["disable_inference", "reset_arm"]
-
-
-def test_reset_aborts_with_warning_when_auto_and_master_in_teach_mode():
+def test_reset_disables_inference_then_resets_when_node_active():
     component = _build_component(
-        is_inference_service_running=False,
-        control_mode="auto",
-        any_master_in_teach_mode=True,
+        is_inference_service_running=True,
+        inference_node_active=True,
     )
 
     component.reset_arm_ctrl_callback()
 
-    assert component.ros_helper.calls == []
-    assert len(component.logger.warnings) == 1
+    assert component.ros_helper.calls == ["disable_inference", "reset_arm"]
+
+
+def test_reset_skips_disable_when_no_inference_node():
+    component = _build_component(
+        is_inference_service_running=False,
+        inference_node_active=False,
+    )
+
+    component.reset_arm_ctrl_callback()
+
+    assert component.ros_helper.calls == ["reset_arm"]
 
 
 def test_reset_aborts_when_disable_inference_fails():
     component = _build_component(
         is_inference_service_running=True,
+        inference_node_active=True,
         disable_inference_result=False,
     )
 

@@ -39,12 +39,12 @@ def main():
             host="localhost",
             port=9090,
             takeover_service_name=[
-                "/robot/left/takeover_muxer/trigger_takeover",
-                "/robot/right/takeover_muxer/trigger_takeover",
+                "/robot/left/aloha_orchestrator/takeover",
+                "/robot/right/aloha_orchestrator/takeover",
             ],
             release_service_name=[
-                "/robot/left/takeover_muxer/release_control",
-                "/robot/right/takeover_muxer/release_control",
+                "/robot/left/aloha_orchestrator/auto",
+                "/robot/right/aloha_orchestrator/auto",
             ],
             stop_service_name=[
                 "/robot/left/takeover_muxer/stop",
@@ -70,14 +70,6 @@ def main():
                 "/robot/right_master/reset_ctrl",
                 "/robot/right/reset_ctrl",
             ],
-            master_status_topics={
-                "left": "/master/status_left",
-                "right": "/master/status_right",
-            },
-            master_enable_ctrl_service_names={
-                "left": "/robot/left_master/enable_ctrl",
-                "right": "/robot/right_master/enable_ctrl",
-            },
             record_handeye_calib_service_name="/handeye_calib/record_data",
             save_handeye_calib_service_name="/handeye_calib/save_data",
             static_transform_service_name="/set_static_transforms",

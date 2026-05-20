@@ -138,6 +138,13 @@ def _build_node(
     return node
 
 
+def test_is_controlable_accepts_raw_sdk_can_mode_value():
+    node = _build_node(ctrl_mode=0x01)
+    node._enable_flag = True
+
+    assert node.is_controlable() is True
+
+
 def test_enable_arm_ctrl_in_active_teach_mode_does_not_attempt_recovery(
     monkeypatch,
 ):
@@ -159,7 +166,7 @@ def test_enable_arm_ctrl_in_active_teach_mode_does_not_attempt_recovery(
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
-    ret = node.enable_arm_ctrl(force_reset=True)
+    ret = node.enable_arm_ctrl()
 
     assert ret is False
     assert node._enable_flag is False
@@ -192,11 +199,11 @@ def test_enable_arm_ctrl_in_post_teach_mode_succeeds_after_ctrl_mode_recovery(
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
-    ret = node.enable_arm_ctrl(force_reset=True)
+    ret = node.enable_arm_ctrl()
 
     assert ret is True
     assert node._enable_flag is True
-    assert calls == ["switch_ctrl_mode", "set_ctrl_method"]
+    assert calls == ["switch_ctrl_mode"]
 
 
 def test_enable_arm_ctrl_in_post_teach_mode_does_not_fail_on_immediate_status(
@@ -224,11 +231,11 @@ def test_enable_arm_ctrl_in_post_teach_mode_does_not_fail_on_immediate_status(
     monkeypatch.setattr(single_module, "enable_arm_ctrl", fake_enable)
     monkeypatch.setattr(single_module, "set_ctrl_method", fake_set_ctrl_method)
 
-    ret = node.enable_arm_ctrl(force_reset=True)
+    ret = node.enable_arm_ctrl()
 
     assert ret is True
     assert node._enable_flag is True
-    assert calls == ["switch_ctrl_mode", "set_ctrl_method"]
+    assert calls == ["switch_ctrl_mode"]
 
 
 def test_enable_arm_ctrl_in_fresh_power_on_does_not_fail_on_stale_status(
@@ -309,8 +316,8 @@ def test_enable_ctrl_service_retries_when_flag_set_but_not_controlable(
         error=lambda *args, **kwargs: None,
     )
 
-    def fake_enable_arm_ctrl(force_reset=False):
-        calls.append(force_reset)
+    def fake_enable_arm_ctrl():
+        calls.append("enable")
         node._arm_status.ctrl_mode = 0x01
         return True
 
@@ -323,7 +330,7 @@ def test_enable_ctrl_service_retries_when_flag_set_but_not_controlable(
     assert ret is response
     assert response.success is True
     assert response.message == "Arm enabled successfully."
-    assert calls == [True]
+    assert calls == ["enable"]
 
 
 def test_auto_enable_timeout_does_not_abort_node_startup(monkeypatch):

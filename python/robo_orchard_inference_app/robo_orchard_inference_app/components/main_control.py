@@ -255,14 +255,10 @@ class MainControlComponent(ComponentBase):
                 (show_name, value),
             ) in zip(mode_cols, modes, strict=False):
                 with col:
-                    on_click = {
-                        "takeover": self.ros_helper.takeover_control,
-                        "auto": self.ros_helper.release_to_auto,
-                        "stop": self.ros_helper.stop_control,
-                    }[value]
                     st.button(
                         show_name.capitalize(),
-                        on_click=on_click,
+                        on_click=self.ros_helper.set_control_mode,
+                        args=(value,),
                         use_container_width=True,
                         key=f"{self.key_prefix}_set_control_mode_{value}",
                     )
@@ -304,22 +300,15 @@ class MainControlComponent(ComponentBase):
 
     def reset_arm_ctrl_callback(self):
         """Resets the robot arm controllers."""
-        state = self.collecting_state.inference_state
-        if (
-            state.control_mode == "auto"
-            and self.ros_helper.is_any_master_in_teach_mode()
-        ):
-            self.logger.warning(
-                "Reset is blocked: master arm is in teach mode."
-            )
-            return
-        if not self.ros_helper.disable_inference(
-            allow_missing_service=True, quiet_benign=True
-        ):
-            self.logger.warning(
-                "Reset is blocked: failed to disable inference service."
-            )
-            return
+        # Disabling inference gates the reset only when an inference node
+        # is running; with none launched nothing can contend with the
+        # reset, so skip the gate instead of blocking on a missing service.
+        if self.ros_helper.is_inference_node_active():
+            if not self.ros_helper.disable_inference():
+                self.logger.warning(
+                    "Reset is blocked: failed to disable inference service."
+                )
+                return
         self.ros_helper.reset_arm()
 
     def _render_handeye_calib_panel(self):

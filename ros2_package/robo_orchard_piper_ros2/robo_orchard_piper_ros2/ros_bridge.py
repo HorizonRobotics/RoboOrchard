@@ -292,7 +292,6 @@ def enable_arm_ctrl(
     piper: C_PiperInterface,
     timeout: float = 5,
 ):
-    timeout = 5
     start_time = time.time()
 
     while True:
@@ -317,6 +316,7 @@ def enable_arm_ctrl(
 def switch_piper_ctrl_mode(
     piper: C_PiperInterface,
     target_mode: int,
+    is_mit: bool,
     timeout: float = 5,
 ):
     start_time = time.time()
@@ -326,7 +326,9 @@ def switch_piper_ctrl_mode(
             return
 
         elapsed_time = time.time() - start_time
-        piper.MotionCtrl_2(target_mode, 0x01, 100, 0x00)
+        piper.MotionCtrl_2(
+            target_mode, 0x01, 100, is_mit_mode=0xAD if is_mit else 0x00
+        )  # noqa: E501
 
         if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
             return
@@ -342,7 +344,5 @@ def switch_piper_ctrl_mode(
 def set_ctrl_method(piper: C_PiperInterface, is_mit: bool = False):
     if is_mit:
         piper.MotionCtrl_2(0x01, 0x01, 100, is_mit_mode=0xAD)
-        for idx in range(6):
-            piper.JointMitCtrl(idx + 1, 0, 45, 10, 0.8, 0)
     else:
         piper.MotionCtrl_2(0x01, 0x01, 100, is_mit_mode=0x00)

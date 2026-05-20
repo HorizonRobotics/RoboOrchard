@@ -127,6 +127,7 @@ setup(
             "take_over = robo_orchard_teleop_ros2.take_over.node:main",  # noqa: E501
             "pico_vr_trigger = robo_orchard_teleop_ros2.take_over.trigger.pico_vr:main",  # noqa: E501
             "keyboard_trigger = robo_orchard_teleop_ros2.take_over.trigger.keyboard:main",  # noqa: E501
+            "aloha_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.aloha:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
         ],
     },
