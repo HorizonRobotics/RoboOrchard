@@ -602,16 +602,46 @@ class MainControlComponent(ComponentBase):
     def _scripted_motion_base_commands(self) -> list[list[str]]:
         cfg = self.launch_cfg.scripted_motion
         candidates: list[list[str]] = []
-        if cfg.command:
-            candidates.append(list(cfg.command))
 
         repo_root = Path(__file__).resolve().parents[4]
         script_path = repo_root / (
             "ros2_package/robo_orchard_teleop_ros2/"
             "robo_orchard_teleop_ros2/scripted/joint_master.py"
         )
+        install_setup_path = repo_root / "ros2_package/install/setup.bash"
         if script_path.exists():
-            candidates.append(["python3", str(script_path)])
+            if install_setup_path.exists():
+                candidates.append(
+                    [
+                        "bash",
+                        "-lc",
+                        "source "
+                        + shlex.quote(str(install_setup_path))
+                        + " && exec python3 "
+                        + shlex.quote(str(script_path))
+                        + ' "$@"',
+                        "scripted_joint_master",
+                    ]
+                )
+            else:
+                candidates.append(["python3", str(script_path)])
+
+        if cfg.command:
+            if install_setup_path.exists():
+                candidates.append(
+                    [
+                        "bash",
+                        "-lc",
+                        "source "
+                        + shlex.quote(str(install_setup_path))
+                        + " && exec "
+                        + " ".join(shlex.quote(part) for part in cfg.command)
+                        + ' "$@"',
+                        "scripted_joint_master",
+                    ]
+                )
+            else:
+                candidates.append(list(cfg.command))
 
         candidates.append(
             [
@@ -674,6 +704,8 @@ class MainControlComponent(ComponentBase):
 
     def _stop_scripted_motion_callback(self):
         self._stop_scripted_motion_and_robot()
+        scripted_reset = self.launch_cfg.scripted_motion.reset_position
+        self.ros_helper.reset_arm(position=scripted_reset or None)
 
     def _start_scripted_motion_callback(
         self,
@@ -687,12 +719,10 @@ class MainControlComponent(ComponentBase):
             self.logger.warning("Scripted motion is already running.")
             return
 
-        if self.collecting_state.is_recording:
-            self.logger.warning(
-                "Recording is active; scripted motion will use the MIT "
-                "params already applied on the robot."
-            )
-        elif not self.ros_helper.set_mit_params(**mit_params):
+        scripted_mit_params = dict(mit_params)
+        scripted_mit_params["master_enabled"] = True
+        scripted_mit_params["follower_enabled"] = True
+        if not self.ros_helper.set_mit_params(**scripted_mit_params):
             self.ros_helper.set_control_mode("stop")
             return
 

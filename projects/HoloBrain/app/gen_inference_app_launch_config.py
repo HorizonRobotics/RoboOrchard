@@ -147,6 +147,7 @@ def main():
             amplitude_scale=1.0,
             frequency_scale=1.0,
             rate_hz=100.0,
+            reset_position=[0.0, 0.10, -0.70, 0.0, 0.0, 0.0, 0.0],
         ),
         file_server_uri="http://localhost:8000",
     )

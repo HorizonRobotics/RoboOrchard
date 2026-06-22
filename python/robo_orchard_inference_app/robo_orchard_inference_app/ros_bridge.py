@@ -376,8 +376,63 @@ class RosServiceHelper:
             timeout=25.0,
         )
 
-    def reset_arm(self) -> bool:
-        """Sends a request to reset the robot arm controllers to zero."""
+    def disable_arm(self) -> bool:
+        """Sends a request to disable the robot arm."""
+        return self._call_services(
+            service_names=self.cfg.disable_arm_service_name,
+            success_msg="/DisableArm command sent successfully!",
+            success_callback=lambda: setattr(
+                self.state, "arm_ctrl_status", "disabled"
+            ),
+            timeout=25.0,
+        )
+
+    def _push_reset_position(self, reset_position: list[float]) -> bool:
+        """Pushes the given reset pose to the follower controllers."""
+        if len(reset_position) != 7:
+            self.logger.error(
+                "reset_position must have 7 joint values, got "
+                f"{len(reset_position)}."
+            )
+            return False
+        request_data = {
+            "parameters": [
+                {
+                    "name": "reset_position",
+                    "value": {
+                        "type": 8,
+                        "double_array_value": [
+                            float(v) for v in reset_position
+                        ],
+                    },
+                }
+            ]
+        }
+        ok = True
+        for node_name in self.cfg.mit_control.follower_param_node_names:
+            if not self._set_param(
+                node_name=node_name, request_data=request_data
+            ):
+                ok = False
+        return ok
+
+    def reset_arm(self, position: list[float] | None = None) -> bool:
+        """Sends a request to reset the robot arm controllers.
+
+        Args:
+            position: Optional reset pose (7 joint values) overriding the
+                configured standard reset pose for this call only. The pose
+                is pushed to the controllers on every reset, so one caller's
+                override never leaks into the next reset.
+        """
+        if position:
+            reset_position = list(position)
+        elif self.cfg.reset_position:
+            reset_position = list(self.cfg.reset_position)
+        else:
+            reset_position = [0.0] * 7
+        if not self._push_reset_position(reset_position):
+            return False
         return self._call_services(
             service_names=self.cfg.reset_arm_service_name,
             success_msg="Robot arm controllers reset successfully!",

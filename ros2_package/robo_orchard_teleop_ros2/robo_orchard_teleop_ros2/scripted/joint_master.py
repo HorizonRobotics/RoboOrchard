@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.task import Future
 from sensor_msgs.msg import JointState
 
 
@@ -108,6 +109,7 @@ class ScriptedJointMasterNode(Node):
         self.right = ArmState("right")
         self._started = False
         self._done = False
+        self._done_future: Future = Future()
         self._state_wait_logged = False
         self._start_time = self.get_clock().now()
 
@@ -276,7 +278,8 @@ class ScriptedJointMasterNode(Node):
         if self.duration_s > 0.0 and elapsed > self.duration_s:
             self._done = True
             self.get_logger().info("Scripted joint trajectory complete.")
-            rclpy.shutdown()
+            if not self._done_future.done():
+                self._done_future.set_result(None)
             return
 
         if self.publish_left:
@@ -299,7 +302,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = ScriptedJointMasterNode()
     try:
-        rclpy.spin(node)
+        rclpy.spin_until_future_complete(node, node._done_future)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
