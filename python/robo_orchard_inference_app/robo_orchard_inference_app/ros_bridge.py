@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 import atexit
-from pathlib import Path
+import os
 from typing import Callable, Literal
 
 import roslibpy
@@ -24,13 +24,17 @@ from robo_orchard_inference_app.config import ROSBridgeCfg
 from robo_orchard_inference_app.logger import Logger
 from robo_orchard_inference_app.state import InferenceState
 
-
 MIT_PARAM_NAMES = (
     "enable_mit_ctrl",
     "mit_kp",
     "mit_kd",
     "mit_vel_ref",
     "mit_torque_ref",
+    "mit_gravity_compensation_enabled",
+    "mit_gravity_compensation_urdf_path",
+    "mit_gravity_compensation_scale",
+    "mit_gravity_compensation_scale_per_joint",
+    "mit_gravity_compensation_max_t_ref",
 )
 
 
@@ -57,7 +61,9 @@ class RosServiceHelper:
         self.state = inference_state
         self.logger = logger
         self._is_recording = False
-        self._last_requested_mit_params: dict[str, bool | float] | None = None
+        self._last_requested_mit_params: (
+            dict[str, bool | float | str] | None
+        ) = None
         atexit.register(self.cleanup)
 
     def _check_client_connected(self) -> bool:
@@ -180,13 +186,22 @@ class RosServiceHelper:
             return False
 
     @staticmethod
-    def _python_value_to_parameter_value(value: bool | float) -> dict:
+    def _python_value_to_parameter_value(
+        value: bool | float | str | list
+    ) -> dict:
         if isinstance(value, bool):
             return {"type": 1, "bool_value": value}
+        if isinstance(value, str):
+            return {"type": 4, "string_value": value}
+        if isinstance(value, (list, tuple)):
+            return {
+                "type": 8,
+                "double_array_value": [float(v) for v in value],
+            }
         return {"type": 3, "double_value": float(value)}
 
     def _set_params(
-        self, node_name: str, params: dict[str, bool | float]
+        self, node_name: str, params: dict[str, bool | float | str | list]
     ) -> bool:
         request_data = {
             "parameters": [
@@ -301,9 +316,20 @@ class RosServiceHelper:
         follower_kd: float,
         follower_vel_ref: float,
         follower_torque_ref: float,
+        follower_velocity_feedforward: bool | None = None,
+        follower_gravity_compensation_alpha: float | None = None,
+        follower_gravity_compensation_enabled: bool | None = None,
+        follower_gravity_compensation_urdf_path: str | None = None,
+        follower_gravity_compensation_scale: float | None = None,
+        follower_gravity_compensation_scale_per_joint: (
+            list[float] | None
+        ) = None,
+        follower_gravity_compensation_max_t_ref: float | None = None,
     ) -> bool:
         mit_cfg = self.cfg.mit_control
-        requested_params: list[tuple[str, dict[str, bool | float]]] = []
+        requested_params: list[
+            tuple[str, dict[str, bool | float | str | list]]
+        ] = []
         for node_name in mit_cfg.master_param_node_names:
             requested_params.append(
                 (
@@ -317,19 +343,51 @@ class RosServiceHelper:
                     },
                 )
             )
-        for node_name in mit_cfg.follower_param_node_names:
-            requested_params.append(
-                (
-                    node_name,
-                    {
-                        "enable_mit_ctrl": follower_enabled,
-                        "mit_kp": follower_kp,
-                        "mit_kd": follower_kd,
-                        "mit_vel_ref": follower_vel_ref,
-                        "mit_torque_ref": follower_torque_ref,
-                    },
-                )
+        follower_params: dict[str, bool | float | str | list] = {
+            "enable_mit_ctrl": follower_enabled,
+            "mit_kp": follower_kp,
+            "mit_kd": follower_kd,
+            "mit_vel_ref": follower_vel_ref,
+            "mit_torque_ref": follower_torque_ref,
+        }
+        if follower_velocity_feedforward is not None:
+            follower_params["mit_velocity_feedforward"] = bool(
+                follower_velocity_feedforward
             )
+        if follower_gravity_compensation_alpha is not None:
+            follower_gravity_compensation_alpha = float(
+                follower_gravity_compensation_alpha
+            )
+            # Gravity compensation is always enabled; alpha == 0 is the
+            # no-op (the scale multiplies the computed torque to zero), so
+            # there is no separate enable/scale state to keep in sync.
+            follower_gravity_compensation_enabled = True
+            follower_gravity_compensation_scale = (
+                follower_gravity_compensation_alpha
+            )
+        if follower_gravity_compensation_enabled is not None:
+            follower_params[
+                "mit_gravity_compensation_enabled"
+            ] = follower_gravity_compensation_enabled
+        if follower_gravity_compensation_urdf_path is not None:
+            follower_params["mit_gravity_compensation_urdf_path"] = (
+                follower_gravity_compensation_urdf_path
+            )
+        if follower_gravity_compensation_scale is not None:
+            follower_params["mit_gravity_compensation_scale"] = (
+                follower_gravity_compensation_scale
+            )
+        if follower_gravity_compensation_scale_per_joint is not None:
+            follower_params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v)
+                for v in follower_gravity_compensation_scale_per_joint
+            ]
+        if follower_gravity_compensation_max_t_ref is not None:
+            follower_params["mit_gravity_compensation_max_t_ref"] = (
+                follower_gravity_compensation_max_t_ref
+            )
+        for node_name in mit_cfg.follower_param_node_names:
+            requested_params.append((node_name, dict(follower_params)))
 
         if not requested_params:
             self.logger.warning("No MIT parameter nodes are configured.")
@@ -351,6 +409,30 @@ class RosServiceHelper:
             "follower_vel_ref": follower_vel_ref,
             "follower_torque_ref": follower_torque_ref,
         }
+        if follower_gravity_compensation_alpha is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_alpha"
+            ] = follower_gravity_compensation_alpha
+        if follower_gravity_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_enabled"
+            ] = follower_gravity_compensation_enabled
+        if follower_gravity_compensation_urdf_path is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_urdf_path"
+            ] = follower_gravity_compensation_urdf_path
+        if follower_gravity_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_scale"
+            ] = follower_gravity_compensation_scale
+        if follower_gravity_compensation_scale_per_joint is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_scale_per_joint"
+            ] = list(follower_gravity_compensation_scale_per_joint)
+        if follower_gravity_compensation_max_t_ref is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_max_t_ref"
+            ] = follower_gravity_compensation_max_t_ref
 
         self.logger.info(
             "MIT params set: "
@@ -361,9 +443,87 @@ class RosServiceHelper:
             f"follower enabled={follower_enabled}, "
             f"follower kp={follower_kp}, follower kd={follower_kd}, "
             f"follower vel_ref={follower_vel_ref}, "
-            f"follower torque_ref={follower_torque_ref}"
+            f"follower torque_ref={follower_torque_ref}, "
+            "follower gravity_compensation_alpha="
+            f"{follower_gravity_compensation_alpha}, "
+            "follower gravity_compensation_enabled="
+            f"{follower_gravity_compensation_enabled}, "
+            "follower gravity_compensation_urdf_path="
+            f"{follower_gravity_compensation_urdf_path}, "
+            "follower gravity_compensation_scale="
+            f"{follower_gravity_compensation_scale}, "
+            "follower gravity_compensation_scale_per_joint="
+            f"{follower_gravity_compensation_scale_per_joint}, "
+            "follower gravity_compensation_max_t_ref="
+            f"{follower_gravity_compensation_max_t_ref}"
         )
         return True
+
+    def set_follower_gravity_compensation_alpha(
+        self, alpha: float
+    ) -> bool:
+        alpha = float(alpha)
+        # Gravity compensation stays enabled; alpha == 0 yields zero torque.
+        enabled = True
+        mit_cfg = self.cfg.mit_control
+        if not mit_cfg.follower_param_node_names:
+            return True
+        params: dict[str, bool | float | str | list] = {
+            "mit_gravity_compensation_enabled": enabled,
+            "mit_gravity_compensation_scale": alpha,
+        }
+        # Apply the per-joint scale alongside, so the firmware's ~4x execution
+        # on joints 1-3 is corrected whenever gravity comp is toggled on.
+        per_joint = list(
+            mit_cfg.default_follower_gravity_compensation_scale_per_joint
+        )
+        if per_joint:
+            params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v) for v in per_joint
+            ]
+        for node_name in mit_cfg.follower_param_node_names:
+            if not self._set_params(node_name, params):
+                return False
+        self.logger.info(
+            "Follower gravity compensation "
+            f"alpha={alpha}, enabled={enabled}, "
+            f"scale_per_joint={per_joint}"
+        )
+        return True
+
+    def set_follower_gravity_compensation(self, enabled: bool) -> bool:
+        return self.set_follower_gravity_compensation_alpha(
+            1.0 if enabled else 0.0
+        )
+
+    def set_follower_gravity_record_dir(
+        self, directory: str | None
+    ) -> bool:
+        """Point per-timestep gravity recording at an episode ``directory``.
+
+        Writes one ``gravity_<node>.csv`` per follower node into
+        ``directory``. Passing ``None``/empty disables recording on the
+        follower nodes.
+        """
+        mit_cfg = self.cfg.mit_control
+        if not mit_cfg.follower_param_node_names:
+            return True
+        ok = True
+        for node_name in mit_cfg.follower_param_node_names:
+            if directory:
+                label = node_name.strip("/").split("/")[-1] or "follower"
+                path = os.path.join(directory, f"gravity_{label}.csv")
+            else:
+                path = ""
+            if not self._set_params(
+                node_name,
+                {"mit_gravity_compensation_record_path": path},
+            ):
+                ok = False
+        self.logger.info(
+            f"Follower gravity recording dir set to {directory!r}"
+        )
+        return ok
 
     def enable_arm(self) -> bool:
         """Sends a request to enable the robot arm."""

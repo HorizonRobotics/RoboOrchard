@@ -29,8 +29,12 @@ from robo_orchard_piper_ros2.ros_bridge import (
     get_arm_state,
     get_arm_status,
     joint_control,
+    joint_mit_control,
     set_ctrl_method,
 )
+
+# Raw joint feedback is in 0.001 degree; JointMitCtrl expects radians.
+RAW_JOINT_TO_RAD = 0.017444 / 1000.0
 
 
 class RobotStatusError(Exception):
@@ -56,9 +60,13 @@ class PiperAlohaNode(Node):
         self.declare_parameter("gripper_val_mutiple", 1)
         self.declare_parameter("sync_frequency", 200.0)
         self.declare_parameter("enable_mit_ctrl", False)
+        self.declare_parameter("mit_kp", 10.0)
+        self.declare_parameter("mit_kd", 0.8)
 
         self.declare_parameter("enable_master_ctrl", False)
         self.declare_parameter("enable_master_mit_ctrl", False)
+        self.declare_parameter("master_mit_kp", 10.0)
+        self.declare_parameter("master_mit_kd", 0.8)
 
         self.master_can_port = (
             self.get_parameter("master_can_port")
@@ -85,6 +93,12 @@ class PiperAlohaNode(Node):
             .get_parameter_value()
             .bool_value
         )
+        self.mit_kp = (
+            self.get_parameter("mit_kp").get_parameter_value().double_value
+        )
+        self.mit_kd = (
+            self.get_parameter("mit_kd").get_parameter_value().double_value
+        )
         self.enable_master_ctrl = (
             self.get_parameter("enable_master_ctrl")
             .get_parameter_value()
@@ -94,6 +108,16 @@ class PiperAlohaNode(Node):
             self.get_parameter("enable_master_mit_ctrl")
             .get_parameter_value()
             .bool_value
+        )
+        self.master_mit_kp = (
+            self.get_parameter("master_mit_kp")
+            .get_parameter_value()
+            .double_value
+        )
+        self.master_mit_kd = (
+            self.get_parameter("master_mit_kd")
+            .get_parameter_value()
+            .double_value
         )
         self.sync_frequency = (
             self.get_parameter("sync_frequency")
@@ -105,7 +129,8 @@ class PiperAlohaNode(Node):
             f"master can port = {self.master_can_port}, "
             f"slave can port = {self.slave_can_port}, "
             f"sync frequency = {self.sync_frequency} Hz, "
-            f"enable_mit_ctrl = {self.enable_mit_ctrl}"
+            f"enable_mit_ctrl = {self.enable_mit_ctrl}, "
+            f"mit_kp = {self.mit_kp}, mit_kd = {self.mit_kd}"
         )
 
         # Create two Piper interface instances, one for master, one for slave
@@ -200,14 +225,33 @@ class PiperAlohaNode(Node):
         # Sync master to slave if enabled
         master_joints_raw = self.master_piper.GetArmJointMsgs()
 
-        self.slave_piper.JointCtrl(
-            master_joints_raw.joint_state.joint_1,
-            master_joints_raw.joint_state.joint_2,
-            master_joints_raw.joint_state.joint_3,
-            master_joints_raw.joint_state.joint_4,
-            master_joints_raw.joint_state.joint_5,
-            master_joints_raw.joint_state.joint_6,
-        )
+        if self.enable_mit_ctrl:
+            joint_data = JointState()
+            joint_data.position = [
+                master_joints_raw.joint_state.joint_1 * RAW_JOINT_TO_RAD,
+                master_joints_raw.joint_state.joint_2 * RAW_JOINT_TO_RAD,
+                master_joints_raw.joint_state.joint_3 * RAW_JOINT_TO_RAD,
+                master_joints_raw.joint_state.joint_4 * RAW_JOINT_TO_RAD,
+                master_joints_raw.joint_state.joint_5 * RAW_JOINT_TO_RAD,
+                master_joints_raw.joint_state.joint_6 * RAW_JOINT_TO_RAD,
+            ]
+            # The gripper is mirrored from raw master feedback below.
+            joint_mit_control(
+                self.slave_piper,
+                joint_data=joint_data,
+                mit_kp=self.mit_kp,
+                mit_kd=self.mit_kd,
+                has_gripper=False,
+            )
+        else:
+            self.slave_piper.JointCtrl(
+                master_joints_raw.joint_state.joint_1,
+                master_joints_raw.joint_state.joint_2,
+                master_joints_raw.joint_state.joint_3,
+                master_joints_raw.joint_state.joint_4,
+                master_joints_raw.joint_state.joint_5,
+                master_joints_raw.joint_state.joint_6,
+            )
 
         if self.gripper_exist:
             master_gripper_raw = self.master_piper.GetArmGripperMsgs()
@@ -265,12 +309,22 @@ class PiperAlohaNode(Node):
 
     def joint_cmd_callback(self, msg: JointState):
         if self.can_ctrl_master():
-            joint_control(
-                self.master_piper,
-                joint_data=msg,
-                has_gripper=self.gripper_exist,
-                gripper_val_mutiple=self.gripper_val_mutiple,
-            )
+            if self.enable_master_mit_ctrl:
+                joint_mit_control(
+                    self.master_piper,
+                    joint_data=msg,
+                    mit_kp=self.master_mit_kp,
+                    mit_kd=self.master_mit_kd,
+                    has_gripper=self.gripper_exist,
+                    gripper_val_mutiple=self.gripper_val_mutiple,
+                )
+            else:
+                joint_control(
+                    self.master_piper,
+                    joint_data=msg,
+                    has_gripper=self.gripper_exist,
+                    gripper_val_mutiple=self.gripper_val_mutiple,
+                )
 
 
 def main(args=None):

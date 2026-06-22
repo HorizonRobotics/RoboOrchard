@@ -43,6 +43,13 @@ def generate_launch_description():
             DeclareLaunchArgument("rate_hz", default_value="100.0"),
             DeclareLaunchArgument("start_delay_s", default_value="1.0"),
             DeclareLaunchArgument("start_trigger_file", default_value=""),
+            DeclareLaunchArgument("ready_file", default_value=""),
+            DeclareLaunchArgument(
+                "min_command_subscribers", default_value="0"
+            ),
+            DeclareLaunchArgument(
+                "command_subscriber_wait_timeout_s", default_value="2.0"
+            ),
             DeclareLaunchArgument("duration_s", default_value="10.0"),
             DeclareLaunchArgument("amplitude_scale", default_value="1.0"),
             DeclareLaunchArgument("frequency_scale", default_value="1.0"),
@@ -87,6 +94,17 @@ def generate_launch_description():
                         ),
                         "start_trigger_file": LaunchConfiguration(
                             "start_trigger_file"
+                        ),
+                        "ready_file": LaunchConfiguration("ready_file"),
+                        "min_command_subscribers": ParameterValue(
+                            LaunchConfiguration("min_command_subscribers"),
+                            value_type=int,
+                        ),
+                        "command_subscriber_wait_timeout_s": ParameterValue(
+                            LaunchConfiguration(
+                                "command_subscriber_wait_timeout_s"
+                            ),
+                            value_type=float,
                         ),
                         "duration_s": ParameterValue(
                             LaunchConfiguration("duration_s"), value_type=float
