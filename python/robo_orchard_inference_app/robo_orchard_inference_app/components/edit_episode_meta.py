@@ -210,8 +210,20 @@ class EditEpisodeMetaComponent(ComponentBase):
                 self.rerun_callback()
 
     def _render_tf_directory(self):
-        options = self.task_cfg.candidate_tf_directories
-        current = self.episode_meta.tf_directory
+        static_transform_service_name = getattr(
+            self.launch_cfg.ros_bridge, "static_transform_service_name", None
+        )
+        if not static_transform_service_name:
+            if getattr(self.episode_meta, "tf_directory", ""):
+                self.logger.warn(
+                    "Static transform service is not configured. "
+                    "Reset tf_directory selection."
+                )
+                self.episode_meta.tf_directory = ""
+            return
+
+        options = getattr(self.task_cfg, "candidate_tf_directories", [])
+        current = getattr(self.episode_meta, "tf_directory", "")
 
         cols = st.columns([1, 3])
         with cols[0]:

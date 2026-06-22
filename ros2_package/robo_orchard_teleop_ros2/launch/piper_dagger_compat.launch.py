@@ -148,9 +148,7 @@ def generate_launch_description():
         default_value="[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]",
         description=(
             "Per-joint multiplier (on top of the global scale) for follower "
-            "gravity compensation. The Piper firmware executes commanded MIT "
-            "torque at ~4x on joints 1-3 and ~1x on 4-6, so use "
-            "[0.25, 0.25, 0.25, 1.0, 1.0, 1.0] for correct compensation."
+            "gravity compensation."
         ),
     )
     follower_gravity_compensation_max_t_ref_arg = DeclareLaunchArgument(

@@ -541,8 +541,7 @@ class RosServiceHelper:
             "mit_gravity_compensation_enabled": enabled,
             "mit_gravity_compensation_scale": alpha,
         }
-        # Apply the per-joint scale alongside, so the firmware's ~4x execution
-        # on joints 1-3 is corrected whenever gravity comp is toggled on.
+        # Keep the configured per-joint scale in sync when alpha changes.
         per_joint = list(
             mit_cfg.default_follower_gravity_compensation_scale_per_joint
         )

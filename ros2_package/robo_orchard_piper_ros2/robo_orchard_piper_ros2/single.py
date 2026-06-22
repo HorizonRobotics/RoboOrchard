@@ -97,10 +97,8 @@ class PiperSingleControlNode(Node):
         self.declare_parameter("mit_gravity_compensation_enabled", False)
         self.declare_parameter("mit_gravity_compensation_urdf_path", "")
         self.declare_parameter("mit_gravity_compensation_scale", 1.0)
-        # Per-joint multiplier on top of the global scale. Piper firmware
-        # executes commanded MIT torque at ~4x on joints 1-3 and ~1x on 4-6,
-        # so correct gravity compensation needs e.g. [0.25,0.25,0.25,1,1,1].
-        # Empty (default) reproduces the original single-scale behaviour.
+        # Per-joint multiplier on top of the global scale. The default
+        # reproduces the original single-scale behaviour.
         self.declare_parameter(
             "mit_gravity_compensation_scale_per_joint", [1.0] * 6
         )
