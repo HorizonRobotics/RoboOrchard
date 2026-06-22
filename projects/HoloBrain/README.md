@@ -37,7 +37,9 @@ Open the file and modify the **USB_PORTS** field according to your actual hardwa
 
 ### [Host] Configure Extrinsic Parameters
 
-Due to varying environmental setups, extrinsic parameters will differ. `tf_publisher` starts with an empty in-memory state and receives static transforms through the runtime `/set_static_transforms` service. Hand-eye calibration results — or any JSON following the same calibration-result schema, including hand-authored structural transforms — can be placed directly into the `tf_directory` selected from the inference app.
+Due to varying environmental setups, extrinsic parameters will differ. `tf_publisher` starts with an empty in-memory state and receives static transforms through the runtime `/set_static_transforms` service. Hand-eye calibration results -- or any JSON following the same calibration-result schema, including hand-authored structural transforms -- can be placed directly into the `tf_directory` selected from the inference app.
+
+The app launch script generates a task config that preserves the latest cached task settings and adds `data/tf/default_static` as an available TF directory. `data/tf/default_static` contains the baseline static transforms that were previously generated from the hard-coded TF template.
 
 ### [Host] Start Docker
 

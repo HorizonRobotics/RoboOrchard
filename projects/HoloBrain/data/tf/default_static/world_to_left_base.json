@@ -1,0 +1,17 @@
+{
+    "parent_frame": "world",
+    "child_frame": "left_base_link",
+    "result": {
+        "position": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+        ]
+    }
+}

@@ -65,6 +65,8 @@ def test_mit_parameter_helpers_include_mode():
     )
 
     assert "enable_mit_ctrl" in MIT_PARAM_NAMES
+    assert "mit_velocity_feedforward" in MIT_PARAM_NAMES
+    assert "mit_velocity_feedforward_source" in MIT_PARAM_NAMES
     assert "mit_gravity_compensation_enabled" in MIT_PARAM_NAMES
     assert "mit_gravity_compensation_urdf_path" in MIT_PARAM_NAMES
     assert "mit_gravity_compensation_scale" in MIT_PARAM_NAMES
