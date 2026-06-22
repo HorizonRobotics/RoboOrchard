@@ -56,11 +56,9 @@ class PinocchioGravityCompensator:
         self.urdf_path = ""
         self.joint_names = [f"joint{i}" for i in range(1, 7)]
         self.scale = 1.0
-        # Per-joint multiplier applied on top of ``scale``. Needed because the
-        # Piper firmware executes commanded MIT torque at ~4x on joints 1-3 and
-        # ~1x on 4-6, so a single global scale cannot compensate gravity
-        # correctly for both motor groups. An empty/short vector is padded with
-        # 1.0, which reproduces the original single-scale behaviour.
+        # Per-joint multiplier applied on top of ``scale``. An empty/short
+        # vector is padded with 1.0, which reproduces the original single-scale
+        # behaviour.
         self.per_joint_scale = [1.0] * 6
         self.max_abs_t_ref = 8.0
         self._pin = None
@@ -626,6 +624,34 @@ def enable_arm_ctrl(
         flag = get_enable_flag(piper)
 
         if flag:
+            return
+
+        if elapsed_time > timeout:
+            break
+
+        time.sleep(1)
+
+    raise TimeoutError
+
+
+def switch_piper_ctrl_mode(
+    piper: C_PiperInterface,
+    target_mode: int,
+    is_mit: bool,
+    timeout: float = 5,
+):
+    start_time = time.time()
+
+    while True:
+        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
+            return
+
+        elapsed_time = time.time() - start_time
+        piper.MotionCtrl_2(
+            target_mode, 0x01, 100, is_mit_mode=0xAD if is_mit else 0x00
+        )  # noqa: E501
+
+        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
             return
 
         if elapsed_time > timeout:

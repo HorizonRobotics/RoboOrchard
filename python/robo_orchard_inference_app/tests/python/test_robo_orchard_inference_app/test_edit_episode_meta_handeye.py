@@ -17,6 +17,7 @@
 # ruff: noqa: E402, I001
 
 import sys
+import signal
 import types
 from pathlib import Path
 
@@ -65,6 +66,7 @@ _roslibpy_stub.core = types.SimpleNamespace(RosTimeoutError=RuntimeError)
 sys.modules.setdefault("roslibpy", _roslibpy_stub)
 
 _psutil_stub = types.ModuleType("psutil")
+_psutil_stub.signal = signal
 sys.modules.setdefault("psutil", _psutil_stub)
 
 _polling2_stub = types.ModuleType("polling2")
@@ -82,8 +84,15 @@ _version_stub.__full_version__ = "0.0.0"
 _version_stub.__git_hash__ = "test"
 sys.modules.setdefault("robo_orchard_inference_app.version", _version_stub)
 
-from robo_orchard_inference_app.config import TaskCfg
-from robo_orchard_inference_app.state import EpisodeMeta
+
+def _task_cfg(candidate_tf_directories):
+    return types.SimpleNamespace(
+        candidate_tf_directories=list(candidate_tf_directories)
+    )
+
+
+def _episode_meta(tf_directory):
+    return types.SimpleNamespace(tf_directory=tf_directory)
 
 
 class _DummyLogger:
@@ -100,7 +109,11 @@ class _DummyLogger:
         pass
 
 
-def _make_component(task_cfg, episode_meta):
+def _make_component(
+    task_cfg,
+    episode_meta,
+    static_transform_service_name="/set_static_transforms",
+):
     """Return a bare EditEpisodeMetaComponent with minimal stubs.
 
     Returns (component, rerun_called, dummy_logger, eem_st) where eem_st is
@@ -128,10 +141,20 @@ def _make_component(task_cfg, episode_meta):
             "count", rerun_called["count"] + 1
         )
     )
-    component._task_cfg = task_cfg
+    component._task_cfg = types.SimpleNamespace(
+        candidate_tf_directories=list(
+            getattr(task_cfg, "candidate_tf_directories", [])
+        )
+    )
+    component._launch_cfg = types.SimpleNamespace(
+        ros_bridge=types.SimpleNamespace(
+            static_transform_service_name=static_transform_service_name
+        )
+    )
     component._collecting_state = types.SimpleNamespace(is_recording=False)
 
-    # stub task_cfg property
+    # stub config/state properties
+    type(component).launch_cfg = property(lambda self: self._launch_cfg)
     type(component).task_cfg = property(lambda self: self._task_cfg)
     type(component).collecting_state = property(
         lambda self: self._collecting_state
@@ -140,9 +163,65 @@ def _make_component(task_cfg, episode_meta):
     return component, rerun_called, dummy_logger, eem_st
 
 
+def test_render_tf_directory_hides_when_service_unconfigured(monkeypatch):
+    task_cfg = _task_cfg([])
+    episode_meta = _episode_meta("")
+    component, rerun_called, _, eem_st = _make_component(
+        task_cfg,
+        episode_meta,
+        static_transform_service_name=None,
+    )
+
+    written = []
+    monkeypatch.setattr(
+        eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
+    )
+    monkeypatch.setattr(
+        eem_st, "write", lambda msg: written.append(msg), raising=False
+    )
+    monkeypatch.setattr(
+        eem_st, "selectbox", lambda *a, **kw: None, raising=False
+    )
+
+    component._render_tf_directory()
+
+    assert written == []
+    assert episode_meta.tf_directory == ""
+    assert rerun_called["count"] == 0
+
+
+def test_render_tf_directory_unconfigured_service_clears_stale_selection(
+    monkeypatch,
+):
+    task_cfg = _task_cfg(["/media/tf_v1"])
+    episode_meta = _episode_meta("/media/tf_v1")
+    component, _, dummy_logger, eem_st = _make_component(
+        task_cfg,
+        episode_meta,
+        static_transform_service_name=None,
+    )
+
+    written = []
+    monkeypatch.setattr(
+        eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
+    )
+    monkeypatch.setattr(
+        eem_st, "write", lambda msg: written.append(msg), raising=False
+    )
+    monkeypatch.setattr(
+        eem_st, "selectbox", lambda *a, **kw: None, raising=False
+    )
+
+    component._render_tf_directory()
+
+    assert written == []
+    assert episode_meta.tf_directory == ""
+    assert len(dummy_logger.warnings) == 1
+
+
 def test_render_tf_directory_no_candidates_shows_message(monkeypatch):
-    task_cfg = TaskCfg(candidate_tf_directories=[])
-    episode_meta = EpisodeMeta(tf_directory="")
+    task_cfg = _task_cfg([])
+    episode_meta = _episode_meta("")
     component, rerun_called, _, eem_st = _make_component(
         task_cfg, episode_meta
     )
@@ -165,8 +244,8 @@ def test_render_tf_directory_no_candidates_shows_message(monkeypatch):
 
 
 def test_render_tf_directory_no_candidates_clears_stale_selection(monkeypatch):
-    task_cfg = TaskCfg(candidate_tf_directories=[])
-    episode_meta = EpisodeMeta(tf_directory="/media/tf_old")
+    task_cfg = _task_cfg([])
+    episode_meta = _episode_meta("/media/tf_old")
     component, _, dummy_logger, eem_st = _make_component(
         task_cfg, episode_meta
     )
@@ -188,10 +267,8 @@ def test_render_tf_directory_no_candidates_clears_stale_selection(monkeypatch):
 
 
 def test_render_tf_directory_resets_stale_selection(monkeypatch):
-    task_cfg = TaskCfg(
-        candidate_tf_directories=["/media/tf_v2", "/media/tf_v3"]
-    )
-    episode_meta = EpisodeMeta(tf_directory="/media/tf_old")
+    task_cfg = _task_cfg(["/media/tf_v2", "/media/tf_v3"])
+    episode_meta = _episode_meta("/media/tf_old")
     component, rerun_called, dummy_logger, eem_st = _make_component(
         task_cfg, episode_meta
     )
@@ -213,8 +290,8 @@ def test_render_tf_directory_resets_stale_selection(monkeypatch):
 
 
 def test_render_tf_directory_auto_selects_single_candidate(monkeypatch):
-    task_cfg = TaskCfg(candidate_tf_directories=["/media/tf_v1"])
-    episode_meta = EpisodeMeta(tf_directory="")
+    task_cfg = _task_cfg(["/media/tf_v1"])
+    episode_meta = _episode_meta("")
     component, rerun_called, _, eem_st = _make_component(
         task_cfg, episode_meta
     )
@@ -241,10 +318,8 @@ def test_render_tf_directory_auto_selects_single_candidate(monkeypatch):
 
 
 def test_render_tf_directory_triggers_rerun_on_selection_change(monkeypatch):
-    task_cfg = TaskCfg(
-        candidate_tf_directories=["/media/tf_v1", "/media/tf_v2"]
-    )
-    episode_meta = EpisodeMeta(tf_directory="/media/tf_v1")
+    task_cfg = _task_cfg(["/media/tf_v1", "/media/tf_v2"])
+    episode_meta = _episode_meta("/media/tf_v1")
     component, rerun_called, _, eem_st = _make_component(
         task_cfg, episode_meta
     )
@@ -266,10 +341,8 @@ def test_render_tf_directory_triggers_rerun_on_selection_change(monkeypatch):
 
 
 def test_render_tf_directory_locked_while_recording(monkeypatch):
-    task_cfg = TaskCfg(
-        candidate_tf_directories=["/media/tf_v1", "/media/tf_v2"]
-    )
-    episode_meta = EpisodeMeta(tf_directory="/media/tf_v1")
+    task_cfg = _task_cfg(["/media/tf_v1", "/media/tf_v2"])
+    episode_meta = _episode_meta("/media/tf_v1")
     component, rerun_called, _, eem_st = _make_component(
         task_cfg, episode_meta
     )

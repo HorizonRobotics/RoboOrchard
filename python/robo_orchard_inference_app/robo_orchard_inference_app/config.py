@@ -114,9 +114,7 @@ class MITControlTuningCfg(pydantic.BaseModel):
         "/data/holobrain/urdf/piper_x_description.urdf"
     )
     default_follower_gravity_compensation_scale: float = 1.0
-    # Per-joint multiplier (on top of the global scale). Piper firmware
-    # executes commanded MIT torque at ~4x on joints 1-3 and ~1x on 4-6, so
-    # [0.25, 0.25, 0.25, 1.0, 1.0, 1.0] gives correct gravity compensation.
+    # Per-joint multiplier applied on top of the global scale.
     default_follower_gravity_compensation_scale_per_joint: list[float] = (
         pydantic.Field(default_factory=lambda: [1.0] * 6)
     )

@@ -147,15 +147,24 @@ class MainControlComponent(ComponentBase):
     def _session_value(self, key_suffix: str, default):
         return st.session_state.get(f"{self.key_prefix}_{key_suffix}", default)
 
-    def _follower_gravity_per_joint(self) -> list[float]:
-        """Per-joint multiplier applied to the rnea gravity torque.
+    def _default_follower_gravity_per_joint(self) -> list[float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        defaults = list(
+            mit_cfg.default_follower_gravity_compensation_scale_per_joint
+        )
+        if len(defaults) < 6:
+            defaults.extend([1.0] * (6 - len(defaults)))
+        return [float(v) for v in defaults[:6]]
 
-        Each value is the coefficient on that joint's gravity torque
-        (gravity_i = clamp(rnea_i * per_joint_i, +/- max_t_ref)); 0 disables
-        compensation for that joint. Defaults to 0 for all joints.
-        """
+    def _follower_gravity_per_joint(self) -> list[float]:
+        """Per-joint multiplier applied to the rnea gravity torque."""
+        defaults = self._default_follower_gravity_per_joint()
         return [
-            float(self._session_value(f"follower_gravity_pj{j}", 0.0))
+            float(
+                self._session_value(
+                    f"follower_gravity_pj{j}", defaults[j - 1]
+                )
+            )
             for j in range(1, 7)
         ]
 
@@ -257,7 +266,12 @@ class MainControlComponent(ComponentBase):
                         mit_cfg.default_follower_gravity_compensation_urdf_path,
                     )
                 ).strip(),
-                "follower_gravity_compensation_scale": 1.0,
+                "follower_gravity_compensation_scale": float(
+                    self._session_value(
+                        "follower_gravity_scale",
+                        mit_cfg.default_follower_gravity_compensation_scale,
+                    )
+                ),
                 "follower_gravity_compensation_scale_per_joint": (
                     self._follower_gravity_per_joint()
                 ),
@@ -726,8 +740,8 @@ class MainControlComponent(ComponentBase):
             ),
         )
 
-        st.caption("Follower gravity (per-joint rnea scale)")
-        gravity_cols = st.columns([2, 1])
+        st.caption("Follower gravity")
+        gravity_cols = st.columns([2, 1, 1])
         with gravity_cols[0]:
             follower_gravity_urdf_path = st.text_input(
                 "URDF path",
@@ -735,6 +749,13 @@ class MainControlComponent(ComponentBase):
                 key=f"{self.key_prefix}_follower_gravity_urdf_path",
             )
         with gravity_cols[1]:
+            follower_gravity_scale = _number_input(
+                "Scale",
+                mit_cfg.default_follower_gravity_compensation_scale,
+                0.05,
+                "follower_gravity_scale",
+            )
+        with gravity_cols[2]:
             follower_gravity_max_t_ref = _number_input(
                 "Max t_ref",
                 mit_cfg.default_follower_gravity_compensation_max_t_ref,
@@ -742,8 +763,8 @@ class MainControlComponent(ComponentBase):
                 "follower_gravity_max_t_ref",
                 min_value=0.0,
             )
-        # Per-joint multiplier on the rnea gravity torque. Default 0 (off);
-        # the applied feedforward is gravity_i = clamp(rnea_i * pj_i, +-t_ref).
+        # Per-joint multiplier on the rnea gravity torque.
+        default_per_joint = self._default_follower_gravity_per_joint()
         per_joint_cols = st.columns(6)
         follower_gravity_per_joint: list[float] = []
         for j in range(6):
@@ -751,7 +772,7 @@ class MainControlComponent(ComponentBase):
                 follower_gravity_per_joint.append(
                     _number_input(
                         f"j{j + 1}",
-                        0.0,
+                        default_per_joint[j],
                         0.05,
                         f"follower_gravity_pj{j + 1}",
                         min_value=0.0,
@@ -774,7 +795,7 @@ class MainControlComponent(ComponentBase):
             "follower_gravity_compensation_urdf_path": (
                 follower_gravity_urdf_path.strip()
             ),
-            "follower_gravity_compensation_scale": 1.0,
+            "follower_gravity_compensation_scale": follower_gravity_scale,
             "follower_gravity_compensation_scale_per_joint": (
                 follower_gravity_per_joint
             ),
