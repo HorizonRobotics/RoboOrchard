@@ -235,6 +235,103 @@ class MainControlComponent(ComponentBase):
                 "Stop recording failed! Please check the log panel."
             )
 
+    def _render_mit_control_panel(self) -> dict[str, float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        st.subheader("MIT Params")
+
+        def _number_input(
+            label: str,
+            value: float,
+            step: float,
+            key: str,
+            min_value: float | None = None,
+        ):
+            return st.number_input(
+                label,
+                min_value=min_value,
+                value=float(value),
+                step=step,
+                format="%.3f",
+                key=f"{self.key_prefix}_{key}",
+            )
+
+        st.caption("Master")
+        master_cols = st.columns([1, 1, 1, 1])
+        with master_cols[0]:
+            master_kp = _number_input(
+                "Master kp",
+                mit_cfg.default_master_kp,
+                0.1,
+                "master_mit_kp",
+                min_value=0.0,
+            )
+        with master_cols[1]:
+            master_kd = _number_input(
+                "Master kd",
+                mit_cfg.default_master_kd,
+                0.01,
+                "master_mit_kd",
+                min_value=0.0,
+            )
+        with master_cols[2]:
+            master_vel_ref = _number_input(
+                "Master vel_ref",
+                mit_cfg.default_master_vel_ref,
+                0.1,
+                "master_mit_vel_ref",
+            )
+        with master_cols[3]:
+            master_torque_ref = _number_input(
+                "Master torque_ref",
+                mit_cfg.default_master_torque_ref,
+                0.1,
+                "master_mit_torque_ref",
+            )
+
+        st.caption("Follower")
+        follower_cols = st.columns([1, 1, 1, 1])
+        with follower_cols[0]:
+            follower_kp = _number_input(
+                "Follower kp",
+                mit_cfg.default_follower_kp,
+                0.1,
+                "follower_mit_kp",
+                min_value=0.0,
+            )
+        with follower_cols[1]:
+            follower_kd = _number_input(
+                "Follower kd",
+                mit_cfg.default_follower_kd,
+                0.01,
+                "follower_mit_kd",
+                min_value=0.0,
+            )
+        with follower_cols[2]:
+            follower_vel_ref = _number_input(
+                "Follower vel_ref",
+                mit_cfg.default_follower_vel_ref,
+                0.1,
+                "follower_mit_vel_ref",
+            )
+        with follower_cols[3]:
+            follower_torque_ref = _number_input(
+                "Follower torque_ref",
+                mit_cfg.default_follower_torque_ref,
+                0.1,
+                "follower_mit_torque_ref",
+            )
+
+        return {
+            "master_kp": master_kp,
+            "master_kd": master_kd,
+            "master_vel_ref": master_vel_ref,
+            "master_torque_ref": master_torque_ref,
+            "follower_kp": follower_kp,
+            "follower_kd": follower_kd,
+            "follower_vel_ref": follower_vel_ref,
+            "follower_torque_ref": follower_torque_ref,
+        }
+
     # --- Robot Control Panel ---
     def _render_robot_control_panel(self):
         """Renders manual control buttons for the robot."""
@@ -242,6 +339,8 @@ class MainControlComponent(ComponentBase):
             return
 
         with st.expander("🤖 Robot Control", expanded=True):
+            mit_params = self._render_mit_control_panel()
+
             # --- Control Mode ---
             st.subheader("Control Mode")
             mode_cols = st.columns([1, 1, 1])
@@ -255,13 +354,17 @@ class MainControlComponent(ComponentBase):
                 (show_name, value),
             ) in zip(mode_cols, modes, strict=False):
                 with col:
-                    st.button(
+                    if st.button(
                         show_name.capitalize(),
-                        on_click=self.ros_helper.set_control_mode,
-                        args=(value,),
                         use_container_width=True,
                         key=f"{self.key_prefix}_set_control_mode_{value}",
-                    )
+                    ):
+                        if value == "takeover":
+                            self.ros_helper.set_control_mode(
+                                value, mit_params=mit_params
+                            )
+                        else:
+                            self.ros_helper.set_control_mode(value)
 
             # --- Inference service ---
             st.subheader("Inference Control")

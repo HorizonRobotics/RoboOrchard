@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 
 import pydantic
 
-__all__ = ["LaunchCfg", "TaskCfg"]
+__all__ = ["LaunchCfg", "MITControlTuningCfg", "TaskCfg"]
 
 
 class FoxgloveCfg(pydantic.BaseModel):
@@ -90,6 +90,19 @@ class FoxgloveCfg(pydantic.BaseModel):
         return url
 
 
+class MITControlTuningCfg(pydantic.BaseModel):
+    master_param_node_names: list[str] = pydantic.Field(default_factory=list)
+    follower_param_node_names: list[str] = pydantic.Field(default_factory=list)
+    default_master_kp: float = 10.0
+    default_master_kd: float = 0.8
+    default_master_vel_ref: float = 45.0
+    default_master_torque_ref: float = 0.0
+    default_follower_kp: float = 10.0
+    default_follower_kd: float = 0.8
+    default_follower_vel_ref: float = 45.0
+    default_follower_torque_ref: float = 0.0
+
+
 class ROSBridgeCfg(pydantic.BaseModel):
     host: str = "localhost"
 
@@ -111,6 +124,9 @@ class ROSBridgeCfg(pydantic.BaseModel):
     inference_node_candidates: list[str] = pydantic.Field(default_factory=list)
 
     # arm control
+    mit_control: MITControlTuningCfg = pydantic.Field(
+        default_factory=MITControlTuningCfg
+    )
     enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     reset_arm_service_name: list[str] = pydantic.Field(default_factory=list)
 

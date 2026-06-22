@@ -53,6 +53,7 @@ def main():
             "/master/joint_left",
             "/master/status_left",
             # robot left hand
+            "/robot/left/joint_cmd",
             "/puppet/joint_left",
             "/puppet/end_pose_left",
             "/puppet/status_left",
@@ -60,6 +61,7 @@ def main():
             "/master/joint_right",
             "/master/status_right",
             # robot right hand
+            "/robot/right/joint_cmd",
             "/puppet/joint_right",
             "/puppet/end_pose_right",
             "/puppet/status_right",
@@ -169,6 +171,10 @@ def main():
                 rename_topic="/observation/robot_state/left_master/status",
             ),
             # robot left hand
+            "/robot/left/joint_cmd": TopicSpec(
+                stamp_type="msg_header_stamp",
+                rename_topic="/action/robot_command/left/joint",
+            ),
             "/puppet/joint_left": TopicSpec(
                 stamp_type="msg_header_stamp",
                 rename_topic="/observation/robot_state/left/joint",
@@ -191,6 +197,10 @@ def main():
                 rename_topic="/observation/robot_state/right_master/status",
             ),
             # robot right hand
+            "/robot/right/joint_cmd": TopicSpec(
+                stamp_type="msg_header_stamp",
+                rename_topic="/action/robot_command/right/joint",
+            ),
             "/puppet/joint_right": TopicSpec(
                 stamp_type="msg_header_stamp",
                 rename_topic="/observation/robot_state/right/joint",

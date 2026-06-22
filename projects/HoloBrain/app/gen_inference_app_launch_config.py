@@ -19,6 +19,7 @@ import os
 from robo_orchard_inference_app.config import (
     FoxgloveCfg,
     LaunchCfg,
+    MITControlTuningCfg,
     ROSBridgeCfg,
     UIControlCfg,
 )
@@ -58,6 +59,24 @@ def _make_ros_bridge_config(teleop_source: str) -> ROSBridgeCfg:
                 "/robot/left/aloha_orchestrator/auto",
                 "/robot/right/aloha_orchestrator/auto",
             ],
+            mit_control=MITControlTuningCfg(
+                master_param_node_names=[
+                    "/robot/left_master/robot_left_master_controller",
+                    "/robot/right_master/robot_right_master_controller",
+                ],
+                follower_param_node_names=[
+                    "/robot/left/robot_left_controller",
+                    "/robot/right/robot_right_controller",
+                ],
+                default_master_kp=10.0,
+                default_master_kd=0.8,
+                default_master_vel_ref=45.0,
+                default_master_torque_ref=0.0,
+                default_follower_kp=10.0,
+                default_follower_kd=0.8,
+                default_follower_vel_ref=45.0,
+                default_follower_torque_ref=0.0,
+            ),
             enable_arm_service_name=[
                 "/robot/left_master/enable_ctrl",
                 "/robot/right_master/enable_ctrl",
