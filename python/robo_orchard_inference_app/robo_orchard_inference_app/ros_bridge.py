@@ -151,11 +151,16 @@ class RosServiceHelper:
             )
             request = roslibpy.ServiceRequest(request_data)
             result = service.call(request, timeout=timeout)
-            if "results" in result and result["results"][0]["successful"]:
+            results = result.get("results", [])
+            if results and all(
+                item.get("successful", False) for item in results
+            ):
                 return True
-            else:
-                self.logger.error("Failed to set parameter.")
-                return False
+
+            reasons = [item.get("reason", "") for item in results]
+            reason = "; ".join(reason for reason in reasons if reason)
+            self.logger.error(f"Failed to set parameter. {reason}".strip())
+            return False
         except roslibpy.core.RosTimeoutError:
             self.logger.error(
                 f"Timeout calling set parameter service: {set_param_service}"
@@ -165,100 +170,76 @@ class RosServiceHelper:
             self.logger.error(f"Error calling {set_param_service}: {e}")
             return False
 
-    def get_node_names(self) -> list[str]:
-        if not self._check_client_connected():
-            return []
-
-        try:
-            service = roslibpy.Service(
-                self.ros_client, "/rosapi/nodes", "rosapi_msgs/srv/Nodes"
-            )
-            request = roslibpy.ServiceRequest({})
-            result = service.call(request, timeout=5.0)
-            return [
-                node
-                for node in result.get("nodes", [])
-                if isinstance(node, str)
+    def _set_double_params(
+        self, node_name: str, params: dict[str, float]
+    ) -> bool:
+        request_data = {
+            "parameters": [
+                {
+                    "name": name,
+                    "value": {"type": 3, "double_value": float(value)},
+                }
+                for name, value in params.items()
             ]
-        except Exception as e:
-            self.logger.error(f"Error calling /rosapi/nodes: {e}")
-            return []
+        }
+        return self._set_param(node_name=node_name, request_data=request_data)
 
-    def get_tf_publisher_startup_id(
-        self, node_name: str = "/static_tf_publisher"
-    ) -> str | None:
-        if not self._check_client_connected():
-            return None
-
-        get_param_service = f"{node_name}/get_parameters"
-        try:
-            service = roslibpy.Service(
-                self.ros_client,
-                get_param_service,
-                "rcl_interfaces/srv/GetParameters",
+    def set_mit_params(
+        self,
+        master_kp: float,
+        master_kd: float,
+        master_vel_ref: float,
+        master_torque_ref: float,
+        follower_kp: float,
+        follower_kd: float,
+        follower_vel_ref: float,
+        follower_torque_ref: float,
+    ) -> bool:
+        mit_cfg = self.cfg.mit_control
+        requested_params: list[tuple[str, dict[str, float]]] = []
+        for node_name in mit_cfg.master_param_node_names:
+            requested_params.append(
+                (
+                    node_name,
+                    {
+                        "mit_kp": master_kp,
+                        "mit_kd": master_kd,
+                        "mit_vel_ref": master_vel_ref,
+                        "mit_torque_ref": master_torque_ref,
+                    },
+                )
             )
-            request = roslibpy.ServiceRequest({"names": ["startup_id"]})
-            result = service.call(request, timeout=3.0)
-            values = result.get("values", [])
-            if not values:
-                return None
-            value = values[0]
-            string_value = value.get("string_value", "")
-            if not string_value:
-                return None
-            return string_value
-        except roslibpy.core.RosTimeoutError:
-            return None
-        except Exception as e:
-            self.logger.error(
-                f"Error calling {get_param_service} for startup_id: {e}"
+        for node_name in mit_cfg.follower_param_node_names:
+            requested_params.append(
+                (
+                    node_name,
+                    {
+                        "mit_kp": follower_kp,
+                        "mit_kd": follower_kd,
+                        "mit_vel_ref": follower_vel_ref,
+                        "mit_torque_ref": follower_torque_ref,
+                    },
+                )
             )
-            return None
 
-    def invalidate_static_transform_cache(self) -> None:
-        self._synced_tf_fingerprint = None
-
-    def _get_tf_directory_fingerprint(
-        self, directory: str
-    ) -> tuple[str, frozenset] | None:
-        try:
-            files = frozenset(
-                (f.name, f.stat().st_mtime_ns, f.stat().st_size)
-                for f in Path(directory).glob("*.json")
-            )
-        except OSError:
-            return None
-        return (directory, files)
-
-    def sync_static_transforms(self, episode_meta) -> bool:
-        directory = episode_meta.tf_directory
-        if not directory:
+        if not requested_params:
+            self.logger.warning("No MIT parameter nodes are configured.")
             return True
 
-        if not self.cfg.static_transform_service_name:
-            self.logger.error(
-                "static_transform_service_name is not configured; "
-                "cannot sync static transforms."
-            )
-            return False
+        for node_name, params in requested_params:
+            if not self._set_double_params(node_name, params):
+                return False
 
-        fingerprint = self._get_tf_directory_fingerprint(directory)
-        if fingerprint is None:
-            return False
-        if fingerprint == self._synced_tf_fingerprint:
-            return True
-
-        success = self._call_services(
-            service_names=self.cfg.static_transform_service_name,
-            success_msg="Static transforms loaded successfully!",
-            service_type=(
-                "robo_orchard_data_msg_ros2/srv/SetStaticTransforms"
-            ),
-            request_data={"directory": directory},
+        self.logger.info(
+            "MIT params set: "
+            f"master kp={master_kp}, master kd={master_kd}, "
+            f"master vel_ref={master_vel_ref}, "
+            f"master torque_ref={master_torque_ref}, "
+            f"follower kp={follower_kp}, follower kd={follower_kd}, "
+            f"follower vel_ref={follower_vel_ref}, "
+            f"follower torque_ref={follower_torque_ref}"
         )
-        if success:
-            self._synced_tf_fingerprint = fingerprint
-        return success
+        return True
 
     def enable_arm(self) -> bool:
         """Sends a request to enable the robot arm."""
@@ -353,9 +334,15 @@ class RosServiceHelper:
         )
 
     def set_control_mode(
-        self, mode: Literal["auto", "takeover", "stop"]
+        self,
+        mode: Literal["auto", "takeover", "stop"],
+        mit_params: dict[str, float] | None = None,
     ) -> bool:
         """Sets the robot's control mode."""
+        if mode == "takeover" and mit_params is not None:
+            if not self.set_mit_params(**mit_params):
+                return False
+
         service_map = {
             "auto": self.cfg.release_service_name,
             "takeover": self.cfg.takeover_service_name,

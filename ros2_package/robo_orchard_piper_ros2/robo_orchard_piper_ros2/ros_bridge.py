@@ -313,24 +313,33 @@ def enable_arm_ctrl(
     raise TimeoutError
 
 
-def switch_piper_ctrl_mode(
-    piper: C_PiperInterface,
-    target_mode: int,
-    is_mit: bool,
-    timeout: float = 5,
-):
+def get_disable_flag(piper: C_PiperInterface):
+    msg = piper.GetArmLowSpdInfoMsgs()
+
+    enable_flag = (
+        not msg.motor_1.foc_status.driver_enable_status
+        and not msg.motor_2.foc_status.driver_enable_status
+        and not msg.motor_3.foc_status.driver_enable_status
+        and not msg.motor_4.foc_status.driver_enable_status
+        and not msg.motor_5.foc_status.driver_enable_status
+        and not msg.motor_6.foc_status.driver_enable_status
+    )
+    return enable_flag
+
+
+def disable_arm_ctrl(piper: C_PiperInterface, timeout: float = 5):
+    timeout = 5
     start_time = time.time()
 
     while True:
-        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
-            return
-
         elapsed_time = time.time() - start_time
-        piper.MotionCtrl_2(
-            target_mode, 0x01, 100, is_mit_mode=0xAD if is_mit else 0x00
-        )  # noqa: E501
 
-        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
+        piper.DisableArm(7)
+        piper.GripperCtrl(0, 1000, 0x02, 0)
+
+        flag = get_disable_flag(piper)
+
+        if flag:
             return
 
         if elapsed_time > timeout:
@@ -341,7 +350,32 @@ def switch_piper_ctrl_mode(
     raise TimeoutError
 
 
-def set_ctrl_method(piper: C_PiperInterface, is_mit: bool = False):
+def reset_piper_ctrl_mode(
+    piper: C_PiperInterface, target_mode: int, max_retry: int = 5
+) -> bool:
+    if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
+        return True
+
+    for _ in range(5):
+        disable_arm_ctrl(piper, timeout=5)
+        enable_arm_ctrl(piper, timeout=5)
+
+        piper.MotionCtrl_2(target_mode, 0x01, 100, 0x00)
+
+        if piper.GetArmStatus().arm_status.ctrl_mode == target_mode:  # noqa: E501
+            return True
+
+    return False
+
+
+def set_ctrl_method(
+    piper: C_PiperInterface,
+    is_mit: bool = False,
+    mit_kp: float = 10.0,
+    mit_kd: float = 0.8,
+    mit_vel_ref: float = 45.0,
+    mit_torque_ref: float = 0.0,
+):
     if is_mit:
         piper.MotionCtrl_2(0x01, 0x01, 100, is_mit_mode=0xAD)
     else:

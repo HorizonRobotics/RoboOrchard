@@ -20,6 +20,7 @@ from enum import IntEnum
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
@@ -63,6 +64,10 @@ class PiperSingleControlNode(Node):
         self.declare_parameter("gripper_val_mutiple", 1)
         self.declare_parameter("auto_enable_arm_ctrl", False)
         self.declare_parameter("enable_mit_ctrl", False)
+        self.declare_parameter("mit_kp", 10.0)
+        self.declare_parameter("mit_kd", 0.8)
+        self.declare_parameter("mit_vel_ref", 45.0)
+        self.declare_parameter("mit_torque_ref", 0.0)
 
         self.can_port = (
             self.get_parameter("can_port").get_parameter_value().string_value
@@ -88,13 +93,33 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .bool_value
         )
+        self.mit_kp = (
+            self.get_parameter("mit_kp").get_parameter_value().double_value
+        )
+        self.mit_kd = (
+            self.get_parameter("mit_kd").get_parameter_value().double_value
+        )
+        self.mit_vel_ref = (
+            self.get_parameter("mit_vel_ref")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_torque_ref = (
+            self.get_parameter("mit_torque_ref")
+            .get_parameter_value()
+            .double_value
+        )
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.get_logger().info(
             f"can_port = {self.can_port}, "
             f"auto_enable_arm_ctrl = {self.auto_enable_arm_ctrl}, "  # noqa: E501
             f"gripper_exist = {self.gripper_exist}, "
             f"gripper_val_mutiple = {self.gripper_val_mutiple}, "
-            f"enable_mit_ctrl = {self.enable_mit_ctrl}"
+            f"enable_mit_ctrl = {self.enable_mit_ctrl}, "
+            f"mit_kp = {self.mit_kp}, mit_kd = {self.mit_kd}, "
+            f"mit_vel_ref = {self.mit_vel_ref}, "
+            f"mit_torque_ref = {self.mit_torque_ref}"
         )
 
         self.piper = create_piper(self.can_port)
@@ -139,6 +164,66 @@ class PiperSingleControlNode(Node):
         ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
         return self._enable_flag and ctrl_mode == CanControlMode.CAN_MODE
 
+    def _on_set_parameters(self, params):
+        next_mit_kp = self.mit_kp
+        next_mit_kd = self.mit_kd
+        next_mit_vel_ref = self.mit_vel_ref
+        next_mit_torque_ref = self.mit_torque_ref
+
+        for param in params:
+            if param.name == "mit_kp":
+                next_mit_kp = float(param.value)
+            elif param.name == "mit_kd":
+                next_mit_kd = float(param.value)
+            elif param.name == "mit_vel_ref":
+                next_mit_vel_ref = float(param.value)
+            elif param.name == "mit_torque_ref":
+                next_mit_torque_ref = float(param.value)
+
+        if next_mit_kp < 0 or next_mit_kd < 0:
+            return SetParametersResult(
+                successful=False,
+                reason="MIT kp and kd must be non-negative.",
+            )
+
+        self.mit_kp = next_mit_kp
+        self.mit_kd = next_mit_kd
+        self.mit_vel_ref = next_mit_vel_ref
+        self.mit_torque_ref = next_mit_torque_ref
+
+        if self.enable_mit_ctrl and self.is_controlable():
+            try:
+                set_ctrl_method(
+                    piper=self.piper,
+                    is_mit=True,
+                    mit_kp=self.mit_kp,
+                    mit_kd=self.mit_kd,
+                    mit_vel_ref=self.mit_vel_ref,
+                    mit_torque_ref=self.mit_torque_ref,
+                )
+            except Exception as e:
+                return SetParametersResult(
+                    successful=False,
+                    reason=f"Failed to apply MIT params: {e}",
+                )
+
+        self.get_logger().info(
+            "MIT params updated: "
+            f"kp = {self.mit_kp}, kd = {self.mit_kd}, "
+            f"vel_ref = {self.mit_vel_ref}, "
+            f"torque_ref = {self.mit_torque_ref}"
+        )
+        return SetParametersResult(successful=True)
+
+    def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
+        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
+        if ctrl_mode == 0x02:
+            self.get_logger().warn(
+                f"ctrl_mode is {ctrl_mode}, try to reset..."
+            )
+            if force_reset:
+                if not reset_piper_ctrl_mode(self.piper, 0x01):
+                    return False
     def enable_arm_ctrl(self) -> bool:
         arm_status = self.piper.GetArmStatus().arm_status
         ctrl_mode = arm_status.ctrl_mode
@@ -168,7 +253,14 @@ class PiperSingleControlNode(Node):
         # Non-TEACH_MODE status is treated as cold start or normal enable.
         else:
             enable_arm_ctrl(self.piper)
-            set_ctrl_method(piper=self.piper, is_mit=self.enable_mit_ctrl)
+        set_ctrl_method(
+            piper=self.piper,
+            is_mit=self.enable_mit_ctrl,
+            mit_kp=self.mit_kp,
+            mit_kd=self.mit_kd,
+            mit_vel_ref=self.mit_vel_ref,
+            mit_torque_ref=self.mit_torque_ref,
+        )
         self._enable_flag = True
         return True
 

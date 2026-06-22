@@ -18,6 +18,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -64,6 +65,46 @@ def generate_launch_description():
         "enable_master_mit_control_mode",
         default_value="true",
         description="Whether enable mit control mode or not.",
+    )
+    master_mit_kp_arg = DeclareLaunchArgument(
+        "master_mit_kp",
+        default_value="10.0",
+        description="MIT kp for the master arms.",
+    )
+    master_mit_kd_arg = DeclareLaunchArgument(
+        "master_mit_kd",
+        default_value="0.8",
+        description="MIT kd for the master arms.",
+    )
+    master_mit_vel_ref_arg = DeclareLaunchArgument(
+        "master_mit_vel_ref",
+        default_value="45.0",
+        description="MIT velocity reference for the master arms.",
+    )
+    master_mit_torque_ref_arg = DeclareLaunchArgument(
+        "master_mit_torque_ref",
+        default_value="0.0",
+        description="MIT torque reference for the master arms.",
+    )
+    follower_mit_kp_arg = DeclareLaunchArgument(
+        "follower_mit_kp",
+        default_value="10.0",
+        description="MIT kp for the follower arms.",
+    )
+    follower_mit_kd_arg = DeclareLaunchArgument(
+        "follower_mit_kd",
+        default_value="0.8",
+        description="MIT kd for the follower arms.",
+    )
+    follower_mit_vel_ref_arg = DeclareLaunchArgument(
+        "follower_mit_vel_ref",
+        default_value="45.0",
+        description="MIT velocity reference for the follower arms.",
+    )
+    follower_mit_torque_ref_arg = DeclareLaunchArgument(
+        "follower_mit_torque_ref",
+        default_value="0.0",
+        description="MIT torque reference for the follower arms.",
     )
 
     replay_time_s_arg = DeclareLaunchArgument(
@@ -164,6 +205,20 @@ def generate_launch_description():
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_master_mit_control_mode"
                 ),
+                "mit_kp": ParameterValue(
+                    LaunchConfiguration("master_mit_kp"), value_type=float
+                ),
+                "mit_kd": ParameterValue(
+                    LaunchConfiguration("master_mit_kd"), value_type=float
+                ),
+                "mit_vel_ref": ParameterValue(
+                    LaunchConfiguration("master_mit_vel_ref"),
+                    value_type=float,
+                ),
+                "mit_torque_ref": ParameterValue(
+                    LaunchConfiguration("master_mit_torque_ref"),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -188,6 +243,20 @@ def generate_launch_description():
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_mit_control_mode"
                 ),
+                "mit_kp": ParameterValue(
+                    LaunchConfiguration("follower_mit_kp"), value_type=float
+                ),
+                "mit_kd": ParameterValue(
+                    LaunchConfiguration("follower_mit_kd"), value_type=float
+                ),
+                "mit_vel_ref": ParameterValue(
+                    LaunchConfiguration("follower_mit_vel_ref"),
+                    value_type=float,
+                ),
+                "mit_torque_ref": ParameterValue(
+                    LaunchConfiguration("follower_mit_torque_ref"),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -210,6 +279,20 @@ def generate_launch_description():
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_master_mit_control_mode"
+                ),
+                "mit_kp": ParameterValue(
+                    LaunchConfiguration("master_mit_kp"), value_type=float
+                ),
+                "mit_kd": ParameterValue(
+                    LaunchConfiguration("master_mit_kd"), value_type=float
+                ),
+                "mit_vel_ref": ParameterValue(
+                    LaunchConfiguration("master_mit_vel_ref"),
+                    value_type=float,
+                ),
+                "mit_torque_ref": ParameterValue(
+                    LaunchConfiguration("master_mit_torque_ref"),
+                    value_type=float,
                 ),
             }
         ],
@@ -235,6 +318,20 @@ def generate_launch_description():
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_mit_control_mode"
                 ),
+                "mit_kp": ParameterValue(
+                    LaunchConfiguration("follower_mit_kp"), value_type=float
+                ),
+                "mit_kd": ParameterValue(
+                    LaunchConfiguration("follower_mit_kd"), value_type=float
+                ),
+                "mit_vel_ref": ParameterValue(
+                    LaunchConfiguration("follower_mit_vel_ref"),
+                    value_type=float,
+                ),
+                "mit_torque_ref": ParameterValue(
+                    LaunchConfiguration("follower_mit_torque_ref"),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -257,6 +354,14 @@ def generate_launch_description():
             right_slave_can_port_arg,
             enable_mit_control_mode_arg,
             enable_master_mit_control_mode_arg,
+            master_mit_kp_arg,
+            master_mit_kd_arg,
+            master_mit_vel_ref_arg,
+            master_mit_torque_ref_arg,
+            follower_mit_kp_arg,
+            follower_mit_kd_arg,
+            follower_mit_vel_ref_arg,
+            follower_mit_torque_ref_arg,
             replay_time_s_arg,
             # Add the nodes to be launched
             left_takeover_muxer_node,
