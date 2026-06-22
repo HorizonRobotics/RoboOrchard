@@ -65,6 +65,12 @@ class ScriptedJointMasterNode(Node):
         self.declare_parameter("rate_hz", 100.0)
         self.declare_parameter("start_delay_s", 1.0)
         self.declare_parameter("start_trigger_file", "")
+        self.declare_parameter("ready_file", "")
+        self.declare_parameter("use_start_position", False)
+        self.declare_parameter("start_position_left", list(DEFAULT_CENTER))
+        self.declare_parameter("start_position_right", list(DEFAULT_CENTER))
+        self.declare_parameter("min_command_subscribers", 0)
+        self.declare_parameter("command_subscriber_wait_timeout_s", 2.0)
         # Kept for launch/config compatibility; scripted motion ignores it.
         self.declare_parameter("ramp_s", 0.0)
         self.declare_parameter("duration_s", 10.0)
@@ -90,6 +96,21 @@ class ScriptedJointMasterNode(Node):
         self.start_trigger_file = str(
             self.get_parameter("start_trigger_file").value or ""
         )
+        self.ready_file = str(self.get_parameter("ready_file").value or "")
+        self.use_start_position = bool(
+            self.get_parameter("use_start_position").value
+        )
+        self.min_command_subscribers = max(
+            0, int(self.get_parameter("min_command_subscribers").value)
+        )
+        self.command_subscriber_wait_timeout_s = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "command_subscriber_wait_timeout_s"
+                ).value
+            ),
+        )
         self.duration_s = float(self.get_parameter("duration_s").value)
         self.amplitude_scale = float(
             self.get_parameter("amplitude_scale").value
@@ -101,6 +122,12 @@ class ScriptedJointMasterNode(Node):
 
         self.center_left = self._joint_array_parameter("center_left")
         self.center_right = self._joint_array_parameter("center_right")
+        self.start_position_left = self._joint_array_parameter(
+            "start_position_left"
+        )
+        self.start_position_right = self._joint_array_parameter(
+            "start_position_right"
+        )
         self.amplitudes = self._joint_array_parameter("amplitudes")
         self.frequencies = self._joint_array_parameter("frequencies")
         self.phases = self._joint_array_parameter("phases")
@@ -111,6 +138,9 @@ class ScriptedJointMasterNode(Node):
         self._done = False
         self._done_future: Future = Future()
         self._state_wait_logged = False
+        self._subscriber_wait_logged = False
+        self._subscriber_wait_started_at = None
+        self._ready_signaled = False
         self._start_time = self.get_clock().now()
 
         left_command_topic = self.get_parameter("left_command_topic").value
@@ -159,12 +189,8 @@ class ScriptedJointMasterNode(Node):
             float(value) for value in msg.position[: len(JOINT_NAMES)]
         ]
 
-    def _ready_to_start(self, elapsed: float) -> bool:
+    def _setup_ready(self, elapsed: float) -> bool:
         if elapsed < self.start_delay_s:
-            return False
-        if self.start_trigger_file and not os.path.exists(
-            self.start_trigger_file
-        ):
             return False
         if not self.use_current_state:
             return True
@@ -190,6 +216,82 @@ class ScriptedJointMasterNode(Node):
             )
         return False
 
+    def _signal_ready(self) -> None:
+        if self._ready_signaled:
+            return
+        self._ready_signaled = True
+        if not self.ready_file:
+            return
+        try:
+            ready_dir = os.path.dirname(self.ready_file)
+            if ready_dir:
+                os.makedirs(ready_dir, exist_ok=True)
+            with open(self.ready_file, "a", encoding="utf-8"):
+                os.utime(self.ready_file, None)
+            self.get_logger().info(
+                "Scripted joint master setup complete; ready file written."
+            )
+        except Exception as e:
+            self.get_logger().error(
+                f"Failed to write scripted motion ready file: {e}"
+            )
+
+    def _ready_to_start(self, elapsed: float) -> bool:
+        if not self._setup_ready(elapsed):
+            return False
+        self._signal_ready()
+        if self.start_trigger_file and not os.path.exists(
+            self.start_trigger_file
+        ):
+            return False
+        if not self._command_subscribers_ready():
+            return False
+        return True
+
+    def _command_subscriber_counts(self) -> list[tuple[str, int]]:
+        counts = []
+        if self.publish_left:
+            counts.append(("left", self.left_pub.get_subscription_count()))
+        if self.publish_right:
+            counts.append(("right", self.right_pub.get_subscription_count()))
+        return counts
+
+    def _command_subscribers_ready(self) -> bool:
+        if self.min_command_subscribers <= 0:
+            return True
+
+        counts = self._command_subscriber_counts()
+        if all(count >= self.min_command_subscribers for _, count in counts):
+            return True
+
+        now = self.get_clock().now()
+        if self._subscriber_wait_started_at is None:
+            self._subscriber_wait_started_at = now
+
+        wait_elapsed = (
+            now - self._subscriber_wait_started_at
+        ).nanoseconds * 1e-9
+        count_text = ", ".join(
+            f"{name}={count}" for name, count in counts
+        ) or "none"
+        if not self._subscriber_wait_logged:
+            self._subscriber_wait_logged = True
+            self.get_logger().info(
+                "Waiting for command subscribers before scripted motion "
+                f"start: need {self.min_command_subscribers}, have "
+                f"{count_text}."
+            )
+
+        if wait_elapsed >= self.command_subscriber_wait_timeout_s:
+            self.get_logger().warning(
+                "Timed out waiting for command subscribers before scripted "
+                f"motion start after {wait_elapsed:.2f}s; have "
+                f"{count_text}, starting anyway."
+            )
+            return True
+
+        return False
+
     def _trajectory_offset_at_zero(self, right: bool) -> list[float]:
         offsets = []
         for idx, (amplitude, phase) in enumerate(
@@ -207,7 +309,22 @@ class ScriptedJointMasterNode(Node):
         if arm.trajectory_center is not None:
             return arm.trajectory_center
 
-        if self.use_current_state and arm.current_positions is not None:
+        if self.use_start_position:
+            start_position = (
+                self.start_position_right if right else self.start_position_left
+            )
+            offsets = self._trajectory_offset_at_zero(right=right)
+            arm.trajectory_center = [
+                position - offset
+                for position, offset in zip(
+                    start_position, offsets, strict=True
+                )
+            ]
+            self.get_logger().info(
+                f"{arm.name} scripted trajectory starts at configured "
+                f"position: {start_position}"
+            )
+        elif self.use_current_state and arm.current_positions is not None:
             offsets = self._trajectory_offset_at_zero(right=right)
             arm.trajectory_center = [
                 current_position - offset

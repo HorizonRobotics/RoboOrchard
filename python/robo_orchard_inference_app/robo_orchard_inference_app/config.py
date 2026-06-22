@@ -108,6 +108,19 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
     default_follower_torque_ref: float = 0.0
+    default_follower_gravity_compensation_alpha: float = 0.0
+    default_follower_gravity_compensation_enabled: bool = False
+    default_follower_gravity_compensation_urdf_path: str = (
+        "/data/holobrain/urdf/piper_x_description.urdf"
+    )
+    default_follower_gravity_compensation_scale: float = 1.0
+    # Per-joint multiplier (on top of the global scale). Piper firmware
+    # executes commanded MIT torque at ~4x on joints 1-3 and ~1x on 4-6, so
+    # [0.25, 0.25, 0.25, 1.0, 1.0, 1.0] gives correct gravity compensation.
+    default_follower_gravity_compensation_scale_per_joint: list[float] = (
+        pydantic.Field(default_factory=lambda: [1.0] * 6)
+    )
+    default_follower_gravity_compensation_max_t_ref: float = 8.0
 
 
 class ScriptedMotionCfg(pydantic.BaseModel):
@@ -129,6 +142,11 @@ class ScriptedMotionCfg(pydantic.BaseModel):
     mirror_right: bool = False
     rate_hz: float = 100.0
     start_delay_s: float = 1.0
+    recording_command_min_subscribers: int = 2
+    """Required command-topic subscribers before starting a recorded
+    prelaunched scripted motion after its trigger file appears. This lets the
+    recorder discover command publishers before the first command sample."""
+    recording_command_subscriber_wait_timeout_s: float = 2.0
     duration_s: float = 10.0
     amplitude_scale: float = 1.0
     frequency_scale: float = 1.0

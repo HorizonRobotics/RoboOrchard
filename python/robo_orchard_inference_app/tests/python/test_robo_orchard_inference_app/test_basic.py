@@ -49,7 +49,9 @@ def test_collecting_state_writes_mit_params(tmp_path):
     }
     state.at_stop_recording(mit_params=mit_params)
 
-    meta_path = tmp_path / state.session_time_str / "data" / "collector" / "task"
+    meta_path = (
+        tmp_path / state.session_time_str / "data" / "collector" / "task"
+    )
     episode_meta_paths = list(meta_path.glob("episode_*/episode_meta.json"))
     assert len(episode_meta_paths) == 1
     episode_meta = json.loads(episode_meta_paths[0].read_text())
@@ -63,6 +65,10 @@ def test_mit_parameter_helpers_include_mode():
     )
 
     assert "enable_mit_ctrl" in MIT_PARAM_NAMES
+    assert "mit_gravity_compensation_enabled" in MIT_PARAM_NAMES
+    assert "mit_gravity_compensation_urdf_path" in MIT_PARAM_NAMES
+    assert "mit_gravity_compensation_scale" in MIT_PARAM_NAMES
+    assert "mit_gravity_compensation_max_t_ref" in MIT_PARAM_NAMES
     assert RosServiceHelper._python_value_to_parameter_value(False) == {
         "type": 1,
         "bool_value": False,
@@ -70,6 +76,10 @@ def test_mit_parameter_helpers_include_mode():
     assert RosServiceHelper._python_value_to_parameter_value(1.25) == {
         "type": 3,
         "double_value": 1.25,
+    }
+    assert RosServiceHelper._python_value_to_parameter_value("robot.urdf") == {
+        "type": 4,
+        "string_value": "robot.urdf",
     }
 
 
@@ -81,7 +91,40 @@ def test_scripted_motion_float_params_stay_double_like():
     assert MainControlComponent._scripted_param_value(100.0) == "100.0"
     assert MainControlComponent._scripted_param_value(10.0) == "10.0"
     assert MainControlComponent._scripted_param_value(0.25) == "0.25"
+    assert MainControlComponent._scripted_param_value(2) == "2"
     assert MainControlComponent._scripted_param_value(True) == "true"
+    assert MainControlComponent._scripted_param_value(
+        [0.0, 0.1, -0.7]
+    ) == "[0.0, 0.1, -0.7]"
+
+
+def test_scripted_motion_recording_subscriber_gate_params():
+    from robo_orchard_inference_app.components.main_control import (
+        MainControlComponent,
+    )
+    from robo_orchard_inference_app.config import LaunchCfg
+
+    component = object.__new__(MainControlComponent)
+    component.launch_cfg = LaunchCfg()
+
+    args = component._scripted_motion_args(
+        duration_s=10.0,
+        amplitude_scale=1.0,
+        frequency_scale=1.0,
+        use_current_state=False,
+        use_start_position=True,
+        start_position_left=[0.0, 0.1, -0.7, 0.0, 0.0, 0.0, 0.0],
+        start_position_right=[0.0, 0.1, -0.7, 0.0, 0.0, 0.0, 0.0],
+        min_command_subscribers=2,
+        command_subscriber_wait_timeout_s=2.5,
+    )
+
+    assert "use_current_state:=false" in args
+    assert "use_start_position:=true" in args
+    assert "start_position_left:=[0.0, 0.1, -0.7, 0.0, 0.0, 0.0, 0.0]" in args
+    assert "start_position_right:=[0.0, 0.1, -0.7, 0.0, 0.0, 0.0, 0.0]" in args
+    assert "min_command_subscribers:=2" in args
+    assert "command_subscriber_wait_timeout_s:=2.5" in args
 
 
 if __name__ == "__main__":

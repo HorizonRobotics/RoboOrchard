@@ -81,6 +81,10 @@ def main():
                 default_follower_kd=0.8,
                 default_follower_vel_ref=45.0,
                 default_follower_torque_ref=0.0,
+                default_follower_gravity_compensation_alpha=0.0,
+                default_follower_gravity_compensation_urdf_path=(
+                    "/data/holobrain/urdf/piper_x_description.urdf"
+                ),
             ),
             enable_arm_service_name=[
                 "/robot/left_master/enable_ctrl",

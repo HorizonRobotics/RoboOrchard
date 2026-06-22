@@ -17,6 +17,8 @@
 import logging
 import math
 import time
+from pathlib import Path
+from typing import Sequence
 
 from geometry_msgs.msg import PoseStamped
 from piper_sdk import C_PiperInterface
@@ -35,11 +37,286 @@ __all__ = [
     "get_arm_state",
     "get_arm_ee_pose",
     "joint_control",
+    "joint_mit_control",
+    "PinocchioGravityCompensator",
     "get_enable_flag",
     "enable_arm_ctrl",
     "switch_piper_ctrl_mode",
     "set_ctrl_method",
 ]
+
+
+class GravityCompensationError(RuntimeError):
+    pass
+
+
+class PinocchioGravityCompensator:
+    def __init__(self) -> None:
+        self.enabled = False
+        self.urdf_path = ""
+        self.joint_names = [f"joint{i}" for i in range(1, 7)]
+        self.scale = 1.0
+        # Per-joint multiplier applied on top of ``scale``. Needed because the
+        # Piper firmware executes commanded MIT torque at ~4x on joints 1-3 and
+        # ~1x on 4-6, so a single global scale cannot compensate gravity
+        # correctly for both motor groups. An empty/short vector is padded with
+        # 1.0, which reproduces the original single-scale behaviour.
+        self.per_joint_scale = [1.0] * 6
+        self.max_abs_t_ref = 8.0
+        self._pin = None
+        self._np = None
+        self._model = None
+        self._data = None
+        self._neutral_q = None
+        self._zero_v = None
+        self._zero_a = None
+        self._joint_indices: list[tuple[int, int]] = []
+        self._model_key: tuple[str, tuple[str, ...]] | None = None
+        # Per-timestep recording of the gravity-compensation computation.
+        # When a path is set, every compute() call appends one CSV row with
+        # the raw pin.rnea gravity torque and the final applied torque.
+        self._record_path = ""
+        self._record_file = None
+        self._record_count = 0
+
+    def set_record_path(self, path: str) -> None:
+        """Enable/disable per-timestep CSV recording of the computation.
+
+        An empty path disables recording. Each row records the joint
+        positions, the raw ``pin.rnea`` gravity torque, the per-joint scale,
+        and the final (scaled + clamped) torque actually added to the MIT
+        feedforward.
+        """
+        path = str(path or "").strip()
+        if path == self._record_path and self._record_file is not None:
+            return
+        self.close_record()
+        self._record_path = path
+        if not path:
+            return
+        record_path = Path(path).expanduser()
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        # Line-buffered so the file can be tailed live while recording.
+        self._record_file = record_path.open("w", buffering=1)
+        n = len(self.joint_names) or 6
+        header = ["t_unix", "scale", "max_t_ref"]
+        header += [f"q{i}" for i in range(1, n + 1)]
+        header += [f"rnea{i}" for i in range(1, n + 1)]
+        header += [f"per_joint{i}" for i in range(1, n + 1)]
+        header += [f"applied_tau{i}" for i in range(1, n + 1)]
+        self._record_file.write(",".join(header) + "\n")
+        self._record_count = 0
+
+    def close_record(self) -> None:
+        if self._record_file is not None:
+            try:
+                self._record_file.close()
+            finally:
+                self._record_file = None
+
+    def _record_row(
+        self,
+        positions: Sequence[float],
+        raw_taus: Sequence[float],
+        joint_scales: Sequence[float],
+        torques: Sequence[float],
+    ) -> None:
+        if self._record_file is None:
+            return
+        n = len(self.joint_names) or 6
+
+        def _cells(values: Sequence[float]) -> list[str]:
+            cells = [f"{float(v):.6g}" for v in list(values)[:n]]
+            cells += [""] * (n - len(cells))
+            return cells
+
+        row = [
+            f"{time.time():.6f}",
+            f"{self.scale:.6g}",
+            f"{self.max_abs_t_ref:.6g}",
+        ]
+        row += _cells(positions)
+        row += _cells(raw_taus)
+        row += _cells(joint_scales)
+        row += _cells(torques)
+        self._record_file.write(",".join(row) + "\n")
+        self._record_count += 1
+
+    def configure(
+        self,
+        *,
+        enabled: bool,
+        urdf_path: str,
+        joint_names: Sequence[str],
+        scale: float,
+        max_abs_t_ref: float,
+        per_joint_scale: Sequence[float] | None = None,
+    ) -> None:
+        old_state = (
+            self.enabled,
+            self.urdf_path,
+            list(self.joint_names),
+            self.scale,
+            list(self.per_joint_scale),
+            self.max_abs_t_ref,
+            self._model,
+            self._data,
+            self._neutral_q,
+            self._zero_v,
+            self._zero_a,
+            list(self._joint_indices),
+            self._model_key,
+        )
+        try:
+            self.enabled = bool(enabled)
+            self.urdf_path = str(urdf_path)
+            self.joint_names = list(joint_names)
+            self.scale = float(scale)
+            self.per_joint_scale = self._normalize_per_joint_scale(
+                per_joint_scale, len(self.joint_names)
+            )
+            self.max_abs_t_ref = float(max_abs_t_ref)
+            model_key = (self.urdf_path, tuple(self.joint_names))
+            if model_key != self._model_key:
+                self._model = None
+                self._data = None
+                self._neutral_q = None
+                self._zero_v = None
+                self._zero_a = None
+                self._joint_indices = []
+                self._model_key = None
+            if self.enabled:
+                self._ensure_model()
+        except Exception:
+            (
+                self.enabled,
+                self.urdf_path,
+                self.joint_names,
+                self.scale,
+                self.per_joint_scale,
+                self.max_abs_t_ref,
+                self._model,
+                self._data,
+                self._neutral_q,
+                self._zero_v,
+                self._zero_a,
+                self._joint_indices,
+                self._model_key,
+            ) = old_state
+            raise
+
+    @staticmethod
+    def _normalize_per_joint_scale(
+        per_joint_scale: Sequence[float] | None, joint_count: int
+    ) -> list[float]:
+        if not per_joint_scale:
+            return [1.0] * joint_count
+        values = [float(v) for v in per_joint_scale]
+        if len(values) < joint_count:
+            # Pad with 1.0 so a short vector only overrides the joints given.
+            values = values + [1.0] * (joint_count - len(values))
+        elif len(values) > joint_count:
+            raise GravityCompensationError(
+                f"mit_gravity_compensation_scale_per_joint has "
+                f"{len(values)} values, expected at most {joint_count}."
+            )
+        return values
+
+    def _ensure_model(self) -> None:
+        if self._model is not None:
+            return
+        if not self.urdf_path:
+            raise GravityCompensationError(
+                "mit_gravity_compensation_urdf_path must be set before "
+                "enabling gravity compensation."
+            )
+
+        try:
+            import numpy as np
+            import pinocchio as pin
+        except ImportError as exc:
+            raise GravityCompensationError(
+                "Pinocchio is required for MIT gravity compensation. "
+                "Install python3-pinocchio or the pin/pinocchio Python "
+                "package in the ROS environment."
+            ) from exc
+
+        urdf_path = Path(self.urdf_path).expanduser()
+        if not urdf_path.exists():
+            raise GravityCompensationError(
+                f"Gravity compensation URDF does not exist: {urdf_path}"
+            )
+
+        model = pin.buildModelFromUrdf(str(urdf_path))
+        model.gravity.linear = np.array([0.0, 0.0, -9.81])
+        joint_indices: list[tuple[int, int]] = []
+        for joint_name in self.joint_names:
+            joint_id = model.getJointId(joint_name)
+            if joint_id >= model.njoints:
+                raise GravityCompensationError(
+                    f"Joint {joint_name!r} not found in URDF {urdf_path}"
+                )
+            joint_model = model.joints[joint_id]
+            if joint_model.nq != 1 or joint_model.nv != 1:
+                raise GravityCompensationError(
+                    f"Joint {joint_name!r} must be a single-DoF joint for "
+                    "Piper MIT gravity compensation."
+                )
+            joint_indices.append((joint_model.idx_q, joint_model.idx_v))
+
+        self._pin = pin
+        self._np = np
+        self._model = model
+        self._data = model.createData()
+        self._neutral_q = pin.neutral(model)
+        self._zero_v = np.zeros(model.nv)
+        self._zero_a = np.zeros(model.nv)
+        self._joint_indices = joint_indices
+        self._model_key = (str(self.urdf_path), tuple(self.joint_names))
+
+    def compute(self, positions: Sequence[float]) -> list[float]:
+        if not self.enabled:
+            return [0.0] * min(6, len(positions))
+        self._ensure_model()
+        assert self._pin is not None
+        assert self._model is not None
+        assert self._data is not None
+        assert self._neutral_q is not None
+        assert self._zero_v is not None
+        assert self._zero_a is not None
+
+        q = self._neutral_q.copy()
+        for (idx_q, _), position in zip(
+            self._joint_indices, positions, strict=False
+        ):
+            q[idx_q] = float(position)
+
+        tau = self._pin.rnea(
+            self._model, self._data, q, self._zero_v, self._zero_a
+        )
+        torques: list[float] = []
+        raw_taus: list[float] = []
+        joint_scales: list[float] = []
+        for joint_pos, (_, idx_v) in enumerate(
+            self._joint_indices[: len(positions)]
+        ):
+            joint_scale = (
+                self.per_joint_scale[joint_pos]
+                if joint_pos < len(self.per_joint_scale)
+                else 1.0
+            )
+            raw_tau = float(tau[idx_v])
+            torque = raw_tau * self.scale * joint_scale
+            if self.max_abs_t_ref >= 0.0:
+                torque = max(
+                    -self.max_abs_t_ref, min(self.max_abs_t_ref, torque)
+                )
+            torques.append(torque)
+            raw_taus.append(raw_tau)
+            joint_scales.append(joint_scale)
+        if self._record_file is not None:
+            self._record_row(positions, raw_taus, joint_scales, torques)
+        return torques
 
 
 global_logger = logging.getLogger(__name__)
@@ -279,16 +556,45 @@ def joint_mit_control(
     joint_data: JointState,
     mit_kp: float,
     mit_kd: float,
+    mit_torque_ref: float = 0.0,
+    gravity_compensator: PinocchioGravityCompensator | None = None,
+    has_gripper: bool = False,
+    gripper_val_mutiple: float = 1.0,
+    velocity_ref: Sequence[float] | None = None,
 ):
-    for idx in range(min(6, len(joint_data.position))):
+    joint_count = min(6, len(joint_data.position))
+    gravity_torques = [0.0] * joint_count
+    if gravity_compensator is not None and gravity_compensator.enabled:
+        gravity_torques = gravity_compensator.compute(
+            joint_data.position[:joint_count]
+        )
+
+    for idx in range(joint_count):
+        # v_des feedforward: kd then damps the velocity tracking error
+        # (v_des - q_dot) instead of absolute velocity, removing the drag the
+        # kd term otherwise applies while following a moving command.
+        v_des = (
+            float(velocity_ref[idx])
+            if velocity_ref is not None and idx < len(velocity_ref)
+            else 0.0
+        )
         piper.JointMitCtrl(
             idx + 1,
             float(joint_data.position[idx]),
-            0.0,
+            v_des,
             mit_kp,
             mit_kd,
-            0.0,
+            float(mit_torque_ref) + gravity_torques[idx],
         )
+
+    # The gripper is not a MIT joint; keep driving it the same way as
+    # joint_control does.
+    if has_gripper:
+        gripper = 0
+        if len(joint_data.position) >= 7:
+            gripper = round(joint_data.position[6] * 1000 * 1000)
+            gripper = gripper * gripper_val_mutiple
+        piper.GripperCtrl(abs(gripper), 1000, 0x01, 0)
 
 
 def get_enable_flag(piper: C_PiperInterface):

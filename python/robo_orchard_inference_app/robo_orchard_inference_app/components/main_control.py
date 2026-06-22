@@ -34,6 +34,10 @@ from robo_orchard_inference_app.ui import StatusConfig, multi_status_indicator
 from robo_orchard_inference_app.utils import start_process, stop_process
 
 
+_UNSERIALIZABLE = object()
+_SCRIPTED_MOTION_READY_TIMEOUT_S = 20.0
+
+
 @dataclass
 class MetaRow:
     unique_id: str
@@ -116,6 +120,189 @@ class MainControlComponent(ComponentBase):
             self.collecting_state.episode_meta
         )
 
+    @staticmethod
+    def _json_safe_value(value):
+        if value is None or isinstance(value, bool | int | float | str):
+            return value
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, tuple | list):
+            items = []
+            for item in value:
+                safe_item = MainControlComponent._json_safe_value(item)
+                if safe_item is not _UNSERIALIZABLE:
+                    items.append(safe_item)
+            return items
+        if isinstance(value, dict):
+            safe_dict = {}
+            for key, item in value.items():
+                safe_item = MainControlComponent._json_safe_value(item)
+                if safe_item is not _UNSERIALIZABLE:
+                    safe_dict[str(key)] = safe_item
+            return safe_dict
+        if hasattr(value, "model_dump"):
+            return MainControlComponent._json_safe_value(value.model_dump())
+        return _UNSERIALIZABLE
+
+    def _session_value(self, key_suffix: str, default):
+        return st.session_state.get(f"{self.key_prefix}_{key_suffix}", default)
+
+    def _follower_gravity_per_joint(self) -> list[float]:
+        """Per-joint multiplier applied to the rnea gravity torque.
+
+        Each value is the coefficient on that joint's gravity torque
+        (gravity_i = clamp(rnea_i * per_joint_i, +/- max_t_ref)); 0 disables
+        compensation for that joint. Defaults to 0 for all joints.
+        """
+        return [
+            float(self._session_value(f"follower_gravity_pj{j}", 0.0))
+            for j in range(1, 7)
+        ]
+
+    def _streamlit_widget_snapshot(self) -> dict[str, object]:
+        snapshot: dict[str, object] = {}
+        for key, value in st.session_state.items():
+            if hasattr(value, "model_dump"):
+                continue
+            safe_value = self._json_safe_value(value)
+            if safe_value is not _UNSERIALIZABLE:
+                snapshot[str(key)] = safe_value
+        return snapshot
+
+    def _collect_ui_params_snapshot(self) -> dict[str, object]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        scripted_cfg = self.launch_cfg.scripted_motion
+        return {
+            "snapshot_version": 1,
+            "captured_at_unix_s": time.time(),
+            "runtime_state": {
+                "control_mode": (
+                    self.collecting_state.inference_state.control_mode
+                ),
+                "arm_ctrl_status": (
+                    self.collecting_state.inference_state.arm_ctrl_status
+                ),
+                "is_inference_service_running": (
+                    self.collecting_state.inference_state
+                    .is_inference_service_running
+                ),
+                "is_scripted_motion_running": (
+                    self._scripted_motion_process() is not None
+                ),
+            },
+            "mit_control": {
+                "master_enabled": bool(
+                    self._session_value(
+                        "master_mit_enabled",
+                        mit_cfg.default_master_enabled,
+                    )
+                ),
+                "master_kp": float(
+                    self._session_value(
+                        "master_mit_kp", mit_cfg.default_master_kp
+                    )
+                ),
+                "master_kd": float(
+                    self._session_value(
+                        "master_mit_kd", mit_cfg.default_master_kd
+                    )
+                ),
+                "master_vel_ref": float(
+                    self._session_value(
+                        "master_mit_vel_ref",
+                        mit_cfg.default_master_vel_ref,
+                    )
+                ),
+                "master_torque_ref": float(
+                    self._session_value(
+                        "master_mit_torque_ref",
+                        mit_cfg.default_master_torque_ref,
+                    )
+                ),
+                "follower_enabled": bool(
+                    self._session_value(
+                        "follower_mit_enabled",
+                        mit_cfg.default_follower_enabled,
+                    )
+                ),
+                "follower_kp": float(
+                    self._session_value(
+                        "follower_mit_kp", mit_cfg.default_follower_kp
+                    )
+                ),
+                "follower_kd": float(
+                    self._session_value(
+                        "follower_mit_kd", mit_cfg.default_follower_kd
+                    )
+                ),
+                "follower_vel_ref": float(
+                    self._session_value(
+                        "follower_mit_vel_ref",
+                        mit_cfg.default_follower_vel_ref,
+                    )
+                ),
+                "follower_torque_ref": float(
+                    self._session_value(
+                        "follower_mit_torque_ref",
+                        mit_cfg.default_follower_torque_ref,
+                    )
+                ),
+                "follower_velocity_feedforward": bool(
+                    self._session_value("follower_velocity_ff", False)
+                ),
+                "follower_gravity_compensation_enabled": True,
+                "follower_gravity_compensation_urdf_path": str(
+                    self._session_value(
+                        "follower_gravity_urdf_path",
+                        mit_cfg.default_follower_gravity_compensation_urdf_path,
+                    )
+                ).strip(),
+                "follower_gravity_compensation_scale": 1.0,
+                "follower_gravity_compensation_scale_per_joint": (
+                    self._follower_gravity_per_joint()
+                ),
+                "follower_gravity_compensation_max_t_ref": float(
+                    self._session_value(
+                        "follower_gravity_max_t_ref",
+                        mit_cfg.default_follower_gravity_compensation_max_t_ref,
+                    )
+                ),
+            },
+            "scripted_motion": {
+                "duration_s": float(
+                    self._session_value(
+                        "scripted_duration_s", scripted_cfg.duration_s
+                    )
+                ),
+                "record_motion": bool(
+                    self._session_value("record_scripted_motion", False)
+                ),
+                "amplitude_scale": float(
+                    self._session_value(
+                        "scripted_amplitude_scale",
+                        scripted_cfg.amplitude_scale,
+                    )
+                ),
+                "frequency_scale": float(
+                    self._session_value(
+                        "scripted_frequency_scale",
+                        scripted_cfg.frequency_scale,
+                    )
+                ),
+                "trajectory_start_position": (
+                    self._scripted_motion_reset_position()
+                ),
+                "uses_current_state_for_start": False,
+                "launch_config": self._json_safe_value(scripted_cfg),
+                "started_recording": bool(
+                    st.session_state.get(
+                        "scripted_motion_started_recording", False
+                    )
+                ),
+            },
+            "streamlit_session_state": self._streamlit_widget_snapshot(),
+        }
+
     # --- Data Recording Panel ---
     def _render_recorder_panel(self):
         """Renders the data recording controls."""
@@ -167,10 +354,34 @@ class MainControlComponent(ComponentBase):
                 ):
                     self._stop_recording_callback()
 
+    def _set_gravity_record_for_episode(self, active: bool) -> None:
+        """Route follower gravity recording into the current episode dir.
+
+        Enabled when an episode starts recording, cleared when it stops, so
+        the per-timestep gravity CSVs land next to the episode's mcap.
+        """
+        if self.ros_helper is None:
+            return
+        directory = (
+            self.collecting_state.current_data_uri if active else None
+        )
+        try:
+            self.ros_helper.set_follower_gravity_record_dir(directory)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to update gravity-compensation recording path: {e}"
+            )
+
     def _start_recording_callback(self):
         if self.collecting_state.is_recording:
             self.logger.error(
                 "An episode is recorded, please decide to save or not first!"  # noqa: E501
+            )
+            return
+
+        if not self.collecting_state.is_configured:
+            self.logger.error(
+                "Select an episode user and task before recording."
             )
             return
 
@@ -197,6 +408,7 @@ class MainControlComponent(ComponentBase):
 
         self.logger.info(f"Starting recording for episode: {data_uri}")
         self.collecting_state.at_start_recording()
+        self._set_gravity_record_for_episode(active=True)
         with st.spinner("Waiting...", show_time=True):
             try:
                 polling2.poll(
@@ -277,6 +489,13 @@ class MainControlComponent(ComponentBase):
             st.session_state.scripted_motion_started_recording = False
             return self.collecting_state.current_data_uri, False
 
+        if not self.collecting_state.is_configured:
+            self.logger.error(
+                "Select an episode user and task before recording "
+                "scripted motion."
+            )
+            return None
+
         data_uri = self.collecting_state.prepare_recording_path()
         recording_flag = os.path.join(data_uri, "__RECORDING__")
         start_ok = False
@@ -297,25 +516,29 @@ class MainControlComponent(ComponentBase):
             )
             return None
 
-        self.collecting_state.at_start_recording()
         try:
             polling2.poll(
                 lambda: os.path.exists(recording_flag),
-                timeout=0.5,
-                step=0.05,
+                timeout=10.0,
+                step=0.1,
             )
         except polling2.TimeoutException:
-            self.logger.warning(
-                "Recorder flag was not observed before scripted motion "
-                "start; continuing because the start service succeeded."
+            self.ros_helper.stop_recording()
+            self.logger.error(
+                "Recorder did not become ready before scripted motion "
+                "start; scripted motion was not triggered."
             )
+            return None
         except Exception as e:
-            self.logger.warning(
+            self.ros_helper.stop_recording()
+            self.logger.error(
                 "Unexpected error while waiting for scripted motion "
-                f"recording flag: {e}; continuing because the start "
-                "service succeeded."
+                f"recording flag: {e}; scripted motion was not triggered."
             )
+            return None
 
+        self.collecting_state.at_start_recording()
+        self._set_gravity_record_for_episode(active=True)
         st.session_state.scripted_motion_started_recording = True
         self.logger.info(
             "Recording started for scripted motion: "
@@ -336,7 +559,11 @@ class MainControlComponent(ComponentBase):
 
         if self.ros_helper.stop_recording():
             mit_params = self.ros_helper.get_mit_params_snapshot()
-            self.collecting_state.at_stop_recording(mit_params=mit_params)
+            ui_params = self._collect_ui_params_snapshot()
+            self.collecting_state.at_stop_recording(
+                mit_params=mit_params, ui_params=ui_params
+            )
+            self._set_gravity_record_for_episode(active=False)
             self.logger.info(
                 "Scripted motion recording stopped automatically: "
                 f"{self.collecting_state.current_data_uri}"
@@ -369,7 +596,11 @@ class MainControlComponent(ComponentBase):
 
         if self.ros_helper.stop_recording():
             mit_params = self.ros_helper.get_mit_params_snapshot()
-            self.collecting_state.at_stop_recording(mit_params=mit_params)
+            ui_params = self._collect_ui_params_snapshot()
+            self.collecting_state.at_stop_recording(
+                mit_params=mit_params, ui_params=ui_params
+            )
+            self._set_gravity_record_for_episode(active=False)
             st.session_state.scripted_motion_started_recording = False
             self._clear_scripted_recording_refresh()
             self.logger.info(
@@ -385,7 +616,9 @@ class MainControlComponent(ComponentBase):
                 "Stop recording failed! Please check the log panel."
             )
 
-    def _render_mit_control_panel(self) -> dict[str, bool | float]:
+    def _render_mit_control_panel(
+        self,
+    ) -> dict[str, bool | float | str | list[float]]:
         mit_cfg = self.launch_cfg.ros_bridge.mit_control
         st.subheader("MIT Params")
 
@@ -481,6 +714,50 @@ class MainControlComponent(ComponentBase):
                 "follower_mit_torque_ref",
             )
 
+        follower_velocity_feedforward = st.checkbox(
+            "Velocity feedforward (follower)",
+            value=False,
+            key=f"{self.key_prefix}_follower_velocity_ff",
+            help=(
+                "Feed the commanded joint velocity (finite-differenced from "
+                "position commands) as v_des, so kd damps velocity error "
+                "instead of absolute velocity. Reduces follower "
+                "overshoot/lag during motion."
+            ),
+        )
+
+        st.caption("Follower gravity (per-joint rnea scale)")
+        gravity_cols = st.columns([2, 1])
+        with gravity_cols[0]:
+            follower_gravity_urdf_path = st.text_input(
+                "URDF path",
+                value=mit_cfg.default_follower_gravity_compensation_urdf_path,
+                key=f"{self.key_prefix}_follower_gravity_urdf_path",
+            )
+        with gravity_cols[1]:
+            follower_gravity_max_t_ref = _number_input(
+                "Max t_ref",
+                mit_cfg.default_follower_gravity_compensation_max_t_ref,
+                0.1,
+                "follower_gravity_max_t_ref",
+                min_value=0.0,
+            )
+        # Per-joint multiplier on the rnea gravity torque. Default 0 (off);
+        # the applied feedforward is gravity_i = clamp(rnea_i * pj_i, +-t_ref).
+        per_joint_cols = st.columns(6)
+        follower_gravity_per_joint: list[float] = []
+        for j in range(6):
+            with per_joint_cols[j]:
+                follower_gravity_per_joint.append(
+                    _number_input(
+                        f"j{j + 1}",
+                        0.0,
+                        0.05,
+                        f"follower_gravity_pj{j + 1}",
+                        min_value=0.0,
+                    )
+                )
+
         return {
             "master_enabled": master_enabled,
             "master_kp": master_kp,
@@ -492,6 +769,18 @@ class MainControlComponent(ComponentBase):
             "follower_kd": follower_kd,
             "follower_vel_ref": follower_vel_ref,
             "follower_torque_ref": follower_torque_ref,
+            "follower_velocity_feedforward": follower_velocity_feedforward,
+            "follower_gravity_compensation_enabled": True,
+            "follower_gravity_compensation_urdf_path": (
+                follower_gravity_urdf_path.strip()
+            ),
+            "follower_gravity_compensation_scale": 1.0,
+            "follower_gravity_compensation_scale_per_joint": (
+                follower_gravity_per_joint
+            ),
+            "follower_gravity_compensation_max_t_ref": (
+                follower_gravity_max_t_ref
+            ),
         }
 
     @staticmethod
@@ -533,33 +822,45 @@ class MainControlComponent(ComponentBase):
             return process
 
         st.session_state.scripted_motion_process = None
-        self._clear_scripted_motion_trigger_file()
+        self._clear_scripted_motion_sync_files()
         return None
 
-    def _clear_scripted_motion_trigger_file(self) -> None:
-        trigger_file = st.session_state.pop(
-            "scripted_motion_trigger_file", None
-        )
-        if not trigger_file:
-            return
-        try:
-            os.remove(trigger_file)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to remove scripted motion trigger file: {e}"
-            )
+    def _clear_scripted_motion_sync_files(self) -> None:
+        for state_key, description in (
+            ("scripted_motion_trigger_file", "trigger"),
+            ("scripted_motion_ready_file", "ready"),
+        ):
+            sync_file = st.session_state.pop(state_key, None)
+            if not sync_file:
+                continue
+            try:
+                os.remove(sync_file)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                self.logger.warning(
+                    "Failed to remove scripted motion "
+                    f"{description} file: {e}"
+                )
 
     def _is_scripted_motion_running(self) -> bool:
         return self._scripted_motion_process() is not None
 
     @staticmethod
-    def _scripted_param_value(value: bool | float | str) -> str:
+    def _scripted_param_value(
+        value: bool | float | int | list[float] | tuple[float, ...] | str,
+    ) -> str:
         if isinstance(value, bool):
             return str(value).lower()
         if isinstance(value, float):
             return str(float(value))
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(
+                MainControlComponent._scripted_param_value(item)
+                for item in value
+            ) + "]"
         return value
 
     def _scripted_motion_args(
@@ -569,16 +870,29 @@ class MainControlComponent(ComponentBase):
         frequency_scale: float,
         start_delay_s: float | None = None,
         start_trigger_file: str | None = None,
+        ready_file: str | None = None,
+        use_current_state: bool | None = None,
+        use_start_position: bool | None = None,
+        start_position_left: list[float] | None = None,
+        start_position_right: list[float] | None = None,
+        min_command_subscribers: int | None = None,
+        command_subscriber_wait_timeout_s: float | None = None,
     ) -> list[str]:
         cfg = self.launch_cfg.scripted_motion
-        params: dict[str, bool | float | str] = {
+        params: dict[
+            str, bool | float | int | list[float] | tuple[float, ...] | str
+        ] = {
             "left_command_topic": cfg.left_command_topic,
             "right_command_topic": cfg.right_command_topic,
             "left_state_topic": cfg.left_state_topic,
             "right_state_topic": cfg.right_state_topic,
             "publish_left": cfg.publish_left,
             "publish_right": cfg.publish_right,
-            "use_current_state": cfg.use_current_state,
+            "use_current_state": (
+                cfg.use_current_state
+                if use_current_state is None
+                else bool(use_current_state)
+            ),
             "mirror_right": cfg.mirror_right,
             "rate_hz": cfg.rate_hz,
             "start_delay_s": (
@@ -592,6 +906,26 @@ class MainControlComponent(ComponentBase):
         }
         if start_trigger_file:
             params["start_trigger_file"] = start_trigger_file
+        if ready_file:
+            params["ready_file"] = ready_file
+        if use_start_position is not None:
+            params["use_start_position"] = bool(use_start_position)
+        if start_position_left is not None:
+            params["start_position_left"] = [
+                float(value) for value in start_position_left
+            ]
+        if start_position_right is not None:
+            params["start_position_right"] = [
+                float(value) for value in start_position_right
+            ]
+        if min_command_subscribers is not None:
+            params["min_command_subscribers"] = max(
+                0, int(min_command_subscribers)
+            )
+        if command_subscriber_wait_timeout_s is not None:
+            params["command_subscriber_wait_timeout_s"] = max(
+                0.0, float(command_subscriber_wait_timeout_s)
+            )
 
         args = ["--ros-args"]
         for name, value in params.items():
@@ -668,6 +1002,13 @@ class MainControlComponent(ComponentBase):
         frequency_scale: float,
         start_delay_s: float | None = None,
         start_trigger_file: str | None = None,
+        ready_file: str | None = None,
+        use_current_state: bool | None = None,
+        use_start_position: bool | None = None,
+        start_position_left: list[float] | None = None,
+        start_position_right: list[float] | None = None,
+        min_command_subscribers: int | None = None,
+        command_subscriber_wait_timeout_s: float | None = None,
     ) -> list[list[str]]:
         args = self._scripted_motion_args(
             duration_s=duration_s,
@@ -675,14 +1016,52 @@ class MainControlComponent(ComponentBase):
             frequency_scale=frequency_scale,
             start_delay_s=start_delay_s,
             start_trigger_file=start_trigger_file,
+            ready_file=ready_file,
+            use_current_state=use_current_state,
+            use_start_position=use_start_position,
+            start_position_left=start_position_left,
+            start_position_right=start_position_right,
+            min_command_subscribers=min_command_subscribers,
+            command_subscriber_wait_timeout_s=(
+                command_subscriber_wait_timeout_s
+            ),
         )
         return [base + args for base in self._scripted_motion_base_commands()]
+
+    def _wait_for_scripted_motion_ready(
+        self, ready_file: str, process: subprocess.Popen
+    ) -> bool:
+        timeout_s = (
+            _SCRIPTED_MOTION_READY_TIMEOUT_S
+            + max(0.0, float(self.launch_cfg.scripted_motion.start_delay_s))
+        )
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if os.path.exists(ready_file):
+                return True
+            if process.poll() is not None:
+                message = (
+                    "Scripted motion exited before setup completed; "
+                    "recording was not started."
+                )
+                self._set_scripted_motion_error(message)
+                self.logger.error(message)
+                return False
+            time.sleep(0.05)
+
+        message = (
+            "Timed out waiting for scripted motion setup to finish "
+            f"after {timeout_s:.1f}s; recording was not started."
+        )
+        self._set_scripted_motion_error(message)
+        self.logger.error(message)
+        return False
 
     def _stop_scripted_motion(self) -> bool:
         process = self._scripted_motion_process()
         if process is None:
             st.session_state.scripted_motion_process = None
-            self._clear_scripted_motion_trigger_file()
+            self._clear_scripted_motion_sync_files()
             return True
 
         try:
@@ -692,7 +1071,7 @@ class MainControlComponent(ComponentBase):
             return False
 
         st.session_state.scripted_motion_process = None
-        self._clear_scripted_motion_trigger_file()
+        self._clear_scripted_motion_sync_files()
         self._set_scripted_motion_error(None)
         self.logger.info("Scripted motion stopped.")
         return True
@@ -702,6 +1081,17 @@ class MainControlComponent(ComponentBase):
         self._stop_scripted_motion()
         self.ros_helper.set_control_mode("stop")
 
+    def _scripted_motion_reset_position(self) -> list[float]:
+        scripted_reset = self.launch_cfg.scripted_motion.reset_position
+        if scripted_reset:
+            return [float(value) for value in scripted_reset]
+
+        ros_reset = self.launch_cfg.ros_bridge.reset_position
+        if ros_reset:
+            return [float(value) for value in ros_reset]
+
+        return [0.0] * 7
+
     def _stop_scripted_motion_callback(self):
         self._stop_scripted_motion_and_robot()
         scripted_reset = self.launch_cfg.scripted_motion.reset_position
@@ -709,7 +1099,7 @@ class MainControlComponent(ComponentBase):
 
     def _start_scripted_motion_callback(
         self,
-        mit_params: dict[str, bool | float],
+        mit_params: dict[str, bool | float | str],
         duration_s: float,
         amplitude_scale: float,
         frequency_scale: float,
@@ -719,10 +1109,23 @@ class MainControlComponent(ComponentBase):
             self.logger.warning("Scripted motion is already running.")
             return
 
+        scripted_start_position = self._scripted_motion_reset_position()
+        if len(scripted_start_position) != 7:
+            self.logger.error(
+                "Scripted motion reset/start position must have 7 joint "
+                f"values, got {len(scripted_start_position)}."
+            )
+            return
+        # Scripted motion inherits the single follower gravity alpha already
+        # in mit_params; it no longer overrides/restores its own value.
         scripted_mit_params = dict(mit_params)
         scripted_mit_params["master_enabled"] = True
         scripted_mit_params["follower_enabled"] = True
         if not self.ros_helper.set_mit_params(**scripted_mit_params):
+            self.ros_helper.set_control_mode("stop")
+            return
+
+        if not self.ros_helper.reset_arm(position=scripted_start_position):
             self.ros_helper.set_control_mode("stop")
             return
 
@@ -738,32 +1141,47 @@ class MainControlComponent(ComponentBase):
             record_motion and not self.collecting_state.is_recording
         )
         trigger_file: str | None = None
-        setup_delay_s = 0.0
+        ready_file: str | None = None
+        min_command_subscribers: int | None = None
+        command_subscriber_wait_timeout_s: float | None = None
         if prelaunch_for_recording:
-            setup_delay_s = max(
-                0.0, float(self.launch_cfg.scripted_motion.start_delay_s)
+            min_command_subscribers = (
+                self.launch_cfg.scripted_motion
+                .recording_command_min_subscribers
             )
-            trigger_dir = Path(tempfile.gettempdir()) / (
+            command_subscriber_wait_timeout_s = (
+                self.launch_cfg.scripted_motion
+                .recording_command_subscriber_wait_timeout_s
+            )
+            sync_dir = Path(tempfile.gettempdir()) / (
                 "robo_orchard_scripted_motion"
             )
-            trigger_dir.mkdir(parents=True, exist_ok=True)
-            trigger_file = str(
-                trigger_dir / f"start_{time.monotonic_ns()}.trigger"
-            )
-            try:
-                os.remove(trigger_file)
-            except FileNotFoundError:
-                pass
+            sync_dir.mkdir(parents=True, exist_ok=True)
+            sync_token = time.monotonic_ns()
+            trigger_file = str(sync_dir / f"start_{sync_token}.trigger")
+            ready_file = str(sync_dir / f"ready_{sync_token}.ready")
+            for sync_file in (trigger_file, ready_file):
+                try:
+                    os.remove(sync_file)
+                except FileNotFoundError:
+                    pass
 
-        setup_started_at = time.monotonic()
         failures = []
         process = None
         for command in self._scripted_motion_commands(
             duration_s=duration_s,
             amplitude_scale=amplitude_scale,
             frequency_scale=frequency_scale,
-            start_delay_s=0.0 if trigger_file else None,
             start_trigger_file=trigger_file,
+            ready_file=ready_file,
+            use_current_state=False,
+            use_start_position=True,
+            start_position_left=scripted_start_position,
+            start_position_right=scripted_start_position,
+            min_command_subscribers=min_command_subscribers,
+            command_subscriber_wait_timeout_s=(
+                command_subscriber_wait_timeout_s
+            ),
         ):
             try:
                 process = start_process(
@@ -802,18 +1220,21 @@ class MainControlComponent(ComponentBase):
         st.session_state.scripted_motion_process = process
         if trigger_file:
             st.session_state.scripted_motion_trigger_file = trigger_file
+        if ready_file:
+            st.session_state.scripted_motion_ready_file = ready_file
 
         recording_to_stop: str | None = None
         if prelaunch_for_recording:
-            remaining_setup_s = max(
-                0.0, setup_delay_s - (time.monotonic() - setup_started_at)
+            self.logger.info(
+                "Scripted motion process started; waiting for setup readiness "
+                "before recording."
             )
-            if remaining_setup_s > 0.0:
-                self.logger.info(
-                    "Scripted motion process started; waiting "
-                    f"{remaining_setup_s:.2f}s more before recording."
-                )
-                time.sleep(remaining_setup_s)
+            if ready_file and not self._wait_for_scripted_motion_ready(
+                ready_file, process
+            ):
+                self._stop_scripted_motion()
+                self.ros_helper.set_control_mode("stop")
+                return
 
             recording_result = self._start_recording_for_scripted_motion()
             if recording_result is None:
@@ -837,8 +1258,16 @@ class MainControlComponent(ComponentBase):
 
         scheduled_recording_stop = False
         if record_motion and recording_to_stop is not None:
+            recording_stop_delay_s = float(duration_s)
+            if (
+                prelaunch_for_recording
+                and command_subscriber_wait_timeout_s is not None
+            ):
+                recording_stop_delay_s += max(
+                    0.0, float(command_subscriber_wait_timeout_s)
+                )
             self._schedule_scripted_motion_recording_stop(
-                duration_s, recording_to_stop
+                recording_stop_delay_s, recording_to_stop
             )
             scheduled_recording_stop = True
         self.logger.info("Scripted motion started.")
@@ -964,12 +1393,24 @@ class MainControlComponent(ComponentBase):
                     key=f"{self.key_prefix}_scripted_frequency_scale",
                 )
 
+            cannot_record_scripted_motion = (
+                record_scripted_motion
+                and not self.collecting_state.is_configured
+            )
+            if cannot_record_scripted_motion:
+                st.warning(
+                    "Select an episode user and task before recording "
+                    "scripted motion."
+                )
+
             motion_cols = st.columns([1, 1])
             with motion_cols[0]:
                 if st.button(
                     "Run Scripted Motion",
                     key=f"{self.key_prefix}_run_scripted_motion",
-                    disabled=scripted_running,
+                    disabled=(
+                        scripted_running or cannot_record_scripted_motion
+                    ),
                     use_container_width=True,
                 ):
                     self._start_scripted_motion_callback(

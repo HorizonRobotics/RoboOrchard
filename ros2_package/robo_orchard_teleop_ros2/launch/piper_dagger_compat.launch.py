@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import List
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -105,6 +107,39 @@ def generate_launch_description():
         "follower_mit_torque_ref",
         default_value="0.0",
         description="MIT torque reference for the follower arms.",
+    )
+    follower_gravity_compensation_enabled_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_enabled",
+        default_value="false",
+        description=(
+            "Master switch for follower MIT gravity compensation. The scale "
+            "and per-joint parameters have no effect unless this is true."
+        ),
+    )
+    follower_gravity_compensation_urdf_path_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_urdf_path",
+        default_value="/data/holobrain/urdf/piper_x_description.urdf",
+        description="URDF path used for follower MIT gravity compensation.",
+    )
+    follower_gravity_compensation_scale_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_scale",
+        default_value="1.0",
+        description="Scale applied to follower gravity compensation torque.",
+    )
+    follower_gravity_compensation_scale_per_joint_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_scale_per_joint",
+        default_value="[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]",
+        description=(
+            "Per-joint multiplier (on top of the global scale) for follower "
+            "gravity compensation. The Piper firmware executes commanded MIT "
+            "torque at ~4x on joints 1-3 and ~1x on 4-6, so use "
+            "[0.25, 0.25, 0.25, 1.0, 1.0, 1.0] for correct compensation."
+        ),
+    )
+    follower_gravity_compensation_max_t_ref_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_max_t_ref",
+        default_value="8.0",
+        description="Absolute clamp for follower gravity compensation t_ref.",
     )
 
     replay_time_s_arg = DeclareLaunchArgument(
@@ -257,6 +292,33 @@ def generate_launch_description():
                     LaunchConfiguration("follower_mit_torque_ref"),
                     value_type=float,
                 ),
+                "mit_gravity_compensation_enabled": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_enabled"
+                    ),
+                    value_type=bool,
+                ),
+                "mit_gravity_compensation_urdf_path": LaunchConfiguration(
+                    "follower_gravity_compensation_urdf_path"
+                ),
+                "mit_gravity_compensation_scale": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_scale"
+                    ),
+                    value_type=float,
+                ),
+                "mit_gravity_compensation_scale_per_joint": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_scale_per_joint"
+                    ),
+                    value_type=List[float],
+                ),
+                "mit_gravity_compensation_max_t_ref": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_max_t_ref"
+                    ),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -332,6 +394,33 @@ def generate_launch_description():
                     LaunchConfiguration("follower_mit_torque_ref"),
                     value_type=float,
                 ),
+                "mit_gravity_compensation_enabled": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_enabled"
+                    ),
+                    value_type=bool,
+                ),
+                "mit_gravity_compensation_urdf_path": LaunchConfiguration(
+                    "follower_gravity_compensation_urdf_path"
+                ),
+                "mit_gravity_compensation_scale": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_scale"
+                    ),
+                    value_type=float,
+                ),
+                "mit_gravity_compensation_scale_per_joint": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_scale_per_joint"
+                    ),
+                    value_type=List[float],
+                ),
+                "mit_gravity_compensation_max_t_ref": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_max_t_ref"
+                    ),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -362,6 +451,11 @@ def generate_launch_description():
             follower_mit_kd_arg,
             follower_mit_vel_ref_arg,
             follower_mit_torque_ref_arg,
+            follower_gravity_compensation_enabled_arg,
+            follower_gravity_compensation_urdf_path_arg,
+            follower_gravity_compensation_scale_arg,
+            follower_gravity_compensation_scale_per_joint_arg,
+            follower_gravity_compensation_max_t_ref_arg,
             replay_time_s_arg,
             # Add the nodes to be launched
             left_takeover_muxer_node,
