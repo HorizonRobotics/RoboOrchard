@@ -21,6 +21,7 @@ from robo_orchard_inference_app.config import (
     LaunchCfg,
     MITControlTuningCfg,
     ROSBridgeCfg,
+    ScriptedMotionCfg,
     UIControlCfg,
 )
 
@@ -70,6 +71,8 @@ def main():
                     "/robot/left/robot_left_controller",
                     "/robot/right/robot_right_controller",
                 ],
+                default_master_enabled=True,
+                default_follower_enabled=True,
                 default_master_kp=10.0,
                 default_master_kd=0.8,
                 default_master_vel_ref=45.0,
@@ -96,6 +99,18 @@ def main():
         ui_control=UIControlCfg(
             start_keyboard="s",
             stop_keyboard="f",
+        ),
+        scripted_motion=ScriptedMotionCfg(
+            command=[
+                "python3",
+                "/opt/roboorchard/ros2_package/robo_orchard_teleop_ros2/"
+                "robo_orchard_teleop_ros2/scripted/joint_master.py",
+            ],
+            duration_s=10.0,
+            start_delay_s=3.0,
+            amplitude_scale=1.0,
+            frequency_scale=1.0,
+            rate_hz=100.0,
         ),
         file_server_uri="http://localhost:8000",
     )

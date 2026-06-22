@@ -19,7 +19,12 @@ from urllib.parse import urlencode
 
 import pydantic
 
-__all__ = ["LaunchCfg", "MITControlTuningCfg", "TaskCfg"]
+__all__ = [
+    "LaunchCfg",
+    "MITControlTuningCfg",
+    "ScriptedMotionCfg",
+    "TaskCfg",
+]
 
 
 class FoxgloveCfg(pydantic.BaseModel):
@@ -93,6 +98,8 @@ class FoxgloveCfg(pydantic.BaseModel):
 class MITControlTuningCfg(pydantic.BaseModel):
     master_param_node_names: list[str] = pydantic.Field(default_factory=list)
     follower_param_node_names: list[str] = pydantic.Field(default_factory=list)
+    default_master_enabled: bool = True
+    default_follower_enabled: bool = True
     default_master_kp: float = 10.0
     default_master_kd: float = 0.8
     default_master_vel_ref: float = 45.0
@@ -101,6 +108,30 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
     default_follower_torque_ref: float = 0.0
+
+
+class ScriptedMotionCfg(pydantic.BaseModel):
+    command: list[str] = pydantic.Field(
+        default_factory=lambda: [
+            "ros2",
+            "run",
+            "robo_orchard_teleop_ros2",
+            "scripted_joint_master",
+        ]
+    )
+    left_command_topic: str = "/left_algo_cmd"
+    right_command_topic: str = "/right_algo_cmd"
+    left_state_topic: str = "/puppet/joint_left"
+    right_state_topic: str = "/puppet/joint_right"
+    publish_left: bool = True
+    publish_right: bool = True
+    use_current_state: bool = True
+    mirror_right: bool = False
+    rate_hz: float = 100.0
+    start_delay_s: float = 1.0
+    duration_s: float = 10.0
+    amplitude_scale: float = 1.0
+    frequency_scale: float = 1.0
 
 
 class ROSBridgeCfg(pydantic.BaseModel):
@@ -166,6 +197,11 @@ class LaunchCfg(pydantic.BaseModel):
 
     ui_control: UIControlCfg = pydantic.Field(default_factory=UIControlCfg)
     """UIControl configuration."""
+
+    scripted_motion: ScriptedMotionCfg = pydantic.Field(
+        default_factory=ScriptedMotionCfg
+    )
+    """Scripted motion launch configuration."""
 
 
 class TaskCfg(pydantic.BaseModel):
