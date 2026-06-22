@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import atexit
+import hashlib
 import os
 from typing import Callable, Literal
 
@@ -30,6 +31,8 @@ MIT_PARAM_NAMES = (
     "mit_kd",
     "mit_vel_ref",
     "mit_torque_ref",
+    "mit_velocity_feedforward",
+    "mit_velocity_feedforward_source",
     "mit_gravity_compensation_enabled",
     "mit_gravity_compensation_urdf_path",
     "mit_gravity_compensation_scale",
@@ -64,6 +67,7 @@ class RosServiceHelper:
         self._last_requested_mit_params: (
             dict[str, bool | float | str] | None
         ) = None
+        self._last_static_transform_fingerprint = None
         atexit.register(self.cleanup)
 
     def _check_client_connected(self) -> bool:
@@ -132,6 +136,71 @@ class RosServiceHelper:
         if success_callback:
             success_callback()
         return True
+
+    def get_node_names(self) -> list[str]:
+        if not self._check_client_connected():
+            return []
+        try:
+            return list(self.ros_client.get_nodes())
+        except Exception as e:
+            self.logger.error(f"Error getting ROS node names: {e}")
+            return []
+
+    @staticmethod
+    def _static_transform_fingerprint(directory: str):
+        abs_directory = os.path.abspath(directory)
+        entries = []
+        try:
+            for name in sorted(os.listdir(abs_directory)):
+                if not name.endswith(".json"):
+                    continue
+                path = os.path.join(abs_directory, name)
+                if not os.path.isfile(path):
+                    continue
+                stat = os.stat(path)
+                with open(path, "rb") as f:
+                    digest = hashlib.sha256(f.read()).hexdigest()
+                entries.append((name, stat.st_size, stat.st_mtime_ns, digest))
+        except OSError:
+            return (abs_directory, None)
+        return (abs_directory, tuple(entries))
+
+    def invalidate_static_transform_cache(self) -> None:
+        self._last_static_transform_fingerprint = None
+
+    def sync_static_transforms(self, episode_meta) -> bool:
+        directory = getattr(episode_meta, "tf_directory", "")
+        if not directory:
+            return True
+
+        service_name = self.cfg.static_transform_service_name
+        if not service_name:
+            self.logger.error("static_transform_service_name is not configured")
+            return False
+
+        fingerprint = self._static_transform_fingerprint(directory)
+        if fingerprint == self._last_static_transform_fingerprint:
+            return True
+
+        ok = self._call_services(
+            service_names=service_name,
+            success_msg="Static transforms updated successfully!",
+            timeout=5.0,
+            service_type="robo_orchard_data_msg_ros2/srv/SetStaticTransforms",
+            request_data={"directory": directory},
+        )
+        if ok:
+            self._last_static_transform_fingerprint = fingerprint
+        return ok
+
+    def get_tf_publisher_startup_id(self) -> str | None:
+        params, error = self._get_params(
+            "/static_tf_publisher", param_names=("startup_id",)
+        )
+        if error:
+            return None
+        startup_id = params.get("startup_id")
+        return startup_id if isinstance(startup_id, str) else None
 
     def _set_param(
         self,

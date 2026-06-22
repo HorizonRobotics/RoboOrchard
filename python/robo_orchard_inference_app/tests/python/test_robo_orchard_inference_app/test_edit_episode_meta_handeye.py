@@ -48,7 +48,7 @@ _st_stub.rerun = lambda: None
 _st_stub.dialog = lambda *args, **kwargs: lambda func: func
 _st_stub.set_page_config = lambda *args, **kwargs: None
 _st_stub.expander = lambda *args, **kwargs: _CtxNoop()
-sys.modules.setdefault("streamlit", _st_stub)
+sys.modules["streamlit"] = _st_stub
 
 _st_components = types.ModuleType("streamlit.components")
 _st_components_v1 = types.ModuleType("streamlit.components.v1")
@@ -184,7 +184,9 @@ def test_render_tf_directory_no_candidates_clears_stale_selection(monkeypatch):
 
 
 def test_render_tf_directory_resets_stale_selection(monkeypatch):
-    task_cfg = TaskCfg(candidate_tf_directories=["/media/tf_v2"])
+    task_cfg = TaskCfg(
+        candidate_tf_directories=["/media/tf_v2", "/media/tf_v3"]
+    )
     episode_meta = EpisodeMeta(tf_directory="/media/tf_old")
     component, rerun_called, dummy_logger, eem_st = _make_component(
         task_cfg, episode_meta
@@ -202,6 +204,34 @@ def test_render_tf_directory_resets_stale_selection(monkeypatch):
 
     assert episode_meta.tf_directory == ""
     assert len(dummy_logger.warnings) == 1
+
+
+def test_render_tf_directory_auto_selects_single_candidate(monkeypatch):
+    task_cfg = TaskCfg(candidate_tf_directories=["/media/tf_v1"])
+    episode_meta = EpisodeMeta(tf_directory="")
+    component, rerun_called, _, eem_st = _make_component(
+        task_cfg, episode_meta
+    )
+
+    selectbox_calls = []
+    monkeypatch.setattr(
+        eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
+    )
+    monkeypatch.setattr(
+        eem_st, "write", lambda *a, **kw: None, raising=False
+    )
+
+    def fake_selectbox(*args, **kwargs):
+        selectbox_calls.append(kwargs)
+        return kwargs["options"][kwargs["index"]]
+
+    monkeypatch.setattr(eem_st, "selectbox", fake_selectbox, raising=False)
+
+    component._render_tf_directory()
+
+    assert episode_meta.tf_directory == "/media/tf_v1"
+    assert selectbox_calls[0]["index"] == 0
+    assert rerun_called["count"] == 0
 
 
 def test_render_tf_directory_triggers_rerun_on_selection_change(monkeypatch):

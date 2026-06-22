@@ -244,6 +244,10 @@ class EditEpisodeMetaComponent(ComponentBase):
                 self.episode_meta.tf_directory = ""
                 current = ""
 
+            if not current and len(options) == 1:
+                current = options[0]
+                self.episode_meta.tf_directory = current
+
             index = options.index(current) if current in options else None
             selected = st.selectbox(
                 "Select TF directory",

@@ -75,11 +75,16 @@ class PiperSingleControlNode(Node):
         self.declare_parameter("mit_kd", 0.8)
         self.declare_parameter("mit_vel_ref", 45.0)
         self.declare_parameter("mit_torque_ref", 0.0)
-        # When true, feed forward the commanded joint velocity (estimated by
-        # finite-differencing the position commands, since the command stream
-        # carries no velocity) as v_des, so the kd term damps velocity error
-        # instead of absolute velocity. Reduces tracking lag and overshoot.
+        # When true, feed forward commanded joint velocity as v_des, so the kd
+        # term damps velocity error instead of absolute velocity.
         self.declare_parameter("mit_velocity_feedforward", False)
+        # "position_delta" estimates v_des from the same position command
+        # stream. "message" uses JointState.velocity and should only be used
+        # when that velocity is generated from the same trajectory sample as
+        # JointState.position, not from independent hardware feedback.
+        self.declare_parameter(
+            "mit_velocity_feedforward_source", "position_delta"
+        )
         # EMA smoothing for the finite-differenced v_des (lower = smoother but
         # more lag). Differentiating quantized/jittery commands is noisy, and
         # kd amplifies that into torque chatter, so this trades noise vs lag.
@@ -165,6 +170,11 @@ class PiperSingleControlNode(Node):
             self.get_parameter("mit_velocity_feedforward")
             .get_parameter_value()
             .bool_value
+        )
+        self.mit_velocity_feedforward_source = (
+            self.get_parameter("mit_velocity_feedforward_source")
+            .get_parameter_value()
+            .string_value
         )
         self.mit_velocity_feedforward_alpha = (
             self.get_parameter("mit_velocity_feedforward_alpha")
@@ -295,6 +305,7 @@ class PiperSingleControlNode(Node):
         next_mit_vel_ref = self.mit_vel_ref
         next_mit_torque_ref = self.mit_torque_ref
         next_velocity_ff = self.mit_velocity_feedforward
+        next_velocity_ff_source = self.mit_velocity_feedforward_source
         next_velocity_ff_alpha = self.mit_velocity_feedforward_alpha
         next_velocity_ff_deadband = self.mit_velocity_feedforward_deadband
         next_gravity_enabled = self.mit_gravity_compensation_enabled
@@ -328,6 +339,8 @@ class PiperSingleControlNode(Node):
                 next_mit_torque_ref = float(param.value)
             elif param.name == "mit_velocity_feedforward":
                 next_velocity_ff = bool(param.value)
+            elif param.name == "mit_velocity_feedforward_source":
+                next_velocity_ff_source = str(param.value)
             elif param.name == "mit_velocity_feedforward_alpha":
                 next_velocity_ff_alpha = float(param.value)
             elif param.name == "mit_velocity_feedforward_deadband":
@@ -351,6 +364,29 @@ class PiperSingleControlNode(Node):
             return SetParametersResult(
                 successful=False,
                 reason="MIT kp and kd must be non-negative.",
+            )
+
+        if next_velocity_ff_source not in {"position_delta", "message"}:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_velocity_feedforward_source must be "
+                    "'position_delta' or 'message'."
+                ),
+            )
+        if not 0.0 <= next_velocity_ff_alpha <= 1.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_velocity_feedforward_alpha must be in [0.0, 1.0]."
+                ),
+            )
+        if next_velocity_ff_deadband < 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_velocity_feedforward_deadband must be non-negative."
+                ),
             )
 
         if next_gravity_max_t_ref < 0:
@@ -405,9 +441,18 @@ class PiperSingleControlNode(Node):
         self.mit_kd = next_mit_kd
         self.mit_vel_ref = next_mit_vel_ref
         self.mit_torque_ref = next_mit_torque_ref
+        reset_velocity_state = (
+            self.mit_velocity_feedforward != next_velocity_ff
+            or self.mit_velocity_feedforward_source != next_velocity_ff_source
+        )
         self.mit_velocity_feedforward = next_velocity_ff
+        self.mit_velocity_feedforward_source = next_velocity_ff_source
         self.mit_velocity_feedforward_alpha = next_velocity_ff_alpha
         self.mit_velocity_feedforward_deadband = next_velocity_ff_deadband
+        if reset_velocity_state:
+            self._prev_cmd_pos = None
+            self._prev_cmd_vel = None
+            self._prev_cmd_time = None
         self.mit_gravity_compensation_enabled = next_gravity_enabled
         self.mit_gravity_compensation_urdf_path = next_gravity_urdf_path
         self.mit_gravity_compensation_scale = next_gravity_scale
@@ -440,6 +485,10 @@ class PiperSingleControlNode(Node):
             f"kp = {self.mit_kp}, kd = {self.mit_kd}, "
             f"vel_ref = {self.mit_vel_ref}, "
             f"torque_ref = {self.mit_torque_ref}, "
+            "velocity_feedforward = "
+            f"{self.mit_velocity_feedforward}, "
+            "velocity_feedforward_source = "
+            f"{self.mit_velocity_feedforward_source}, "
             "gravity_compensation_enabled = "
             f"{self.mit_gravity_compensation_enabled}, "
             f"gravity_scale = {self.mit_gravity_compensation_scale}, "
@@ -509,15 +558,26 @@ class PiperSingleControlNode(Node):
         ee_pose.header.stamp = self.get_clock().now().to_msg()
         self.end_pose_pub.publish(ee_pose)
 
+    @staticmethod
+    def _command_stamp_seconds(joint_data) -> float:
+        header = getattr(joint_data, "header", None)
+        stamp = getattr(header, "stamp", None)
+        sec = getattr(stamp, "sec", 0)
+        nanosec = getattr(stamp, "nanosec", 0)
+        stamp_s = float(sec) + float(nanosec) * 1e-9
+        if stamp_s > 0.0:
+            return stamp_s
+        return time.time()
+
     def _estimate_cmd_velocity(self, joint_data) -> list[float]:
         """Estimate commanded joint velocity by finite-differencing commands.
 
-        The command stream carries no velocity, so v_des is derived from the
-        change in commanded position over wall-clock time, lightly smoothed and
-        clamped to the MIT velocity range.
+        v_des is derived from command-position samples, using the command stamp
+        when available so the velocity and position reference share one timing
+        source.
         """
         n = min(6, len(joint_data.position))
-        now = time.time()
+        now = self._command_stamp_seconds(joint_data)
         pos = [float(joint_data.position[i]) for i in range(n)]
         vel = [0.0] * n
         if (
@@ -546,26 +606,32 @@ class PiperSingleControlNode(Node):
         self._prev_cmd_time = now
         return vel
 
+    def _message_cmd_velocity(self, joint_data) -> list[float] | None:
+        n = min(6, len(joint_data.position))
+        msg_velocity = getattr(joint_data, "velocity", [])
+        if len(msg_velocity) < n:
+            return None
+
+        deadband = self.mit_velocity_feedforward_deadband
+        vel: list[float] = []
+        for i in range(n):
+            v = float(msg_velocity[i])
+            if abs(v) < deadband:
+                v = 0.0
+            vel.append(max(-45.0, min(45.0, v)))
+        return vel
+
     def _command_velocity(self, joint_data) -> list[float]:
         """Velocity feedforward source for v_des.
 
-        Prefers the velocity carried in the command itself -- the master's
-        hardware-measured motor speed (rad/s), forwarded unchanged by the
-        teleop muxer -- so there is no differentiation and no derivative
-        noise. Only falls back to finite-differencing the position commands
-        when the command carries no velocity (e.g. a position-only source).
+        The default source is position_delta because hardware feedback often
+        publishes position and velocity from different sensors/update rates.
+        Message velocity is an explicit opt-in for synchronized planner output.
         """
-        n = min(6, len(joint_data.position))
-        if len(joint_data.velocity) >= n:
-            deadband = self.mit_velocity_feedforward_deadband
-            vel: list[float] = []
-            for i in range(n):
-                v = float(joint_data.velocity[i])
-                # Deadband suppresses chatter while holding position.
-                if abs(v) < deadband:
-                    v = 0.0
-                vel.append(max(-45.0, min(45.0, v)))
-            return vel
+        if self.mit_velocity_feedforward_source == "message":
+            velocity = self._message_cmd_velocity(joint_data)
+            if velocity is not None:
+                return velocity
         return self._estimate_cmd_velocity(joint_data)
 
     def joint_callback(self, joint_data):
