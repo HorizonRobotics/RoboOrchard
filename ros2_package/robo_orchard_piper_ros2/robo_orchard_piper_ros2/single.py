@@ -182,13 +182,16 @@ class PiperSingleControlNode(Node):
         return self._enable_flag and ctrl_mode == CanControlMode.CAN_MODE
 
     def _on_set_parameters(self, params):
+        next_enable_mit_ctrl = self.enable_mit_ctrl
         next_mit_kp = self.mit_kp
         next_mit_kd = self.mit_kd
         next_mit_vel_ref = self.mit_vel_ref
         next_mit_torque_ref = self.mit_torque_ref
 
         for param in params:
-            if param.name == "mit_kp":
+            if param.name == "enable_mit_ctrl":
+                next_enable_mit_ctrl = bool(param.value)
+            elif param.name == "mit_kp":
                 next_mit_kp = float(param.value)
             elif param.name == "mit_kd":
                 next_mit_kd = float(param.value)
@@ -203,16 +206,17 @@ class PiperSingleControlNode(Node):
                 reason="MIT kp and kd must be non-negative.",
             )
 
+        self.enable_mit_ctrl = next_enable_mit_ctrl
         self.mit_kp = next_mit_kp
         self.mit_kd = next_mit_kd
         self.mit_vel_ref = next_mit_vel_ref
         self.mit_torque_ref = next_mit_torque_ref
 
-        if self.enable_mit_ctrl and self.is_controlable():
+        if self.is_controlable():
             try:
                 set_ctrl_method(
                     piper=self.piper,
-                    is_mit=True,
+                    is_mit=self.enable_mit_ctrl,
                     mit_kp=self.mit_kp,
                     mit_kd=self.mit_kd,
                     mit_vel_ref=self.mit_vel_ref,
@@ -221,11 +225,12 @@ class PiperSingleControlNode(Node):
             except Exception as e:
                 return SetParametersResult(
                     successful=False,
-                    reason=f"Failed to apply MIT params: {e}",
+                    reason=f"Failed to apply MIT control settings: {e}",
                 )
 
         self.get_logger().info(
-            "MIT params updated: "
+            "MIT control settings updated: "
+            f"enabled = {self.enable_mit_ctrl}, "
             f"kp = {self.mit_kp}, kd = {self.mit_kd}, "
             f"vel_ref = {self.mit_vel_ref}, "
             f"torque_ref = {self.mit_torque_ref}"

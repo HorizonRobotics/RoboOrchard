@@ -80,6 +80,7 @@ class EpisodeMeta(pydantic.BaseModel):
     instruction: str = ""
     tf_directory: str = ""
     metas: dict[str, list[str]] = pydantic.Field(default_factory=dict)
+    mit_params: dict[str, object] = pydantic.Field(default_factory=dict)
 
 
 class CollectingState(pydantic.BaseModel):
@@ -176,13 +177,18 @@ class CollectingState(pydantic.BaseModel):
     def at_start_recording(self):
         self.is_recording = True
 
-    def at_stop_recording(self):
+    def at_stop_recording(
+        self,
+        mit_params: dict[str, object] | None = None,
+    ):
         if not self.is_recording:
             raise NotRecordingError
 
         self.is_recording = False
 
         self.episode_counter.add()
+        if mit_params is not None:
+            self.episode_meta.mit_params = mit_params
 
         if os.path.exists(self.current_data_uri):
             with open(

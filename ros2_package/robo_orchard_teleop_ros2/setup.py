@@ -130,6 +130,7 @@ setup(
             "aloha_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.aloha:main",  # noqa: E501
             "vr_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.vr:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
+            "scripted_joint_master = robo_orchard_teleop_ros2.scripted.joint_master:main",  # noqa: E501
         ],
     },
 )

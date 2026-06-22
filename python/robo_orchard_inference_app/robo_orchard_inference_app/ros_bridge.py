@@ -25,6 +25,15 @@ from robo_orchard_inference_app.logger import Logger
 from robo_orchard_inference_app.state import InferenceState
 
 
+MIT_PARAM_NAMES = (
+    "enable_mit_ctrl",
+    "mit_kp",
+    "mit_kd",
+    "mit_vel_ref",
+    "mit_torque_ref",
+)
+
+
 class RosServiceHelper:
     """Encapsulates all interactions with ROS services."""
 
@@ -48,7 +57,7 @@ class RosServiceHelper:
         self.state = inference_state
         self.logger = logger
         self._is_recording = False
-        self._synced_tf_fingerprint: tuple[str, frozenset] | None = None
+        self._last_requested_mit_params: dict[str, bool | float] | None = None
         atexit.register(self.cleanup)
 
     def _check_client_connected(self) -> bool:
@@ -170,38 +179,137 @@ class RosServiceHelper:
             self.logger.error(f"Error calling {set_param_service}: {e}")
             return False
 
-    def _set_double_params(
-        self, node_name: str, params: dict[str, float]
+    @staticmethod
+    def _python_value_to_parameter_value(value: bool | float) -> dict:
+        if isinstance(value, bool):
+            return {"type": 1, "bool_value": value}
+        return {"type": 3, "double_value": float(value)}
+
+    def _set_params(
+        self, node_name: str, params: dict[str, bool | float]
     ) -> bool:
         request_data = {
             "parameters": [
                 {
                     "name": name,
-                    "value": {"type": 3, "double_value": float(value)},
+                    "value": self._python_value_to_parameter_value(value),
                 }
                 for name, value in params.items()
             ]
         }
         return self._set_param(node_name=node_name, request_data=request_data)
 
+    @staticmethod
+    def _parameter_value_to_python(value: dict) -> object:
+        value_type = value.get("type")
+        if value_type == 1:
+            return value.get("bool_value", False)
+        if value_type == 2:
+            return value.get("integer_value", 0)
+        if value_type == 3:
+            return value.get("double_value", 0.0)
+        if value_type == 4:
+            return value.get("string_value", "")
+        if value_type == 5:
+            return value.get("byte_array_value", [])
+        if value_type == 6:
+            return value.get("bool_array_value", [])
+        if value_type == 7:
+            return value.get("integer_array_value", [])
+        if value_type == 8:
+            return value.get("double_array_value", [])
+        if value_type == 9:
+            return value.get("string_array_value", [])
+        return None
+
+    def _get_params(
+        self,
+        node_name: str,
+        param_names: tuple[str, ...] = MIT_PARAM_NAMES,
+        timeout: float = 5.0,
+    ) -> tuple[dict[str, object], str | None]:
+        if not self._check_client_connected():
+            return {}, "ROS is not connected"
+
+        available_services: list[str] = self.ros_client.get_services()
+        service_type = "rcl_interfaces/srv/GetParameters"
+        get_param_service = f"{node_name}/get_parameters"
+        if get_param_service not in available_services:
+            return {}, f"Parameter service {get_param_service} not found"
+
+        try:
+            service = roslibpy.Service(
+                self.ros_client, get_param_service, service_type
+            )
+            request = roslibpy.ServiceRequest({"names": list(param_names)})
+            result = service.call(request, timeout=timeout)
+        except roslibpy.core.RosTimeoutError:
+            return {}, f"Timeout calling parameter service {get_param_service}"
+        except Exception as e:
+            return {}, f"Error calling {get_param_service}: {e}"
+
+        values = result.get("values", [])
+        if len(values) != len(param_names):
+            return {}, (
+                f"Expected {len(param_names)} parameter values from "
+                f"{get_param_service}, got {len(values)}"
+            )
+
+        params = {
+            name: self._parameter_value_to_python(value)
+            for name, value in zip(param_names, values, strict=True)
+        }
+        return params, None
+
+    def get_mit_params_snapshot(self) -> dict[str, object]:
+        mit_cfg = self.cfg.mit_control
+        snapshot: dict[str, object] = {
+            "param_names": list(MIT_PARAM_NAMES),
+            "requested": self._last_requested_mit_params,
+            "master": [],
+            "follower": [],
+        }
+
+        for role, node_names in (
+            ("master", mit_cfg.master_param_node_names),
+            ("follower", mit_cfg.follower_param_node_names),
+        ):
+            entries = snapshot[role]
+            assert isinstance(entries, list)
+            for node_name in node_names:
+                params, error = self._get_params(node_name)
+                entry = {
+                    "node_name": node_name,
+                    "status": "error" if error else "confirmed",
+                    "params": params,
+                }
+                if error:
+                    entry["error"] = error
+                entries.append(entry)
+
+        return snapshot
+
     def set_mit_params(
         self,
+        master_enabled: bool,
         master_kp: float,
         master_kd: float,
         master_vel_ref: float,
         master_torque_ref: float,
+        follower_enabled: bool,
         follower_kp: float,
         follower_kd: float,
         follower_vel_ref: float,
         follower_torque_ref: float,
     ) -> bool:
         mit_cfg = self.cfg.mit_control
-        requested_params: list[tuple[str, dict[str, float]]] = []
+        requested_params: list[tuple[str, dict[str, bool | float]]] = []
         for node_name in mit_cfg.master_param_node_names:
             requested_params.append(
                 (
                     node_name,
                     {
+                        "enable_mit_ctrl": master_enabled,
                         "mit_kp": master_kp,
                         "mit_kd": master_kd,
                         "mit_vel_ref": master_vel_ref,
@@ -214,6 +322,7 @@ class RosServiceHelper:
                 (
                     node_name,
                     {
+                        "enable_mit_ctrl": follower_enabled,
                         "mit_kp": follower_kp,
                         "mit_kd": follower_kd,
                         "mit_vel_ref": follower_vel_ref,
@@ -227,14 +336,29 @@ class RosServiceHelper:
             return True
 
         for node_name, params in requested_params:
-            if not self._set_double_params(node_name, params):
+            if not self._set_params(node_name, params):
                 return False
+
+        self._last_requested_mit_params = {
+            "master_enabled": master_enabled,
+            "master_kp": master_kp,
+            "master_kd": master_kd,
+            "master_vel_ref": master_vel_ref,
+            "master_torque_ref": master_torque_ref,
+            "follower_enabled": follower_enabled,
+            "follower_kp": follower_kp,
+            "follower_kd": follower_kd,
+            "follower_vel_ref": follower_vel_ref,
+            "follower_torque_ref": follower_torque_ref,
+        }
 
         self.logger.info(
             "MIT params set: "
+            f"master enabled={master_enabled}, "
             f"master kp={master_kp}, master kd={master_kd}, "
             f"master vel_ref={master_vel_ref}, "
             f"master torque_ref={master_torque_ref}, "
+            f"follower enabled={follower_enabled}, "
             f"follower kp={follower_kp}, follower kd={follower_kd}, "
             f"follower vel_ref={follower_vel_ref}, "
             f"follower torque_ref={follower_torque_ref}"
@@ -336,7 +460,7 @@ class RosServiceHelper:
     def set_control_mode(
         self,
         mode: Literal["auto", "takeover", "stop"],
-        mit_params: dict[str, float] | None = None,
+        mit_params: dict[str, bool | float] | None = None,
     ) -> bool:
         """Sets the robot's control mode."""
         if mode == "takeover" and mit_params is not None:
