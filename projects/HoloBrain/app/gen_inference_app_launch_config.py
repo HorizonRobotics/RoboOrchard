@@ -92,7 +92,6 @@ def main():
                 "/robot/right_master/reset_ctrl",
                 "/robot/right/reset_ctrl",
             ],
-            record_handeye_calib_service_name="/handeye_calib/record_data",
             save_handeye_calib_service_name="/handeye_calib/save_data",
             static_transform_service_name="/set_static_transforms",
         ),
@@ -111,6 +110,7 @@ def main():
             amplitude_scale=1.0,
             frequency_scale=1.0,
             rate_hz=100.0,
+            reset_position=[0.0, 0.10, -0.70, 0.0, 0.0, 0.0, 0.0],
         ),
         file_server_uri="http://localhost:8000",
     )

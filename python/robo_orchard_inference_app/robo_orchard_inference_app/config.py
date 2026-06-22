@@ -132,6 +132,9 @@ class ScriptedMotionCfg(pydantic.BaseModel):
     duration_s: float = 10.0
     amplitude_scale: float = 1.0
     frequency_scale: float = 1.0
+    reset_position: list[float] = pydantic.Field(default_factory=list)
+    """Reset pose (7 joint values) used when stopping scripted motion;
+    empty list falls back to the standard arm reset pose."""
 
 
 class ROSBridgeCfg(pydantic.BaseModel):
@@ -160,6 +163,9 @@ class ROSBridgeCfg(pydantic.BaseModel):
     )
     enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
     reset_arm_service_name: list[str] = pydantic.Field(default_factory=list)
+    reset_position: list[float] = pydantic.Field(default_factory=list)
+    """Reset pose (7 joint values) used by the standard arm reset; empty
+    list means the controllers' default (zeros)."""
 
     # recorder
     recorder_name: str = "/mcap_recorder_service"

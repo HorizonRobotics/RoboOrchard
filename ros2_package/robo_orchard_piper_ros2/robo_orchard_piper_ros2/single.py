@@ -33,6 +33,8 @@ from robo_orchard_piper_ros2.ros_bridge import (
     get_arm_state,
     get_arm_status,
     joint_control,
+    joint_mit_control,
+    reset_piper_ctrl_mode,
     set_ctrl_method,
     switch_piper_ctrl_mode,
 )
@@ -68,6 +70,7 @@ class PiperSingleControlNode(Node):
         self.declare_parameter("mit_kd", 0.8)
         self.declare_parameter("mit_vel_ref", 45.0)
         self.declare_parameter("mit_torque_ref", 0.0)
+        self.declare_parameter("reset_position", [0.0] * 7)
 
         self.can_port = (
             self.get_parameter("can_port").get_parameter_value().string_value
@@ -126,6 +129,7 @@ class PiperSingleControlNode(Node):
 
         # Enable flag
         self._enable_flag = False
+        self._resetting = False
         if self.auto_enable_arm_ctrl:
             try:
                 if self.enable_arm_ctrl():
@@ -172,7 +176,13 @@ class PiperSingleControlNode(Node):
         next_mit_torque_ref = self.mit_torque_ref
 
         for param in params:
-            if param.name == "enable_mit_ctrl":
+            if param.name == "reset_position":
+                if len(param.value) != 7:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="reset_position must have 7 joint values.",
+                    )
+            elif param.name == "enable_mit_ctrl":
                 next_enable_mit_ctrl = bool(param.value)
             elif param.name == "mit_kp":
                 next_mit_kp = float(param.value)
@@ -283,13 +293,24 @@ class PiperSingleControlNode(Node):
 
     def joint_callback(self, joint_data):
         """Callback function for joint angles."""
+        if self._resetting:
+            return
+
         if self.is_controlable():
-            joint_control(
-                self.piper,
-                joint_data=joint_data,
-                has_gripper=self.gripper_exist,
-                gripper_val_mutiple=self.gripper_val_mutiple,
-            )
+            if self.enable_mit_ctrl:
+                joint_mit_control(
+                    self.piper,
+                    joint_data=joint_data,
+                    mit_kp=self.mit_kp,
+                    mit_kd=self.mit_kd,
+                )
+            else:
+                joint_control(
+                    self.piper,
+                    joint_data=joint_data,
+                    has_gripper=self.gripper_exist,
+                    gripper_val_mutiple=self.gripper_val_mutiple,
+                )
 
     def _enable_ctrl_service_callback(
         self, request: Trigger.Request, response: Trigger.Response
@@ -345,10 +366,24 @@ class PiperSingleControlNode(Node):
             return response
 
         control_freq = 200.0  # Hz
+        reset_position = list(
+            self.get_parameter("reset_position")
+            .get_parameter_value()
+            .double_array_value
+        )
+        if len(reset_position) != 7:
+            error_msg = (
+                f"reset_position must have 7 joint values, "
+                f"got {len(reset_position)}."
+            )
+            self.get_logger().error(error_msg)
+            response.success = False
+            response.message = error_msg
+            return response
 
         def _gen_reset_traj():
             cur_joint_state = get_arm_state(self.piper)
-            target_joint_state = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            target_joint_state = reset_position
             elapsed_time = 3.0  # seconds
             num_steps = int(elapsed_time * control_freq)
             traj = []
@@ -368,8 +403,15 @@ class PiperSingleControlNode(Node):
                 traj.append(msg)
             return traj
 
+        self._resetting = True
+        traj = []
         try:
             traj = _gen_reset_traj()
+            # Reset always runs through the firmware position planner
+            # (JointCtrl) so the motion never depends on the currently
+            # configured MIT gains (e.g. kp=0 would not move at all).
+            if self.enable_mit_ctrl:
+                set_ctrl_method(piper=self.piper, is_mit=False)
             for position in traj:
                 joint_control(
                     self.piper,
@@ -384,6 +426,35 @@ class PiperSingleControlNode(Node):
             self.get_logger().error(f"Error while resetting arm: {e}")
             response.success = False
             response.message = f"An unexpected error occurred: {e}"
+        finally:
+            if self.enable_mit_ctrl:
+                try:
+                    set_ctrl_method(
+                        piper=self.piper,
+                        is_mit=True,
+                        mit_kp=self.mit_kp,
+                        mit_kd=self.mit_kd,
+                        mit_vel_ref=self.mit_vel_ref,
+                        mit_torque_ref=self.mit_torque_ref,
+                    )
+                    # Re-seat the MIT setpoint at the reset pose so control
+                    # resumes without a jump.
+                    if traj:
+                        final_position = traj[-1]
+                        for _ in range(int(0.5 * control_freq)):
+                            joint_mit_control(
+                                self.piper,
+                                joint_data=final_position,
+                                mit_kp=self.mit_kp,
+                                mit_kd=self.mit_kd,
+                            )
+                            time.sleep(1.0 / control_freq)
+                except Exception as e:
+                    error_msg = f"Failed to restore MIT control mode: {e}"
+                    self.get_logger().error(error_msg)
+                    response.success = False
+                    response.message = error_msg
+            self._resetting = False
         return response
 
 

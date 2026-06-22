@@ -274,6 +274,23 @@ def joint_control(
         piper.GripperCtrl(abs(gripper), 1000, 0x01, 0)
 
 
+def joint_mit_control(
+    piper: C_PiperInterface,
+    joint_data: JointState,
+    mit_kp: float,
+    mit_kd: float,
+):
+    for idx in range(min(6, len(joint_data.position))):
+        piper.JointMitCtrl(
+            idx + 1,
+            float(joint_data.position[idx]),
+            0.0,
+            mit_kp,
+            mit_kd,
+            0.0,
+        )
+
+
 def get_enable_flag(piper: C_PiperInterface):
     msg = piper.GetArmLowSpdInfoMsgs()
 
@@ -377,6 +394,6 @@ def set_ctrl_method(
     mit_torque_ref: float = 0.0,
 ):
     if is_mit:
-        piper.MotionCtrl_2(0x01, 0x01, 100, is_mit_mode=0xAD)
+        piper.MotionCtrl_2(0x01, 0x04, 0, 0xAD)
     else:
         piper.MotionCtrl_2(0x01, 0x01, 100, is_mit_mode=0x00)
