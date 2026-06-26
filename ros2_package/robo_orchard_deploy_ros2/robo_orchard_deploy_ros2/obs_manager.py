@@ -83,7 +83,7 @@ class ObservationManager:
         all_topics_available = True
         for info in self._subscriber_info:
             if info["topic_name"] not in available_topics:
-                self._node.get_logger().warn(
+                self._node.get_logger().warning(
                     f"Topic '{info['topic_name']}' for '{info['obs_key']}' "
                     f"not available yet. Retrying..."
                 )

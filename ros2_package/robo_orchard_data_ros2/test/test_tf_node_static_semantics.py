@@ -36,6 +36,8 @@ class FakeLogger:
     def warn(self, message):
         self.warnings.append(message)
 
+    warning = warn
+
     def error(self, message):
         self.errors.append(message)
 

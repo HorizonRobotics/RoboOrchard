@@ -45,7 +45,7 @@ _st_stub.session_state = types.SimpleNamespace()
 _st_stub.toast = lambda *args, **kwargs: None
 _st_stub.cache_resource = lambda func: func
 _st_stub.rerun = lambda: None
-_st_stub.dialog = lambda *args, **kwargs: (lambda func: func)
+_st_stub.dialog = lambda *args, **kwargs: lambda func: func
 _st_stub.set_page_config = lambda *args, **kwargs: None
 _st_stub.expander = lambda *args, **kwargs: _CtxNoop()
 sys.modules.setdefault("streamlit", _st_stub)
@@ -123,10 +123,8 @@ def _make_component(task_cfg, episode_meta):
     component.episode_meta = episode_meta
     component.key_prefix = "test"
     rerun_called = {"count": 0}
-    component.rerun_callback = (
-        lambda: rerun_called.__setitem__(
-            "count", rerun_called["count"] + 1
-        )
+    component.rerun_callback = lambda: rerun_called.__setitem__(
+        "count", rerun_called["count"] + 1
     )
     component._task_cfg = task_cfg
     component._collecting_state = types.SimpleNamespace(is_recording=False)
@@ -174,9 +172,7 @@ def test_render_tf_directory_no_candidates_clears_stale_selection(monkeypatch):
     monkeypatch.setattr(
         eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
     )
-    monkeypatch.setattr(
-        eem_st, "write", lambda *a, **kw: None, raising=False
-    )
+    monkeypatch.setattr(eem_st, "write", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         eem_st, "selectbox", lambda *a, **kw: None, raising=False
     )
@@ -197,9 +193,7 @@ def test_render_tf_directory_resets_stale_selection(monkeypatch):
     monkeypatch.setattr(
         eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
     )
-    monkeypatch.setattr(
-        eem_st, "write", lambda *a, **kw: None, raising=False
-    )
+    monkeypatch.setattr(eem_st, "write", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         eem_st, "selectbox", lambda *a, **kw: None, raising=False
     )
@@ -222,9 +216,7 @@ def test_render_tf_directory_triggers_rerun_on_selection_change(monkeypatch):
     monkeypatch.setattr(
         eem_st, "columns", lambda spec: [_CtxNoop(), _CtxNoop()], raising=False
     )
-    monkeypatch.setattr(
-        eem_st, "write", lambda *a, **kw: None, raising=False
-    )
+    monkeypatch.setattr(eem_st, "write", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         eem_st, "selectbox", lambda *a, **kw: "/media/tf_v2", raising=False
     )

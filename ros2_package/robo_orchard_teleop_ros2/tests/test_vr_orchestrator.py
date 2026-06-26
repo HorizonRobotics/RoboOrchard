@@ -186,8 +186,8 @@ sys.path.insert(
 
 from std_srvs.srv import Trigger  # noqa: E402
 
-from robo_orchard_teleop_ros2.take_over.orchestrator.aloha import (  # noqa: E402
-    AlohaOrchestratorNode,
+from robo_orchard_teleop_ros2.take_over.orchestrator.vr import (  # noqa: E402
+    VrOrchestratorNode,
 )
 
 
@@ -199,10 +199,7 @@ def _build_node(
     unavailable_services=None,
 ):
     if enable_services is None:
-        enable_services = [
-            "/robot/left/enable_ctrl",
-            "/robot/left_master/enable_ctrl",
-        ]
+        enable_services = ["/robot/left/enable_ctrl"]
 
     FakeNode.parameter_overrides = {
         "enable_services": enable_services,
@@ -213,7 +210,7 @@ def _build_node(
     FakeNode.unavailable_services = set(unavailable_services or [])
 
     try:
-        return AlohaOrchestratorNode()
+        return VrOrchestratorNode()
     finally:
         FakeNode.parameter_overrides = {}
         FakeNode.service_results = {}
@@ -242,9 +239,10 @@ def _client_by_service(node, service_name):
     )
 
 
-def test_auto_enables_all_services_then_muxer():
-    enable_services = ["/arm/a/enable_ctrl", "/arm/b/enable_ctrl"]
-    release_service = "/muxer/release_control"
+def test_auto_enables_slave_then_muxer():
+    """Single-element enable_services: call order is enable then release."""
+    enable_services = ["/robot/left/enable_ctrl"]
+    release_service = "/robot/left/takeover_muxer/release_control"
     node = _build_node(
         enable_services=enable_services,
         muxer_release_service=release_service,
@@ -255,25 +253,21 @@ def test_auto_enables_all_services_then_muxer():
     assert response.success is True
     assert response.message == "Auto mode activated."
     assert node._client_call_order == [
-        "/arm/a/enable_ctrl",
-        "/arm/b/enable_ctrl",
-        "/muxer/release_control",
+        "/robot/left/enable_ctrl",
+        "/robot/left/takeover_muxer/release_control",
     ]
 
 
 def test_auto_enable_failure_short_circuits():
-    enable_services = [
-        "/arm/a/enable_ctrl",
-        "/arm/b/enable_ctrl",
-        "/arm/c/enable_ctrl",
-    ]
-    release_service = "/muxer/release_control"
+    """Propagate enable failure without releasing the muxer."""
+    enable_services = ["/robot/left/enable_ctrl"]
+    release_service = "/robot/left/takeover_muxer/release_control"
     node = _build_node(
         enable_services=enable_services,
         muxer_release_service=release_service,
         service_results={
-            "/arm/b/enable_ctrl": _trigger_response(
-                False, "arm b still in teach mode"
+            "/robot/left/enable_ctrl": _trigger_response(
+                False, "arm not recoverable"
             )
         },
     )
@@ -281,20 +275,16 @@ def test_auto_enable_failure_short_circuits():
     response = _call_auto(node)
 
     assert response.success is False
-    assert "/arm/b/enable_ctrl" in response.message
-    assert "arm b still in teach mode" in response.message
-    assert node._client_call_order == [
-        "/arm/a/enable_ctrl",
-        "/arm/b/enable_ctrl",
-    ]
-    assert _client_by_service(node, "/arm/c/enable_ctrl").calls == 0
+    assert "/robot/left/enable_ctrl" in response.message
+    assert "arm not recoverable" in response.message
     assert _client_by_service(node, release_service).calls == 0
 
 
 def test_auto_muxer_release_fails_returns_failure():
-    release_service = "/muxer/release_control"
+    """Propagate a release_control failure."""
+    release_service = "/robot/left/takeover_muxer/release_control"
     node = _build_node(
-        enable_services=["/arm/a/enable_ctrl", "/arm/b/enable_ctrl"],
+        enable_services=["/robot/left/enable_ctrl"],
         muxer_release_service=release_service,
         service_results={
             release_service: _trigger_response(False, "muxer refused release")
@@ -306,27 +296,32 @@ def test_auto_muxer_release_fails_returns_failure():
     assert response.success is False
     assert response.message == "muxer refused release"
     assert node._client_call_order == [
-        "/arm/a/enable_ctrl",
-        "/arm/b/enable_ctrl",
+        "/robot/left/enable_ctrl",
         release_service,
     ]
 
 
-def test_takeover_emits_reminder_and_calls_muxer():
-    takeover_service = "/muxer/trigger_takeover"
-    node = _build_node(muxer_takeover_service=takeover_service)
+def test_takeover_emits_log_and_calls_muxer():
+    """Takeover emits a VR log, skips enable, and calls the muxer."""
+    takeover_service = "/robot/left/takeover_muxer/trigger_takeover"
+    node = _build_node(
+        enable_services=["/robot/left/enable_ctrl"],
+        muxer_takeover_service=takeover_service,
+    )
 
     response = _call_takeover(node)
 
     assert response.success is True
     assert response.message == "Takeover mode activated."
     assert node._client_call_order == [takeover_service]
-    assert any("hardware teach button" in log for log in node._logs["info"])
+    assert any("VR override mode" in log for log in node._logs["info"])
 
 
 def test_takeover_muxer_trigger_fails_returns_failure():
-    takeover_service = "/muxer/trigger_takeover"
+    """trigger_takeover returns False: takeover returns success=False."""
+    takeover_service = "/robot/left/takeover_muxer/trigger_takeover"
     node = _build_node(
+        enable_services=["/robot/left/enable_ctrl"],
         muxer_takeover_service=takeover_service,
         service_results={
             takeover_service: _trigger_response(
@@ -343,13 +338,13 @@ def test_takeover_muxer_trigger_fails_returns_failure():
 
 
 def test_takeover_does_not_call_any_enable():
-    enable_services = ["/arm/a/enable_ctrl", "/arm/b/enable_ctrl"]
+    """Takeover path: enable client is never called, regardless of outcome."""
+    enable_services = ["/robot/left/enable_ctrl"]
     node = _build_node(enable_services=enable_services)
 
     _call_takeover(node)
 
-    for service_name in enable_services:
-        assert _client_by_service(node, service_name).calls == 0
+    assert _client_by_service(node, "/robot/left/enable_ctrl").calls == 0
 
 
 @pytest.mark.parametrize(
@@ -369,13 +364,13 @@ def test_takeover_does_not_call_any_enable():
             "enable_services",
         ),
         (
-            ["/arm/enable_ctrl"],
+            ["/robot/left/enable_ctrl"],
             "",
             "/muxer/trigger_takeover",
             "muxer_release_service",
         ),
         (
-            ["/arm/enable_ctrl"],
+            ["/robot/left/enable_ctrl"],
             "/muxer/release_control",
             "",
             "muxer_takeover_service",
@@ -388,6 +383,7 @@ def test_empty_parameter_fails_construction(
     muxer_takeover_service,
     param_name,
 ):
+    """Empty parameter raises ValueError and logs the parameter name."""
     FakeNode.last_instance = None
 
     with pytest.raises(ValueError):

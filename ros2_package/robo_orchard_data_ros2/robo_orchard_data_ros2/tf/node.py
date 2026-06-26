@@ -74,7 +74,7 @@ class TFPublisherNode(Node):
 
     def _log_active_transforms(self, prefix: str) -> None:
         if not self.entries:
-            self.get_logger().warn(f"{prefix}: no tf is published")
+            self.get_logger().warning(f"{prefix}: no tf is published")
             return
 
         tf_summary = ", ".join(

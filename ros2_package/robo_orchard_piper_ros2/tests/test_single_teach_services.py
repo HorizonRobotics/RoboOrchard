@@ -36,6 +36,9 @@ def _install_stub_modules():
                 string_value=value if isinstance(value, str) else "",
                 bool_value=bool(value) if isinstance(value, bool) else False,
                 integer_value=value if isinstance(value, int) else 0,
+                double_array_value=list(value)
+                if isinstance(value, (list, tuple))
+                else [],
             )
             return types.SimpleNamespace(
                 get_parameter_value=lambda: parameter_value
@@ -45,6 +48,7 @@ def _install_stub_modules():
             return types.SimpleNamespace(
                 info=lambda *args, **kwargs: None,
                 warn=lambda *args, **kwargs: None,
+                warning=lambda *args, **kwargs: None,
                 error=lambda *args, **kwargs: None,
             )
 
@@ -133,7 +137,8 @@ def _build_node(
     node.enable_mit_ctrl = enable_mit_ctrl
     node._enable_flag = False
     node.get_logger = lambda: types.SimpleNamespace(
-        warn=lambda *args, **kwargs: None
+        warn=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
     )
     return node
 
@@ -281,6 +286,7 @@ def test_enable_ctrl_service_fails_when_ctrl_mode_switch_times_out(
     node.get_logger = lambda: types.SimpleNamespace(
         info=lambda *args, **kwargs: None,
         warn=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
         error=lambda message: logs.append(message),
     )
 
@@ -313,6 +319,7 @@ def test_enable_ctrl_service_retries_when_flag_set_but_not_controlable(
     node.get_logger = lambda: types.SimpleNamespace(
         info=lambda *args, **kwargs: None,
         warn=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
         error=lambda *args, **kwargs: None,
     )
 
@@ -346,7 +353,8 @@ def test_auto_enable_timeout_does_not_abort_node_startup(monkeypatch):
     def fake_get_logger(self):
         return types.SimpleNamespace(
             info=lambda *args, **kwargs: None,
-            warn=lambda message: logs.append(message),
+            warn=lambda *args, **kwargs: None,
+            warning=lambda message: logs.append(message),
             error=lambda *args, **kwargs: None,
         )
 

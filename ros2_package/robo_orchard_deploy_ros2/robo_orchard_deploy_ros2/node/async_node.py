@@ -132,7 +132,7 @@ class DeployNode(Node):
                 return
         current_observations = self.obs_manager.get_observations()
         if not current_observations:
-            self.get_logger().warn("No observations received yet.")
+            self.get_logger().warning("No observations received yet.")
             return
 
         remaining_actions_start_idx = None

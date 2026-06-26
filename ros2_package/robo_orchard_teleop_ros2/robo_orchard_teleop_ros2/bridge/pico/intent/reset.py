@@ -26,7 +26,7 @@ __all__ = ["ResetIntent"]
 class State:
     """Manages the state for long-press trigger activation."""
 
-    start_vr_time_ns: float = 0.0
+    start_vr_time_ns: int = 0
     is_held: bool = False
     take_action: bool = False
 
@@ -34,23 +34,23 @@ class State:
 class ResetIntent:
     """Manages the logic for a one-shot reset action on a long-press.
 
-    This class detects if a user holds down a specific button (X/Y for left,
-    A/B for right) for a given duration. It returns `True` for a single
-    frame when the threshold is met and will not return `True` again until
-    the button has been fully released and re-pressed for the duration.
+    This class detects if a user holds down a specific button (X for
+    left, A for right) for a given duration. It returns `True` for a
+    single frame when the threshold is met and will not return `True`
+    again until the button has been fully released and re-pressed for
+    the duration.
     """
 
-    def __init__(
-        self, source_type: Literal["X", "Y", "A", "B"], thresh: float = 2.0
-    ):
+    def __init__(self, source_type: Literal["X", "A"], thresh: float = 2.0):
         """Initializes the ResetIntent detector.
 
         Args:
-            source_type: The button to monitor ("X", "Y", "A", "B").
+            source_type: The button to monitor ("X" for the left
+                controller, "A" for the right controller).
             thresh: The duration in seconds the button must be held.
         """
         self.source_type = source_type
-        self.thresh_ns = thresh * 1e9
+        self.thresh_ns = int(thresh * 1e9)
         self._state = State()
 
     def _check_reset_trigger(
@@ -98,19 +98,16 @@ class ResetIntent:
         Returns:
             True if the reset condition is met for the specified controller.
         """
-        is_pressed = False
         if self.source_type == "X":
             is_pressed = msg.left_controller.x_button
-        elif self.source_type == "Y":
-            is_pressed = msg.left_controller.y_button
         elif self.source_type == "A":
             is_pressed = msg.right_controller.a_button
-        elif self.source_type == "B":
-            is_pressed = msg.right_controller.b_button
         else:
             raise ValueError(f"Invalid source type: {self.source_type}")
 
         # The timestamp is used for calculating the hold duration.
-        current_time_ns = msg.header.stamp.sec * 1e9 + msg.header.stamp.nanosec
+        current_time_ns = int(msg.header.stamp.sec) * 10**9 + int(
+            msg.header.stamp.nanosec
+        )
 
         return self._check_reset_trigger(is_pressed, current_time_ns)

@@ -14,10 +14,13 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import List
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -64,6 +67,23 @@ def generate_launch_description():
         "enable_master_mit_control_mode",
         default_value="true",
         description="Whether enable mit control mode or not.",
+    )
+    left_reset_joint_position_arg = DeclareLaunchArgument(
+        "left_reset_joint_position",
+        default_value="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]",
+        description=(
+            "Left follower arm reset target: 6 joint angles (rad) + "
+            "gripper. Used by the single_ctrl reset_ctrl service that all "
+            "reset sources resolve to."
+        ),
+    )
+    right_reset_joint_position_arg = DeclareLaunchArgument(
+        "right_reset_joint_position",
+        default_value="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]",
+        description=(
+            "Right follower arm reset target: 6 joint angles (rad) + "
+            "gripper. See left_reset_joint_position."
+        ),
     )
 
     replay_time_s_arg = DeclareLaunchArgument(
@@ -188,6 +208,10 @@ def generate_launch_description():
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_mit_control_mode"
                 ),
+                "reset_joint_position": ParameterValue(
+                    LaunchConfiguration("left_reset_joint_position"),
+                    value_type=List[float],
+                ),
             }
         ],
         remappings=[
@@ -235,6 +259,10 @@ def generate_launch_description():
                 "enable_mit_ctrl": LaunchConfiguration(
                     "enable_mit_control_mode"
                 ),
+                "reset_joint_position": ParameterValue(
+                    LaunchConfiguration("right_reset_joint_position"),
+                    value_type=List[float],
+                ),
             }
         ],
         remappings=[
@@ -258,6 +286,8 @@ def generate_launch_description():
             enable_mit_control_mode_arg,
             enable_master_mit_control_mode_arg,
             replay_time_s_arg,
+            left_reset_joint_position_arg,
+            right_reset_joint_position_arg,
             # Add the nodes to be launched
             left_takeover_muxer_node,
             left_master_controller_node,

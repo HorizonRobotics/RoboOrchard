@@ -250,6 +250,5 @@ def test_sync_static_transforms_fails_when_service_name_not_configured(
     assert result is False
     assert calls == []
     assert any(
-        "static_transform_service_name" in msg
-        for msg in helper.logger.errors
+        "static_transform_service_name" in msg for msg in helper.logger.errors
     )

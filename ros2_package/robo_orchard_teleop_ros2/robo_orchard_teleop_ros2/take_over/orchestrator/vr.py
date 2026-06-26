@@ -26,7 +26,7 @@ from rclpy.node import Node, ParameterDescriptor
 from std_srvs.srv import Trigger
 
 # Per-call hang guard for a downstream service call. Normal completion is
-# sub-second; the auto flow's worst case is 3 serial calls = 30 s.
+# sub-second; the auto flow's worst case is 2 serial calls = 20 s.
 _DOWNSTREAM_CALL_TIMEOUT_S = 10.0
 
 # Bounded wait for a downstream service to be discovered, absorbing the
@@ -35,28 +35,33 @@ _DOWNSTREAM_CALL_TIMEOUT_S = 10.0
 _SERVICE_WAIT_TIMEOUT_S = 2.0
 
 
-class AlohaOrchestratorNode(Node):
-    """Per-side orchestrator for the Aloha master-slave teleop stack.
+class VrOrchestratorNode(Node):
+    """Per-side orchestrator for the VR teleop stack.
 
     Owns two ``std_srvs/srv/Trigger`` services, ``auto`` and ``takeover``.
-    ``auto`` enables the configured arms before switching the muxer, closing
-    the TEACH-mode race where the muxer forwards commands to arms still in
-    TEACH_MODE. One instance per side; the node has no concept of left/right
-    and works purely from its three service-name parameters.
+    ``auto`` enables the configured slave arm before switching the muxer.
+    One instance per side; the node has no concept of left/right and works
+    purely from its three service-name parameters.
 
     STOP is out of scope (Path A): no stop service here -- the frontend Stop
     button calls the muxer directly.
+
+    v2 note: VR reachability pre-check (subscribing to vr_state heartbeat and
+    verifying the VR device is online before allowing takeover) is deferred to
+    v2. This avoids introducing a dependency on robo_orchard_pico_msg_ros2
+    in the orchestrator, keeping its dependency footprint to rclpy + std_srvs
+    only.
     """
 
     def __init__(self):
-        super().__init__("aloha_orchestrator_node")
+        super().__init__("vr_orchestrator_node")
 
         # --- Parameters ---
         self.declare_parameter(
             "enable_services",
             [""],
             ParameterDescriptor(
-                description="Fully-qualified names of every enable_ctrl service to enable on this side (slave and master arms in the Aloha deployment)."  # noqa: E501
+                description="Fully-qualified names of every enable_ctrl service to enable on this side (slave arm only in the VR deployment -- no master arm)."  # noqa: E501
             ),
         )
         self.declare_parameter(
@@ -159,7 +164,7 @@ class AlohaOrchestratorNode(Node):
         )
 
         self.get_logger().info(
-            "AlohaOrchestratorNode initialized. "
+            "VrOrchestratorNode initialized. "
             f"enable_services={self._enable_services}, "
             f"muxer_release_service={self._muxer_release_service}, "
             f"muxer_takeover_service={self._muxer_takeover_service}"
@@ -261,17 +266,12 @@ class AlohaOrchestratorNode(Node):
     ) -> Trigger.Response:
         """Trigger takeover (OVERRIDE) on the muxer; enables no arm.
 
-        ``enable_ctrl`` switches an arm to CAN_MODE, but takeover needs the
-        master arm in TEACH_MODE -- physical-button-only, software cannot set
-        it -- and the slave is already controllable. So the callback only logs
-        a reminder, then calls the muxer.
+        VR deployment has no master arm and no physical teach button.
+        The callback logs a neutral info message and calls the muxer.
+        v1 performs no VR reachability pre-check (D1, D2 in plan Section 3.2).
         """
-        # Static reminder; the orchestrator queries no arm state.
-        self.get_logger().info(
-            "Takeover: use the hardware teach button on the master arm to "
-            "put it into teach mode. The software/orchestrator cannot enter "
-            "teach mode -- it is physical-button-only."
-        )
+        # Neutral log; no hardware-button reminder needed.
+        self.get_logger().info("Switching to VR override mode.")
 
         takeover_result = self._call_service_sync(
             self._takeover_client, self._muxer_takeover_service
@@ -300,7 +300,7 @@ def main(args=None):
     service callbacks make synchronous downstream calls. See plan Section 6.6.
     """
     rclpy.init(args=args)
-    node = AlohaOrchestratorNode()
+    node = VrOrchestratorNode()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:

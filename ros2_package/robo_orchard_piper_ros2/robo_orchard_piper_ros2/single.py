@@ -63,6 +63,10 @@ class PiperSingleControlNode(Node):
         self.declare_parameter("gripper_val_mutiple", 1)
         self.declare_parameter("auto_enable_arm_ctrl", False)
         self.declare_parameter("enable_mit_ctrl", False)
+        self.declare_parameter(
+            "reset_joint_position",
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
 
         self.can_port = (
             self.get_parameter("can_port").get_parameter_value().string_value
@@ -88,13 +92,26 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .bool_value
         )
+        self.reset_joint_position = list(
+            self.get_parameter("reset_joint_position")
+            .get_parameter_value()
+            .double_array_value
+        )
+        if len(self.reset_joint_position) != 7:
+            self.get_logger().error(
+                "reset_joint_position must have 7 values "
+                "(6 joints + gripper), got "
+                f"{len(self.reset_joint_position)}. Falling back to zeros."
+            )
+            self.reset_joint_position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         self.get_logger().info(
             f"can_port = {self.can_port}, "
             f"auto_enable_arm_ctrl = {self.auto_enable_arm_ctrl}, "  # noqa: E501
             f"gripper_exist = {self.gripper_exist}, "
             f"gripper_val_mutiple = {self.gripper_val_mutiple}, "
-            f"enable_mit_ctrl = {self.enable_mit_ctrl}"
+            f"enable_mit_ctrl = {self.enable_mit_ctrl}, "
+            f"reset_joint_position = {self.reset_joint_position}"
         )
 
         self.piper = create_piper(self.can_port)
@@ -106,12 +123,12 @@ class PiperSingleControlNode(Node):
                 if self.enable_arm_ctrl():
                     self.get_logger().info("Auto enable successed!")
                 else:
-                    self.get_logger().warn("Auto enable failed!")
+                    self.get_logger().warning("Auto enable failed!")
             except TimeoutError as e:
                 msg = "Auto enable timed out."
                 if str(e):
                     msg = f"{msg} {e}"
-                self.get_logger().warn(msg)
+                self.get_logger().warning(msg)
 
         # Publishers
         self.joint_pub = self.create_publisher(JointState, "joint_state", 1)
@@ -145,7 +162,7 @@ class PiperSingleControlNode(Node):
         if ctrl_mode == CanControlMode.TEACH_MODE:
             # TEACH_MODE + IN_TEACHING means the robot is in active teach mode.
             if arm_status.teach_status == TeachStatusMode.IN_TEACHING:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     "Skip enable: arm is in active teach mode "
                     "(ctrl_mode=TEACH_MODE, teach_status=IN_TEACHING). "
                     "Press the teach button again to exit teach mode, "
@@ -154,14 +171,14 @@ class PiperSingleControlNode(Node):
                 return False
             # TEACH_MODE + POST_TEACHING means the robot has exited teach mode.
             elif arm_status.teach_status == TeachStatusMode.POST_TEACHING:
-                self.get_logger().warn("Switch to CAN control mode.")
+                self.get_logger().warning("Switch to CAN control mode.")
                 switch_piper_ctrl_mode(
                     self.piper,
                     CanControlMode.CAN_MODE,
                     is_mit=self.enable_mit_ctrl,
                 )
             else:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Invalid teach status: {arm_status.teach_status}"
                 )
                 return False
@@ -251,7 +268,7 @@ class PiperSingleControlNode(Node):
 
         def _gen_reset_traj():
             cur_joint_state = get_arm_state(self.piper)
-            target_joint_state = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            target_joint_state = self.reset_joint_position
             elapsed_time = 3.0  # seconds
             num_steps = int(elapsed_time * control_freq)
             traj = []

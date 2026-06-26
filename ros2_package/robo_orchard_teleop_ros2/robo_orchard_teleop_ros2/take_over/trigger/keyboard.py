@@ -104,7 +104,7 @@ class KeyboardTriggerNode(Node):
                 if self._input_buffer in self._key_service_map:
                     self._trigger_services_for_key(self._input_buffer)
                 else:
-                    self.get_logger().warn(
+                    self.get_logger().warning(
                         f"No action defined for input: '{self._input_buffer}'"
                     )
 
@@ -132,7 +132,7 @@ class KeyboardTriggerNode(Node):
         for service_name in service_names:
             client = self._service_clients.get(service_name)
             if not client or not client.service_is_ready():
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Service `{service_name}` is not available. Trigger ignored."  # noqa: E501
                 )
                 continue
@@ -150,7 +150,7 @@ class KeyboardTriggerNode(Node):
                     f"Service `{service_name}` successful: {response.message}"
                 )
             else:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Service `{service_name}` failed: {response.message}"
                 )
         except Exception as e:

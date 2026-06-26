@@ -222,7 +222,7 @@ class ServiceMcapRecorder(Node):
                 "1. Verify topic availability: ros2 topic list\n"
                 "2. Check topic spec compatibility: ros2 topic info\n"
             )
-            self.get_logger().warn(msg)
+            self.get_logger().warning(msg)
         else:
             duration = self.duration * 1e-9
             for topic, msg_cnt in self._msg_cnt.items():

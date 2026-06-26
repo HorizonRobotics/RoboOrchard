@@ -238,7 +238,7 @@ class TakeOverMuxerNode(Node):
         if not self._history:
             response.success = True
             response.message = "Takeover successful, but cannot replay: history buffer is empty."  # noqa: E501
-            self.get_logger().warn(response.message)
+            self.get_logger().warning(response.message)
             self._publish_current_mode()
             return response
 

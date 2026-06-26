@@ -16,7 +16,7 @@
 
 
 import rclpy
-from rclpy.node import Node
+from rclpy.node import Node, ParameterDescriptor
 from std_srvs.srv import Trigger
 
 from robo_orchard_pico_msg_ros2.msg import VRState
@@ -27,8 +27,25 @@ class PicoVRTriggerNode(Node):
     def __init__(self):
         super().__init__("pico_vr_trigger_node")
 
-        self.declare_parameter("key", "trigger")
-        self.declare_parameter("action_services", [""])
+        self.declare_parameter(
+            "key",
+            "trigger",
+            descriptor=ParameterDescriptor(
+                description=(
+                    "VR controller button key that triggers the action."
+                )
+            ),
+        )
+        self.declare_parameter(
+            "action_services",
+            [""],
+            descriptor=ParameterDescriptor(
+                description=(
+                    "List of ROS service names to call when the key is "
+                    "pressed."
+                )
+            ),
+        )
         self.declare_parameter("min_press_time", 0.5)
 
         key_binding_config = self.get_parameter("key").value
@@ -61,7 +78,7 @@ class PicoVRTriggerNode(Node):
         )
 
         self.msg_sub = self.create_subscription(
-            VRState, "/pico_bridge/vr_state", self.vr_state_callback, 1
+            VRState, "vr_state", self.vr_state_callback, 1
         )
         self._is_active = False
 
@@ -78,7 +95,7 @@ class PicoVRTriggerNode(Node):
                     continue
 
                 if not client.service_is_ready():
-                    self.get_logger().warn(
+                    self.get_logger().warning(
                         f"Service `{service_name}` is not available. Trigger ignored."  # noqa: E501
                     )
                     continue
@@ -103,7 +120,7 @@ class PicoVRTriggerNode(Node):
                     f"Service `{service_name}` call successful: {response.message}"  # noqa: E501
                 )
             else:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"Service `{service_name}` reported failure: {response.message}"  # noqa: E501
                 )
         except Exception as e:

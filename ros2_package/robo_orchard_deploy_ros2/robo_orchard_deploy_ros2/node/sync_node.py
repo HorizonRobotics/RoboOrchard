@@ -115,13 +115,13 @@ class DeployNode(Node):
                 return
         cur_obs = self.obs_manager.get_observations()
         if not cur_obs:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 "No observations received yet.", throttle_duration_sec=1
             )
             return
         predict_actions = self.model_inferencer.request_inference(cur_obs)
         if predict_actions is None:
-            self.get_logger().warn("No actions received from model server.")
+            self.get_logger().warning("No actions received from model server.")
             return
         else:
             with self.state_lock:

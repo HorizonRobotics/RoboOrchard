@@ -12,6 +12,9 @@ Please refer to the [docs](https://horizonrobotics.github.io/robot_lab/holobrain
 
 ```bash
 docker pull horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0
+
+# if teleop source is pico
+docker pull horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0-with-pico
 ```
 
 ## Launch scripts
@@ -102,6 +105,7 @@ cp launch/templates/launch.yaml launch/
 > [!NOTE]
 > Ensure `DOCKER_ROBO_ORCHARD_PATH` and `DOCKER_VENV_PATH` in `launch/launch.yaml` point to locations visible inside your container.
 > Update the camera serial numbers to match your hardware.
+> The default launch uses `TELEOP_SOURCE: "aloha"`; for Pico VR, update `launch/launch.yaml` and see the [teleoperation docs](docs/source/modules/teleop.rst).
 
 3. Execute the launch script:
 

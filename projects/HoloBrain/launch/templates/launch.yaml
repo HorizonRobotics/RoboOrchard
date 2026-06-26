@@ -11,6 +11,11 @@ environment:
   LEFT_WRIST_CAMERA_SERIAL_NO: "233522070652"
   RIGHT_WRIST_CAMERA_SERIAL_NO: "243322074840"
   ENV_CENTER_CAMERA_SERIAL_NO: "242222071855"
+  # Default HoloBrain launch scripts target ALOHA. Set to "pico" to use
+  # teleop/pico_dagger.sh and vr_orchestrator services.
+  TELEOP_SOURCE: "aloha"
+  # Required by teleop/pico_dagger.sh.
+  PIPER_URDF_PATH: ""
 
 shell_command_before:
   - docker exec -it
@@ -20,6 +25,8 @@ shell_command_before:
     -e LEFT_WRIST_CAMERA_SERIAL_NO="$LEFT_WRIST_CAMERA_SERIAL_NO"
     -e RIGHT_WRIST_CAMERA_SERIAL_NO="$RIGHT_WRIST_CAMERA_SERIAL_NO"
     -e ENV_CENTER_CAMERA_SERIAL_NO="$ENV_CENTER_CAMERA_SERIAL_NO"
+    -e TELEOP_SOURCE="$TELEOP_SOURCE"
+    -e PIPER_URDF_PATH="$PIPER_URDF_PATH"
     $DOCKER_NAME /bin/bash
   - source $DOCKER_VENV_PATH/bin/activate && source $DOCKER_ROBO_ORCHARD_PATH/ros2_package/install/setup.bash
   - git config --global --add safe.directory $DOCKER_ROBO_ORCHARD_PATH
@@ -83,8 +90,8 @@ windows:
     shell_command_before:
       - cd $DOCKER_ROBO_ORCHARD_PATH/projects/HoloBrain
     panes:
-      - shell_command:  # piper dagger
-        - CMD="bash teleop/rename-can.sh && bash teleop/dagger.sh"
+      - shell_command:  # robot teleop
+        - CMD='if [ "$TELEOP_SOURCE" = "pico" ]; then bash teleop/rename-can.sh && bash teleop/pico_dagger.sh; else bash teleop/rename-can.sh && bash teleop/aloha_dagger.sh; fi'
         - history -s "$CMD"
         - eval "$CMD"
 

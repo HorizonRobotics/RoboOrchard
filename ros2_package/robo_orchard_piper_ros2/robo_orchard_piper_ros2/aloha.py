@@ -159,7 +159,7 @@ class PiperAlohaNode(Node):
                 self.get_logger().info("Successful auto-enable master arm!")
             except TimeoutError:
                 self.master_arm_enabled = False
-                self.get_logger().warn("Failed auto-enable master arm!")
+                self.get_logger().warning("Failed auto-enable master arm!")
 
         self.get_logger().info("Attempting to auto-enable slave arm...")
         try:
@@ -167,7 +167,7 @@ class PiperAlohaNode(Node):
             set_ctrl_method(self.slave_piper, is_mit=self.enable_mit_ctrl)
             self.get_logger().info("Successful auto-enable slave arm!")
         except TimeoutError:
-            self.get_logger().warn("Failed auto-enable slave arm!")
+            self.get_logger().warning("Failed auto-enable slave arm!")
             raise
 
         self._check_robot_status()

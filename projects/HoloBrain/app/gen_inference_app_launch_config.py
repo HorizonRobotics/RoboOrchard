@@ -24,20 +24,32 @@ from robo_orchard_inference_app.config import (
 )
 
 
-def main():
-    config = LaunchCfg(
-        workspace="/data/holobrain/",
-        foxglove=FoxgloveCfg(
-            host="https://app.foxglove.dev",
-            remote_file_layout_id="",
-            remote_file_endpoint_template="{host}/?{query}",
-            websocket_layout_id="",
-            websocket_url="ws://localhost:8765",
-            display_type="link_button",
-        ),
-        ros_bridge=ROSBridgeCfg(
-            host="localhost",
-            port=9090,
+def _make_ros_bridge_config(teleop_source: str) -> ROSBridgeCfg:
+    common_kwargs = dict(
+        host="localhost",
+        port=9090,
+        stop_service_name=[
+            "/robot/left/takeover_muxer/stop",
+            "/robot/right/takeover_muxer/stop",
+        ],
+        enable_inference_service_name=[
+            "/robot/inference_service/enable",
+        ],
+        disable_inference_service_name=[
+            "/robot/inference_service/disable",
+        ],
+        inference_node_candidates=[
+            "/robot/inference_service/sync_node",
+            "/robot/inference_service/async_node",
+        ],
+        record_handeye_calib_service_name="/handeye_calib/record_data",
+        save_handeye_calib_service_name="/handeye_calib/save_data",
+        static_transform_service_name="/set_static_transforms",
+    )
+
+    if teleop_source == "aloha":
+        return ROSBridgeCfg(
+            **common_kwargs,
             takeover_service_name=[
                 "/robot/left/aloha_orchestrator/takeover",
                 "/robot/right/aloha_orchestrator/takeover",
@@ -45,20 +57,6 @@ def main():
             release_service_name=[
                 "/robot/left/aloha_orchestrator/auto",
                 "/robot/right/aloha_orchestrator/auto",
-            ],
-            stop_service_name=[
-                "/robot/left/takeover_muxer/stop",
-                "/robot/right/takeover_muxer/stop",
-            ],
-            enable_inference_service_name=[
-                "/robot/inference_service/enable",
-            ],
-            disable_inference_service_name=[
-                "/robot/inference_service/disable",
-            ],
-            inference_node_candidates=[
-                "/robot/inference_service/sync_node",
-                "/robot/inference_service/async_node",
             ],
             enable_arm_service_name=[
                 "/robot/left_master/enable_ctrl",
@@ -70,10 +68,48 @@ def main():
                 "/robot/right_master/reset_ctrl",
                 "/robot/right/reset_ctrl",
             ],
-            record_handeye_calib_service_name="/handeye_calib/record_data",
-            save_handeye_calib_service_name="/handeye_calib/save_data",
-            static_transform_service_name="/set_static_transforms",
+        )
+
+    if teleop_source == "pico":
+        return ROSBridgeCfg(
+            **common_kwargs,
+            takeover_service_name=[
+                "/robot/left/vr_orchestrator/takeover",
+                "/robot/right/vr_orchestrator/takeover",
+            ],
+            release_service_name=[
+                "/robot/left/vr_orchestrator/auto",
+                "/robot/right/vr_orchestrator/auto",
+            ],
+            enable_arm_service_name=[
+                "/robot/left/enable_ctrl",
+                "/robot/right/enable_ctrl",
+            ],
+            reset_arm_service_name=[
+                "/robot/left/reset_ctrl",
+                "/robot/right/reset_ctrl",
+            ],
+        )
+
+    raise ValueError(
+        "Unsupported TELEOP_SOURCE: "
+        f"{teleop_source!r}. Expected 'aloha' or 'pico'."
+    )
+
+
+def main():
+    teleop_source = os.environ.get("TELEOP_SOURCE", "aloha").strip().lower()
+    config = LaunchCfg(
+        workspace="/data/holobrain/",
+        foxglove=FoxgloveCfg(
+            host="https://app.foxglove.dev",
+            remote_file_layout_id="",
+            remote_file_endpoint_template="{host}/?{query}",
+            websocket_layout_id="",
+            websocket_url="ws://localhost:8765",
+            display_type="link_button",
         ),
+        ros_bridge=_make_ros_bridge_config(teleop_source),
         ui_control=UIControlCfg(
             start_keyboard="s",
             stop_keyboard="f",

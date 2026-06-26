@@ -24,8 +24,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
-    # --- Declare Launch Arguments ---
+    """Launch Pico teleop with algo-topic outputs and dual-arm debug."""
     left_can_port_arg = DeclareLaunchArgument(
         "left_can_port",
         default_value="can_left",
@@ -40,6 +39,11 @@ def generate_launch_description():
         "enable_mit_control_mode",
         default_value="true",
         description="Whether enable mit control mode or not.",
+    )
+    urdf_path_arg = DeclareLaunchArgument(
+        "urdf_path",
+        default_value="",
+        description="URDF path used by the Pico VR teleop solver.",
     )
     left_reset_joint_position_arg = DeclareLaunchArgument(
         "left_reset_joint_position",
@@ -58,7 +62,41 @@ def generate_launch_description():
         ),
     )
 
-    # --- Node Definitions ---
+    pico_bridge_node = Node(
+        package="robo_orchard_teleop_ros2",
+        executable="pico_bridge",
+        name="pico_bridge",
+        namespace="/pico_bridge",
+        output="screen",
+        emulate_tty=True,
+    )
+
+    pico_teleop_node = Node(
+        package="robo_orchard_teleop_ros2",
+        executable="piper_pico_vr_teleop",
+        name="piper_pico_vr_teleop",
+        namespace="/pico_bridge",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            {
+                "urdf_path": LaunchConfiguration("urdf_path"),
+                "ee_link_name": "link6",
+                "base_link_name": "base_link",
+                "left_reset_service": "/robot/left/reset_ctrl",
+                "right_reset_service": "/robot/right/reset_ctrl",
+            }
+        ],
+        remappings=[
+            ("/robot/left/joint_cmd", "/left_algo_cmd"),
+            ("/robot/right/joint_cmd", "/right_algo_cmd"),
+            ("/robot/left/ee_pose", "/puppet/end_pose_left"),
+            ("/robot/left/joint_state", "/puppet/joint_left"),
+            ("/robot/right/ee_pose", "/puppet/end_pose_right"),
+            ("/robot/right/joint_state", "/puppet/joint_right"),
+        ],
+    )
+
     left_controller_node = Node(
         package="robo_orchard_piper_ros2",
         executable="single_ctrl",
@@ -81,12 +119,13 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/left/joint_cmd", "/master/joint_left"),
+            ("/robot/left/joint_cmd", "/left_algo_cmd"),
             ("/robot/left/status", "/puppet/status_left"),
             ("/robot/left/ee_pose", "/puppet/end_pose_left"),
             ("/robot/left/joint_state", "/puppet/joint_left"),
         ],
     )
+
     right_controller_node = Node(
         package="robo_orchard_piper_ros2",
         executable="single_ctrl",
@@ -109,24 +148,23 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/right/joint_cmd", "/master/joint_right"),
+            ("/robot/right/joint_cmd", "/right_algo_cmd"),
             ("/robot/right/status", "/puppet/status_right"),
             ("/robot/right/ee_pose", "/puppet/end_pose_right"),
             ("/robot/right/joint_state", "/puppet/joint_right"),
         ],
     )
 
-    # --- Create the Launch Description ---
-    # The launch description is a container for all the actions to be executed.
     return LaunchDescription(
         [
-            # Add the declared arguments
             left_can_port_arg,
             right_can_port_arg,
             enable_mit_control_mode_arg,
+            urdf_path_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
-            # Add the nodes to be launched
+            pico_bridge_node,
+            pico_teleop_node,
             left_controller_node,
             right_controller_node,
         ]

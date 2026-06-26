@@ -110,10 +110,17 @@ class PicoBridge(Node):
         raw_vr_msg = json.loads(value_str)
 
         current_timestamp_ns = int(raw_vr_msg["timeStampNs"])
-        if current_timestamp_ns <= self._last_vr_time_ns:
-            self.get_logger().warn(
-                f"Timestamp did not increase. Skipping frame. "
-                f"Last: {self._last_vr_time_ns}, Current: {current_timestamp_ns}"  # noqa: E501
+        if current_timestamp_ns < self._last_vr_time_ns:
+            self.get_logger().warning(
+                f"Timestamp moved backwards. Skipping frame. "
+                "Last: "
+                f"{self._last_vr_time_ns}, Current: {current_timestamp_ns}"
+            )
+            return None
+        if current_timestamp_ns == self._last_vr_time_ns:
+            self.get_logger().debug(
+                "Received duplicated VR frame. Skipping frame. "
+                f"Timestamp: {current_timestamp_ns}"
             )
             return None
 
@@ -218,7 +225,7 @@ class PicoBridge(Node):
                 status=1,
             )
         else:
-            self.get_logger().warn("Missing head message")
+            self.get_logger().warning("Missing head message")
             head = Head(status=0)
 
         controller_msg = raw_vr_msg.get("Controller", dict())
@@ -228,7 +235,7 @@ class PicoBridge(Node):
                 status=1,
             )
         else:
-            self.get_logger().warn("Missing left_controller message")
+            self.get_logger().warning("Missing left_controller message")
             left_controller = LeftController(status=0)
 
         if "right" in controller_msg:
@@ -237,7 +244,7 @@ class PicoBridge(Node):
                 status=1,
             )
         else:
-            self.get_logger().warn("Missing right_controller message")
+            self.get_logger().warning("Missing right_controller message")
             right_controller = RightController(status=0)
 
         return VRState(

@@ -40,7 +40,7 @@ class ActionExecutor:
 
     def _send_joint_action(self, joint_position, publisher):
         if joint_position is None:
-            self._node.get_logger().warn(
+            self._node.get_logger().warning(
                 "Joint position is None, skipping action send."
             )
 

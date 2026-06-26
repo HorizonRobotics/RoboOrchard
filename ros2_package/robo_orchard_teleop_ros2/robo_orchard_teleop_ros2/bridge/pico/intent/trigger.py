@@ -27,7 +27,7 @@ class ActivationState:
     """Manages the state for a hold-to-run activation logic."""
 
     # The time when a potential activation press started. None if not pressed.
-    press_start_time_ns: float | None = None
+    press_start_time_ns: int | None = None
 
 
 class LongPressIntent:
@@ -44,7 +44,7 @@ class LongPressIntent:
         self.source_type = source_type
         self.value_thresh = value_thresh
         self.thresh = thresh
-        self.thresh_ns = thresh * 1e9
+        self.thresh_ns = int(thresh * 1e9)
         self._state = ActivationState()
 
     def _get_active_state(
@@ -117,7 +117,7 @@ class LongPressIntent:
         return self._get_active_state(
             left_trigger,
             right_trigger,
-            msg.header.stamp.sec * 1e9 + msg.header.stamp.nanosec,
+            int(msg.header.stamp.sec) * 10**9 + int(msg.header.stamp.nanosec),
         )
 
 

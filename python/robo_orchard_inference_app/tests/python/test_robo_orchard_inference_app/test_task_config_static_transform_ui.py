@@ -81,9 +81,7 @@ def _load_task_config_module():
     module.__dict__["st"] = streamlit_stub
     sys.modules["streamlit"] = streamlit_stub
     sys.modules["streamlit_tags"] = streamlit_tags_stub
-    sys.modules[
-        "robo_orchard_inference_app.components.mixin"
-    ] = mixin_stub
+    sys.modules["robo_orchard_inference_app.components.mixin"] = mixin_stub
     sys.modules["robo_orchard_inference_app.utils"] = types.SimpleNamespace(
         time_str_now=lambda: "20260101_000000"
     )
@@ -103,9 +101,7 @@ def test_render_tf_directories_is_locked_during_recording():
     st_stub.session_state.collecting_state = collecting_state
     st_stub.write = lambda msg: written.append(msg)
 
-    component = module.TaskConfigComponent.__new__(
-        module.TaskConfigComponent
-    )
+    component = module.TaskConfigComponent.__new__(module.TaskConfigComponent)
     component.key_prefix = "test"
     component._dump_task_cfg_to_disk = lambda: None
 
@@ -134,9 +130,7 @@ def test_render_tf_directories_updates_on_change():
     # (imported via `from streamlit_tags import st_tags`)
     module.st_tags = lambda *args, **kwargs: ["/media/tf_v1", "/media/tf_v2"]
 
-    component = module.TaskConfigComponent.__new__(
-        module.TaskConfigComponent
-    )
+    component = module.TaskConfigComponent.__new__(module.TaskConfigComponent)
     component.key_prefix = "test"
     component._dump_task_cfg_to_disk = lambda: written.append(True)
 

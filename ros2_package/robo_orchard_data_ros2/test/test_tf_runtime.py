@@ -123,5 +123,3 @@ def test_load_tf_config_from_result_file_rejects_invalid_payload(
 
     with pytest.raises(ValueError, match=message):
         load_tf_config_from_result_file(str(invalid_result))
-
-
