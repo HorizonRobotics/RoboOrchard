@@ -2,3 +2,4 @@ std_msgs/Header header
 Head head
 LeftController left_controller
 RightController right_controller
+BodyJoints body_joints

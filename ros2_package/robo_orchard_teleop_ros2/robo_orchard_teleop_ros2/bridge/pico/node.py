@@ -28,11 +28,13 @@ from geometry_msgs.msg import (
     Quaternion,
     TransformStamped,
 )
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node, ParameterDescriptor
 from scipy.spatial.transform import Rotation
 from std_msgs.msg import Header
 
 from robo_orchard_pico_msg_ros2.msg import (
+    BodyJoints,
     Head,
     LeftController,
     RightController,
@@ -43,6 +45,8 @@ from robo_orchard_teleop_ros2.msg_adaptor import (
 )
 
 __all__ = ["PicoBridge"]
+
+BODY_POSE_WIDTH = BodyJoints.POSE_WIDTH
 
 
 class PicoBridgeConfig(pydantic.BaseModel):
@@ -91,6 +95,59 @@ class PicoBridge(Node):
             self.tf_broadcaster = TransformBroadcaster(self)
 
         self.create_timer(1.0 / self.config.fps, self.xr_monitor)
+
+    @staticmethod
+    def _parse_csv_array(data, width: int, dtype) -> np.ndarray:
+        out = np.zeros(width, dtype=dtype)
+        if data is None:
+            return out
+        try:
+            if isinstance(data, str):
+                arr = np.asarray(
+                    [float(value) for value in data.split(",")], dtype=dtype
+                )
+            else:
+                arr = np.asarray(data, dtype=dtype)
+        except (TypeError, ValueError):
+            return out
+        arr = arr.reshape(-1)
+        copy_size = min(arr.size, width)
+        if copy_size > 0:
+            out[:copy_size] = arr[:copy_size]
+        return out
+
+    def _parse_body_joints(self, body: dict | None) -> BodyJoints:
+        msg = BodyJoints()
+        msg.available = False
+
+        try:
+            if not isinstance(body, dict):
+                return msg
+
+            joints = body.get("joints", [])
+            if not isinstance(joints, list):
+                return msg
+
+            joint_count = len(joints)
+            if joint_count <= 0:
+                return msg
+
+            poses = np.zeros((joint_count, BODY_POSE_WIDTH), dtype=np.float32)
+
+            for i, joint in enumerate(joints):
+                if not isinstance(joint, dict):
+                    continue
+                poses[i] = self._parse_csv_array(
+                    joint.get("p"), BODY_POSE_WIDTH, np.float32
+                )
+
+            msg.available = True
+            msg.joint_count = joint_count
+            msg.poses = poses.reshape(-1).tolist()
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to parse body joints: {exc}")
+
+        return msg
 
     def _parse_vr_state(self) -> VRState | None:
         """Fetches the latest message from the SDK, parses it, and returns a VRState object.
@@ -247,11 +304,14 @@ class PicoBridge(Node):
             self.get_logger().warning("Missing right_controller message")
             right_controller = RightController(status=0)
 
+        body_joints = self._parse_body_joints(raw_vr_msg.get("Body"))
+
         return VRState(
             header=header,
             head=head,
             left_controller=left_controller,
             right_controller=right_controller,
+            body_joints=body_joints,
         )
 
     def _broadcast_transform(self, msg: VRState):
@@ -341,9 +401,12 @@ def main(args=None):
 
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
