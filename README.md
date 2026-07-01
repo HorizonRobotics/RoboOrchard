@@ -12,6 +12,7 @@ specifically designed for:
 - **[Hand-Eye Calibration](./ros2_package/robo_orchard_handeye_calib_ros2/)**: Automated calibration between camera and robot coordinate systems
 - **[Teleoperation](./ros2_package/robo_orchard_teleop_ros2/)**: Remote control interface for manual robot operation
 - **[Data Recording](./ros2_package/robo_orchard_data_ros2)**: Comprehensive data collection and logging capabilities.
+- **[Image Tools](./ros2_package/robo_orchard_image_tools/)**: High-throughput ROS2 image processing utilities.
 - **[Model Deploy](./ros2_package/robo_orchard_deploy_ros2/)**: Efficiently deploy the manipulation model in real robot
 - **ROS2 Integration**: Full ROS2 Humble support for distributed robotic systems
 
@@ -26,6 +27,7 @@ roboorchard/
 │   └── robo_orchard_inference_app/ # Companision app
 ├── ros2_package/                 # ROS2 packages
 │   ├── robo_orchard_data_ros2/   # Data handling
+│   ├── robo_orchard_image_tools/ # Image processing tools
 │   ├── robo_orchard_teleop_ros2/ # Teleoperation
 │   ├── robo_orchard_piper_ros2/  # Piper arm control
 │   ├── robo_orchard_deploy_ros2/ # Deployment tools

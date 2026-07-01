@@ -187,23 +187,32 @@ class ServiceMcapRecorder(Node):
             response.message = "Not recording."
             return response
 
+        saved_uri = self.uri
         self._cleanup_writer()
         response.success = True
-        response.message = f"Stopped. Saved to {self.uri}"
+        response.message = f"Stopped. Saved to {saved_uri}"
         return response
 
     def _cleanup_writer(self):
         """Safely closes the writer and cleans up."""
         # Set flag first to stop data flow
         self._has_started_writing = False
+        recording_flag = self.recording_flag
+        session_wait_topics = set(self._session_wait_topics)
 
-        if self.writer:
+        if self.writer is not None:
+            try:
+                self.writer.close()
+            except Exception as e:
+                self.get_logger().warning(
+                    f"Failed to close rosbag writer: {e}"
+                )
             del self.writer
             self.writer = None
 
-        if self.recording_flag and os.path.exists(self.recording_flag):
+        if recording_flag and os.path.exists(recording_flag):
             try:
-                os.remove(self.recording_flag)
+                os.remove(recording_flag)
             except OSError:
                 pass
 
@@ -211,7 +220,7 @@ class ServiceMcapRecorder(Node):
         if self.duration == 0:
             msg = (
                 "Empty MCAP file detected. Currently wait for topics: "
-                f"{self._session_wait_topics}\n"
+                f"{session_wait_topics}\n"
                 "Possible causes:\n"
                 "1. No matching topics subscribed (current filter: include = "
                 f"{self.config.include_patterns} || "
@@ -233,6 +242,10 @@ class ServiceMcapRecorder(Node):
                         msg_cnt / duration,
                     )
                 )
+
+        self.recording_flag = None
+        self.uri = None
+        self._session_wait_topics = set()
 
     @functools.lru_cache(maxsize=512)  # noqa: B019
     def log_once(self, msg: str, level: str = "info"):
@@ -294,9 +307,9 @@ class ServiceMcapRecorder(Node):
         if self.is_recording:
             try:
                 self.writer.write(dst_topic, serialize_message(msg), timestamp)
-            except Exception:
+            except Exception as e:
                 # This might happen if writer is deleted while writing
-                self.get_logger().error("Get error while writing: {e}")
+                self.get_logger().error(f"Get error while writing: {e}")
 
             self._cnt += 1
 
