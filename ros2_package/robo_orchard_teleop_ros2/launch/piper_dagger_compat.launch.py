@@ -118,7 +118,7 @@ def generate_launch_description():
     )
     follower_gravity_compensation_urdf_path_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_urdf_path",
-        default_value="/data/holobrain/urdf/piper_x_description.urdf",
+        default_value="/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf",
         description="URDF path used for follower MIT gravity compensation.",
     )
     follower_gravity_compensation_scale_arg = DeclareLaunchArgument(
@@ -138,6 +138,14 @@ def generate_launch_description():
         "follower_gravity_compensation_max_t_ref",
         default_value="8.0",
         description="Absolute clamp for follower gravity compensation t_ref.",
+    )
+    follower_gravity_compensation_use_t_ref_arg = DeclareLaunchArgument(
+        "follower_gravity_compensation_use_t_ref",
+        default_value="true",
+        description=(
+            "When false, follower gravity compensation sends no t_ff: the "
+            "full desired torque acts through the kp position offset."
+        ),
     )
 
     replay_time_s_arg = DeclareLaunchArgument(
@@ -252,6 +260,16 @@ def generate_launch_description():
                     LaunchConfiguration("master_mit_torque_ref"),
                     value_type=float,
                 ),
+                # Master gravity compensation is enabled/scaled at runtime by
+                # the app, but the joint-name mapping (and a valid URDF) must
+                # already be in place. Dual-arm URDF: left chain is "left_*".
+                "mit_gravity_compensation_urdf_path": LaunchConfiguration(
+                    "follower_gravity_compensation_urdf_path"
+                ),
+                "mit_gravity_compensation_joint_names": [
+                    "left_joint1", "left_joint2", "left_joint3",
+                    "left_joint4", "left_joint5", "left_joint6",
+                ],
             }
         ],
         remappings=[
@@ -317,6 +335,17 @@ def generate_launch_description():
                     ),
                     value_type=float,
                 ),
+                "mit_gravity_compensation_use_t_ref": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_use_t_ref"
+                    ),
+                    value_type=bool,
+                ),
+                # Dual-arm URDF: the left chain is prefixed "left_*".
+                "mit_gravity_compensation_joint_names": [
+                    "left_joint1", "left_joint2", "left_joint3",
+                    "left_joint4", "left_joint5", "left_joint6",
+                ],
             }
         ],
         remappings=[
@@ -354,6 +383,16 @@ def generate_launch_description():
                     LaunchConfiguration("master_mit_torque_ref"),
                     value_type=float,
                 ),
+                # Master gravity compensation is enabled/scaled at runtime by
+                # the app, but the joint-name mapping (and a valid URDF) must
+                # already be in place. Dual-arm URDF: right chain is "right_*".
+                "mit_gravity_compensation_urdf_path": LaunchConfiguration(
+                    "follower_gravity_compensation_urdf_path"
+                ),
+                "mit_gravity_compensation_joint_names": [
+                    "right_joint1", "right_joint2", "right_joint3",
+                    "right_joint4", "right_joint5", "right_joint6",
+                ],
             }
         ],
         remappings=[
@@ -419,6 +458,17 @@ def generate_launch_description():
                     ),
                     value_type=float,
                 ),
+                "mit_gravity_compensation_use_t_ref": ParameterValue(
+                    LaunchConfiguration(
+                        "follower_gravity_compensation_use_t_ref"
+                    ),
+                    value_type=bool,
+                ),
+                # Dual-arm URDF: the right chain is prefixed "right_*".
+                "mit_gravity_compensation_joint_names": [
+                    "right_joint1", "right_joint2", "right_joint3",
+                    "right_joint4", "right_joint5", "right_joint6",
+                ],
             }
         ],
         remappings=[
@@ -454,6 +504,7 @@ def generate_launch_description():
             follower_gravity_compensation_scale_arg,
             follower_gravity_compensation_scale_per_joint_arg,
             follower_gravity_compensation_max_t_ref_arg,
+            follower_gravity_compensation_use_t_ref_arg,
             replay_time_s_arg,
             # Add the nodes to be launched
             left_takeover_muxer_node,
