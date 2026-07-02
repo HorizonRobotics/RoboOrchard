@@ -168,6 +168,90 @@ class MainControlComponent(ComponentBase):
             for j in range(1, 7)
         ]
 
+    def _default_master_gravity_per_joint(self) -> list[float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        defaults = list(
+            mit_cfg.default_master_gravity_compensation_scale_per_joint
+        )
+        if len(defaults) < 6:
+            defaults.extend([1.0] * (6 - len(defaults)))
+        return [float(v) for v in defaults[:6]]
+
+    def _master_gravity_per_joint(self) -> list[float]:
+        """Per-joint multiplier applied to the master rnea gravity torque."""
+        defaults = self._default_master_gravity_per_joint()
+        return [
+            float(
+                self._session_value(
+                    f"master_gravity_pj{j}", defaults[j - 1]
+                )
+            )
+            for j in range(1, 7)
+        ]
+
+    def _default_master_friction_per_joint(self) -> list[float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        defaults = list(
+            mit_cfg.default_master_friction_compensation_scale
+        )
+        if len(defaults) < 6:
+            defaults.extend([0.0] * (6 - len(defaults)))
+        return [float(v) for v in defaults[:6]]
+
+    def _master_friction_per_joint(self) -> list[float]:
+        """Per-joint base Coulomb friction torque (N·m) for the master."""
+        defaults = self._default_master_friction_per_joint()
+        return [
+            float(
+                self._session_value(
+                    f"master_friction_pj{j}", defaults[j - 1]
+                )
+            )
+            for j in range(1, 7)
+        ]
+
+    @staticmethod
+    def _pad_per_joint(values: list[float]) -> list[float]:
+        padded = [float(v) for v in values[:6]]
+        padded.extend([0.0] * (6 - len(padded)))
+        return padded
+
+    def _default_follower_friction_per_joint(self) -> list[float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        return self._pad_per_joint(
+            list(mit_cfg.default_follower_friction_compensation_scale)
+        )
+
+    def _follower_friction_per_joint(self) -> list[float]:
+        """Per-joint base Coulomb friction torque (N·m) for the follower."""
+        defaults = self._default_follower_friction_per_joint()
+        return [
+            float(
+                self._session_value(
+                    f"follower_friction_pj{j}", defaults[j - 1]
+                )
+            )
+            for j in range(1, 7)
+        ]
+
+    def _default_follower_static_friction_per_joint(self) -> list[float]:
+        mit_cfg = self.launch_cfg.ros_bridge.mit_control
+        return self._pad_per_joint(
+            list(mit_cfg.default_follower_friction_compensation_static_scale)
+        )
+
+    def _follower_static_friction_per_joint(self) -> list[float]:
+        """Per-joint stiction dither amplitude (N·m) for the follower."""
+        defaults = self._default_follower_static_friction_per_joint()
+        return [
+            float(
+                self._session_value(
+                    f"follower_static_friction_pj{j}", defaults[j - 1]
+                )
+            )
+            for j in range(1, 7)
+        ]
+
     def _streamlit_widget_snapshot(self) -> dict[str, object]:
         snapshot: dict[str, object] = {}
         for key, value in st.session_state.items():
@@ -181,6 +265,12 @@ class MainControlComponent(ComponentBase):
     def _collect_ui_params_snapshot(self) -> dict[str, object]:
         mit_cfg = self.launch_cfg.ros_bridge.mit_control
         scripted_cfg = self.launch_cfg.scripted_motion
+        master_gravity_enabled = bool(
+            self._session_value(
+                "master_gravity_enabled",
+                mit_cfg.default_master_gravity_compensation_enabled,
+            )
+        )
         return {
             "snapshot_version": 1,
             "captured_at_unix_s": time.time(),
@@ -200,20 +290,81 @@ class MainControlComponent(ComponentBase):
                 ),
             },
             "mit_control": {
-                "master_enabled": bool(
-                    self._session_value(
-                        "master_mit_enabled",
-                        mit_cfg.default_master_enabled,
+                "master_enabled": (
+                    True
+                    if master_gravity_enabled
+                    else bool(
+                        self._session_value(
+                            "master_mit_enabled",
+                            mit_cfg.default_master_enabled,
+                        )
                     )
                 ),
-                "master_kp": float(
-                    self._session_value(
-                        "master_mit_kp", mit_cfg.default_master_kp
+                "master_gravity_compensation_enabled": master_gravity_enabled,
+                # Gravity compensation floats the master: kp/kd are forced to 0.
+                "master_kp": (
+                    0.0
+                    if master_gravity_enabled
+                    else float(
+                        self._session_value(
+                            "master_mit_kp", mit_cfg.default_master_kp
+                        )
                     )
                 ),
-                "master_kd": float(
+                "master_kd": (
+                    0.0
+                    if master_gravity_enabled
+                    else float(
+                        self._session_value(
+                            "master_mit_kd", mit_cfg.default_master_kd
+                        )
+                    )
+                ),
+                "master_gravity_compensation_urdf_path": (
+                    mit_cfg.default_master_gravity_compensation_urdf_path
+                ),
+                "master_gravity_compensation_scale": float(
                     self._session_value(
-                        "master_mit_kd", mit_cfg.default_master_kd
+                        "master_gravity_scale",
+                        mit_cfg.default_master_gravity_compensation_scale,
+                    )
+                ),
+                "master_gravity_compensation_scale_per_joint": (
+                    self._master_gravity_per_joint()
+                ),
+                "master_gravity_compensation_max_t_ref": float(
+                    self._session_value(
+                        "master_gravity_max_t_ref",
+                        mit_cfg.default_master_gravity_compensation_max_t_ref,
+                    )
+                ),
+                "master_friction_compensation_enabled": bool(
+                    self._session_value(
+                        "master_friction_enabled",
+                        mit_cfg.default_master_friction_compensation_enabled,
+                    )
+                ),
+                "master_friction_compensation_scale": (
+                    self._master_friction_per_joint()
+                ),
+                "master_friction_compensation_load_scale": float(
+                    self._session_value(
+                        "master_friction_load_scale",
+                        mit_cfg.default_master_friction_compensation_load_scale,
+                    )
+                ),
+                "master_friction_compensation_min_velocity": float(
+                    self._session_value(
+                        "master_friction_min_velocity",
+                        mit_cfg
+                        .default_master_friction_compensation_min_velocity,
+                    )
+                ),
+                "master_friction_compensation_taper_velocity": float(
+                    self._session_value(
+                        "master_friction_taper_velocity",
+                        mit_cfg
+                        .default_master_friction_compensation_taper_velocity,
                     )
                 ),
                 "master_vel_ref": float(
@@ -260,12 +411,9 @@ class MainControlComponent(ComponentBase):
                     self._session_value("follower_velocity_ff", False)
                 ),
                 "follower_gravity_compensation_enabled": True,
-                "follower_gravity_compensation_urdf_path": str(
-                    self._session_value(
-                        "follower_gravity_urdf_path",
-                        mit_cfg.default_follower_gravity_compensation_urdf_path,
-                    )
-                ).strip(),
+                "follower_gravity_compensation_urdf_path": (
+                    mit_cfg.default_follower_gravity_compensation_urdf_path
+                ),
                 "follower_gravity_compensation_scale": float(
                     self._session_value(
                         "follower_gravity_scale",
@@ -279,6 +427,46 @@ class MainControlComponent(ComponentBase):
                     self._session_value(
                         "follower_gravity_max_t_ref",
                         mit_cfg.default_follower_gravity_compensation_max_t_ref,
+                    )
+                ),
+                "follower_friction_compensation_enabled": bool(
+                    self._session_value(
+                        "follower_friction_enabled",
+                        mit_cfg.default_follower_friction_compensation_enabled,
+                    )
+                ),
+                "follower_friction_compensation_scale": (
+                    self._follower_friction_per_joint()
+                ),
+                "follower_friction_compensation_load_scale": float(
+                    self._session_value(
+                        "follower_friction_load_scale",
+                        mit_cfg
+                        .default_follower_friction_compensation_load_scale,
+                    )
+                ),
+                "follower_friction_compensation_min_velocity": float(
+                    self._session_value(
+                        "follower_friction_min_velocity",
+                        mit_cfg
+                        .default_follower_friction_compensation_min_velocity,
+                    )
+                ),
+                "follower_friction_compensation_taper_velocity": float(
+                    self._session_value(
+                        "follower_friction_taper_velocity",
+                        mit_cfg
+                        .default_follower_friction_compensation_taper_velocity,
+                    )
+                ),
+                "follower_friction_compensation_static_scale": (
+                    self._follower_static_friction_per_joint()
+                ),
+                "follower_friction_compensation_static_velocity": float(
+                    self._session_value(
+                        "follower_friction_static_velocity",
+                        mit_cfg
+                        .default_follower_friction_compensation_static_velocity,
                     )
                 ),
             },
@@ -642,6 +830,7 @@ class MainControlComponent(ComponentBase):
             step: float,
             key: str,
             min_value: float | None = None,
+            disabled: bool = False,
         ):
             return st.number_input(
                 label,
@@ -650,6 +839,7 @@ class MainControlComponent(ComponentBase):
                 step=step,
                 format="%.3f",
                 key=f"{self.key_prefix}_{key}",
+                disabled=disabled,
             )
 
         st.caption("Master")
@@ -657,6 +847,17 @@ class MainControlComponent(ComponentBase):
             "Master MIT mode",
             value=mit_cfg.default_master_enabled,
             key=f"{self.key_prefix}_master_mit_enabled",
+        )
+        master_gravity_enabled = st.checkbox(
+            "Master gravity compensation",
+            value=mit_cfg.default_master_gravity_compensation_enabled,
+            key=f"{self.key_prefix}_master_gravity_enabled",
+            help=(
+                "Make the master arm float (weightless, fully backdrivable). "
+                "When enabled, master kp and kd are forced to 0 and the node "
+                "feeds the rnea(q, 0, 0) gravity torque as the MIT "
+                "feedforward torque. Requires Master MIT mode."
+            ),
         )
         master_cols = st.columns([1, 1, 1, 1])
         with master_cols[0]:
@@ -666,6 +867,7 @@ class MainControlComponent(ComponentBase):
                 0.1,
                 "master_mit_kp",
                 min_value=0.0,
+                disabled=master_gravity_enabled,
             )
         with master_cols[1]:
             master_kd = _number_input(
@@ -674,6 +876,7 @@ class MainControlComponent(ComponentBase):
                 0.01,
                 "master_mit_kd",
                 min_value=0.0,
+                disabled=master_gravity_enabled,
             )
         with master_cols[2]:
             master_vel_ref = _number_input(
@@ -689,6 +892,162 @@ class MainControlComponent(ComponentBase):
                 0.1,
                 "master_mit_torque_ref",
             )
+
+        # Gravity compensation makes the master float: zero out the
+        # position/velocity gains so only the rnea feedforward torque acts.
+        # The node only feeds the gravity torque in MIT mode, so keep it on.
+        if master_gravity_enabled:
+            master_enabled = True
+            master_kp = 0.0
+            master_kd = 0.0
+            st.caption("Master gravity")
+            master_gravity_cols = st.columns([2, 1, 1])
+            with master_gravity_cols[0]:
+                master_gravity_urdf_path = (
+                    mit_cfg.default_master_gravity_compensation_urdf_path
+                )
+                st.caption("URDF path")
+                st.code(master_gravity_urdf_path, language=None)
+            with master_gravity_cols[1]:
+                master_gravity_scale = _number_input(
+                    "Scale ",
+                    mit_cfg.default_master_gravity_compensation_scale,
+                    0.05,
+                    "master_gravity_scale",
+                )
+            with master_gravity_cols[2]:
+                master_gravity_max_t_ref = _number_input(
+                    "Max t_ref ",
+                    mit_cfg.default_master_gravity_compensation_max_t_ref,
+                    0.1,
+                    "master_gravity_max_t_ref",
+                    min_value=0.0,
+                )
+            master_default_per_joint = (
+                self._default_master_gravity_per_joint()
+            )
+            master_per_joint_cols = st.columns(6)
+            master_gravity_per_joint: list[float] = []
+            for j in range(6):
+                with master_per_joint_cols[j]:
+                    master_gravity_per_joint.append(
+                        _number_input(
+                            f"j{j + 1} ",
+                            master_default_per_joint[j],
+                            0.05,
+                            f"master_gravity_pj{j + 1}",
+                            min_value=0.0,
+                        )
+                    )
+
+            # Friction compensation on top of gravity: a per-joint torque in
+            # the direction of measured motion so the floating master
+            # backdrives smoothly (open_manipulator-style).
+            master_friction_enabled = st.checkbox(
+                "Master friction compensation",
+                value=(
+                    mit_cfg.default_master_friction_compensation_enabled
+                ),
+                key=f"{self.key_prefix}_master_friction_enabled",
+                help=(
+                    "Add a per-joint Coulomb torque in the direction the "
+                    "joint is actually moving to cancel stiction/friction. "
+                    "Magnitude is load-scaled (grows with gravity torque) and "
+                    "velocity-tapered (full just above the deadband, fading "
+                    "to zero by the taper velocity)."
+                ),
+            )
+            master_friction_param_cols = st.columns([1, 1, 1])
+            with master_friction_param_cols[0]:
+                master_friction_load_scale = _number_input(
+                    "Load scale",
+                    mit_cfg.default_master_friction_compensation_load_scale,
+                    0.05,
+                    "master_friction_load_scale",
+                    min_value=0.0,
+                    disabled=not master_friction_enabled,
+                )
+            with master_friction_param_cols[1]:
+                master_friction_min_velocity = _number_input(
+                    "Min vel",
+                    mit_cfg.default_master_friction_compensation_min_velocity,
+                    0.01,
+                    "master_friction_min_velocity",
+                    min_value=0.0,
+                    disabled=not master_friction_enabled,
+                )
+            with master_friction_param_cols[2]:
+                master_friction_taper_velocity = _number_input(
+                    "Taper vel",
+                    (
+                        mit_cfg
+                        .default_master_friction_compensation_taper_velocity
+                    ),
+                    0.1,
+                    "master_friction_taper_velocity",
+                    min_value=0.0,
+                    disabled=not master_friction_enabled,
+                )
+            master_friction_defaults = (
+                self._default_master_friction_per_joint()
+            )
+            master_friction_cols = st.columns(6)
+            master_friction_per_joint: list[float] = []
+            for j in range(6):
+                with master_friction_cols[j]:
+                    master_friction_per_joint.append(
+                        _number_input(
+                            f"f{j + 1}",
+                            master_friction_defaults[j],
+                            0.05,
+                            f"master_friction_pj{j + 1}",
+                            min_value=0.0,
+                            disabled=not master_friction_enabled,
+                        )
+                    )
+        else:
+            master_gravity_urdf_path = (
+                mit_cfg.default_master_gravity_compensation_urdf_path
+            )
+            master_gravity_scale = float(
+                self._session_value(
+                    "master_gravity_scale",
+                    mit_cfg.default_master_gravity_compensation_scale,
+                )
+            )
+            master_gravity_max_t_ref = float(
+                self._session_value(
+                    "master_gravity_max_t_ref",
+                    mit_cfg.default_master_gravity_compensation_max_t_ref,
+                )
+            )
+            master_gravity_per_joint = self._master_gravity_per_joint()
+            master_friction_enabled = bool(
+                self._session_value(
+                    "master_friction_enabled",
+                    mit_cfg.default_master_friction_compensation_enabled,
+                )
+            )
+            master_friction_load_scale = float(
+                self._session_value(
+                    "master_friction_load_scale",
+                    mit_cfg.default_master_friction_compensation_load_scale,
+                )
+            )
+            master_friction_min_velocity = float(
+                self._session_value(
+                    "master_friction_min_velocity",
+                    mit_cfg.default_master_friction_compensation_min_velocity,
+                )
+            )
+            master_friction_taper_velocity = float(
+                self._session_value(
+                    "master_friction_taper_velocity",
+                    mit_cfg
+                    .default_master_friction_compensation_taper_velocity,
+                )
+            )
+            master_friction_per_joint = self._master_friction_per_joint()
 
         st.caption("Follower")
         follower_enabled = st.checkbox(
@@ -743,11 +1102,11 @@ class MainControlComponent(ComponentBase):
         st.caption("Follower gravity")
         gravity_cols = st.columns([2, 1, 1])
         with gravity_cols[0]:
-            follower_gravity_urdf_path = st.text_input(
-                "URDF path",
-                value=mit_cfg.default_follower_gravity_compensation_urdf_path,
-                key=f"{self.key_prefix}_follower_gravity_urdf_path",
+            follower_gravity_urdf_path = (
+                mit_cfg.default_follower_gravity_compensation_urdf_path
             )
+            st.caption("URDF path")
+            st.code(follower_gravity_urdf_path, language=None)
         with gravity_cols[1]:
             follower_gravity_scale = _number_input(
                 "Scale",
@@ -779,12 +1138,127 @@ class MainControlComponent(ComponentBase):
                     )
                 )
 
+        follower_friction_enabled = st.checkbox(
+            "Follower friction compensation",
+            value=(
+                mit_cfg.default_follower_friction_compensation_enabled
+            ),
+            key=f"{self.key_prefix}_follower_friction_enabled",
+            help=(
+                "Kinetic: per-joint Coulomb torque in the direction the "
+                "joint is actually moving (load-scaled, velocity-tapered). "
+                "Static: per-joint dither torque of alternating sign while "
+                "the joint is near-stationary, so small commands break "
+                "stiction instead of hitting a dead zone."
+            ),
+        )
+        follower_friction_param_cols = st.columns([1, 1, 1, 1])
+        with follower_friction_param_cols[0]:
+            follower_friction_load_scale = _number_input(
+                "Load scale",
+                mit_cfg.default_follower_friction_compensation_load_scale,
+                0.05,
+                "follower_friction_load_scale",
+                min_value=0.0,
+                disabled=not follower_friction_enabled,
+            )
+        with follower_friction_param_cols[1]:
+            follower_friction_min_velocity = _number_input(
+                "Min vel",
+                mit_cfg.default_follower_friction_compensation_min_velocity,
+                0.01,
+                "follower_friction_min_velocity",
+                min_value=0.0,
+                disabled=not follower_friction_enabled,
+            )
+        with follower_friction_param_cols[2]:
+            follower_friction_taper_velocity = _number_input(
+                "Taper vel",
+                (
+                    mit_cfg
+                    .default_follower_friction_compensation_taper_velocity
+                ),
+                0.1,
+                "follower_friction_taper_velocity",
+                min_value=0.0,
+                disabled=not follower_friction_enabled,
+            )
+        with follower_friction_param_cols[3]:
+            follower_friction_static_velocity = _number_input(
+                "Static vel",
+                (
+                    mit_cfg
+                    .default_follower_friction_compensation_static_velocity
+                ),
+                0.01,
+                "follower_friction_static_velocity",
+                min_value=0.0,
+                disabled=not follower_friction_enabled,
+            )
+        follower_friction_defaults = (
+            self._default_follower_friction_per_joint()
+        )
+        follower_friction_cols = st.columns(6)
+        follower_friction_per_joint: list[float] = []
+        for j in range(6):
+            with follower_friction_cols[j]:
+                follower_friction_per_joint.append(
+                    _number_input(
+                        f"f{j + 1}",
+                        follower_friction_defaults[j],
+                        0.05,
+                        f"follower_friction_pj{j + 1}",
+                        min_value=0.0,
+                        disabled=not follower_friction_enabled,
+                    )
+                )
+        st.caption("Stiction dither amplitude (N·m, 0 = off)")
+        follower_static_defaults = (
+            self._default_follower_static_friction_per_joint()
+        )
+        follower_static_cols = st.columns(6)
+        follower_static_friction_per_joint: list[float] = []
+        for j in range(6):
+            with follower_static_cols[j]:
+                follower_static_friction_per_joint.append(
+                    _number_input(
+                        f"s{j + 1}",
+                        follower_static_defaults[j],
+                        0.05,
+                        f"follower_static_friction_pj{j + 1}",
+                        min_value=0.0,
+                        disabled=not follower_friction_enabled,
+                    )
+                )
+
         return {
             "master_enabled": master_enabled,
             "master_kp": master_kp,
             "master_kd": master_kd,
             "master_vel_ref": master_vel_ref,
             "master_torque_ref": master_torque_ref,
+            "master_gravity_compensation_enabled": master_gravity_enabled,
+            "master_gravity_compensation_urdf_path": (
+                master_gravity_urdf_path.strip()
+            ),
+            "master_gravity_compensation_scale": master_gravity_scale,
+            "master_gravity_compensation_scale_per_joint": (
+                master_gravity_per_joint
+            ),
+            "master_gravity_compensation_max_t_ref": (
+                master_gravity_max_t_ref
+            ),
+            "master_friction_compensation_enabled": master_friction_enabled,
+            "master_friction_compensation_scale": master_friction_per_joint,
+            "master_friction_compensation_load_scale": (
+                master_friction_load_scale
+            ),
+            "master_friction_compensation_min_velocity": (
+                master_friction_min_velocity
+            ),
+            "master_friction_compensation_taper_velocity": (
+                master_friction_taper_velocity
+            ),
             "follower_enabled": follower_enabled,
             "follower_kp": follower_kp,
             "follower_kd": follower_kd,
@@ -801,6 +1275,27 @@ class MainControlComponent(ComponentBase):
             ),
             "follower_gravity_compensation_max_t_ref": (
                 follower_gravity_max_t_ref
+            ),
+            "follower_friction_compensation_enabled": (
+                follower_friction_enabled
+            ),
+            "follower_friction_compensation_scale": (
+                follower_friction_per_joint
+            ),
+            "follower_friction_compensation_load_scale": (
+                follower_friction_load_scale
+            ),
+            "follower_friction_compensation_min_velocity": (
+                follower_friction_min_velocity
+            ),
+            "follower_friction_compensation_taper_velocity": (
+                follower_friction_taper_velocity
+            ),
+            "follower_friction_compensation_static_scale": (
+                follower_static_friction_per_joint
+            ),
+            "follower_friction_compensation_static_velocity": (
+                follower_friction_static_velocity
             ),
         }
 

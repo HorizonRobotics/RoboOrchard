@@ -38,6 +38,14 @@ MIT_PARAM_NAMES = (
     "mit_gravity_compensation_scale",
     "mit_gravity_compensation_scale_per_joint",
     "mit_gravity_compensation_max_t_ref",
+    "mit_gravity_compensation_use_kp_offset",
+    "mit_friction_compensation_enabled",
+    "mit_friction_compensation_scale",
+    "mit_friction_compensation_load_scale",
+    "mit_friction_compensation_min_velocity",
+    "mit_friction_compensation_taper_velocity",
+    "mit_friction_compensation_static_scale",
+    "mit_friction_compensation_static_velocity",
 )
 
 
@@ -385,6 +393,18 @@ class RosServiceHelper:
         follower_kd: float,
         follower_vel_ref: float,
         follower_torque_ref: float,
+        master_gravity_compensation_enabled: bool | None = None,
+        master_gravity_compensation_urdf_path: str | None = None,
+        master_gravity_compensation_scale: float | None = None,
+        master_gravity_compensation_scale_per_joint: (
+            list[float] | None
+        ) = None,
+        master_gravity_compensation_max_t_ref: float | None = None,
+        master_friction_compensation_enabled: bool | None = None,
+        master_friction_compensation_scale: list[float] | None = None,
+        master_friction_compensation_load_scale: float | None = None,
+        master_friction_compensation_min_velocity: float | None = None,
+        master_friction_compensation_taper_velocity: float | None = None,
         follower_velocity_feedforward: bool | None = None,
         follower_gravity_compensation_alpha: float | None = None,
         follower_gravity_compensation_enabled: bool | None = None,
@@ -394,24 +414,70 @@ class RosServiceHelper:
             list[float] | None
         ) = None,
         follower_gravity_compensation_max_t_ref: float | None = None,
+        follower_friction_compensation_enabled: bool | None = None,
+        follower_friction_compensation_scale: list[float] | None = None,
+        follower_friction_compensation_load_scale: float | None = None,
+        follower_friction_compensation_min_velocity: float | None = None,
+        follower_friction_compensation_taper_velocity: float | None = None,
+        follower_friction_compensation_static_scale: (
+            list[float] | None
+        ) = None,
+        follower_friction_compensation_static_velocity: float | None = None,
     ) -> bool:
         mit_cfg = self.cfg.mit_control
         requested_params: list[
             tuple[str, dict[str, bool | float | str | list]]
         ] = []
-        for node_name in mit_cfg.master_param_node_names:
-            requested_params.append(
-                (
-                    node_name,
-                    {
-                        "enable_mit_ctrl": master_enabled,
-                        "mit_kp": master_kp,
-                        "mit_kd": master_kd,
-                        "mit_vel_ref": master_vel_ref,
-                        "mit_torque_ref": master_torque_ref,
-                    },
-                )
+        master_params: dict[str, bool | float | str | list] = {
+            "enable_mit_ctrl": master_enabled,
+            "mit_kp": master_kp,
+            "mit_kd": master_kd,
+            "mit_vel_ref": master_vel_ref,
+            "mit_torque_ref": master_torque_ref,
+        }
+        if master_gravity_compensation_enabled is not None:
+            master_params["mit_gravity_compensation_enabled"] = bool(
+                master_gravity_compensation_enabled
             )
+        if master_gravity_compensation_urdf_path is not None:
+            master_params["mit_gravity_compensation_urdf_path"] = (
+                master_gravity_compensation_urdf_path
+            )
+        if master_gravity_compensation_scale is not None:
+            master_params["mit_gravity_compensation_scale"] = (
+                master_gravity_compensation_scale
+            )
+        if master_gravity_compensation_scale_per_joint is not None:
+            master_params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v)
+                for v in master_gravity_compensation_scale_per_joint
+            ]
+        if master_gravity_compensation_max_t_ref is not None:
+            master_params["mit_gravity_compensation_max_t_ref"] = (
+                master_gravity_compensation_max_t_ref
+            )
+        if master_friction_compensation_enabled is not None:
+            master_params["mit_friction_compensation_enabled"] = bool(
+                master_friction_compensation_enabled
+            )
+        if master_friction_compensation_scale is not None:
+            master_params["mit_friction_compensation_scale"] = [
+                float(v) for v in master_friction_compensation_scale
+            ]
+        if master_friction_compensation_load_scale is not None:
+            master_params["mit_friction_compensation_load_scale"] = (
+                master_friction_compensation_load_scale
+            )
+        if master_friction_compensation_min_velocity is not None:
+            master_params["mit_friction_compensation_min_velocity"] = (
+                master_friction_compensation_min_velocity
+            )
+        if master_friction_compensation_taper_velocity is not None:
+            master_params["mit_friction_compensation_taper_velocity"] = (
+                master_friction_compensation_taper_velocity
+            )
+        for node_name in mit_cfg.master_param_node_names:
+            requested_params.append((node_name, dict(master_params)))
         follower_params: dict[str, bool | float | str | list] = {
             "enable_mit_ctrl": follower_enabled,
             "mit_kp": follower_kp,
@@ -455,6 +521,35 @@ class RosServiceHelper:
             follower_params["mit_gravity_compensation_max_t_ref"] = (
                 follower_gravity_compensation_max_t_ref
             )
+        if follower_friction_compensation_enabled is not None:
+            follower_params["mit_friction_compensation_enabled"] = bool(
+                follower_friction_compensation_enabled
+            )
+        if follower_friction_compensation_scale is not None:
+            follower_params["mit_friction_compensation_scale"] = [
+                float(v) for v in follower_friction_compensation_scale
+            ]
+        if follower_friction_compensation_load_scale is not None:
+            follower_params["mit_friction_compensation_load_scale"] = (
+                follower_friction_compensation_load_scale
+            )
+        if follower_friction_compensation_min_velocity is not None:
+            follower_params["mit_friction_compensation_min_velocity"] = (
+                follower_friction_compensation_min_velocity
+            )
+        if follower_friction_compensation_taper_velocity is not None:
+            follower_params["mit_friction_compensation_taper_velocity"] = (
+                follower_friction_compensation_taper_velocity
+            )
+        if follower_friction_compensation_static_scale is not None:
+            follower_params["mit_friction_compensation_static_scale"] = [
+                float(v)
+                for v in follower_friction_compensation_static_scale
+            ]
+        if follower_friction_compensation_static_velocity is not None:
+            follower_params["mit_friction_compensation_static_velocity"] = (
+                follower_friction_compensation_static_velocity
+            )
         for node_name in mit_cfg.follower_param_node_names:
             requested_params.append((node_name, dict(follower_params)))
 
@@ -478,6 +573,46 @@ class RosServiceHelper:
             "follower_vel_ref": follower_vel_ref,
             "follower_torque_ref": follower_torque_ref,
         }
+        if master_gravity_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_enabled"
+            ] = bool(master_gravity_compensation_enabled)
+        if master_gravity_compensation_urdf_path is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_urdf_path"
+            ] = master_gravity_compensation_urdf_path
+        if master_gravity_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_scale"
+            ] = master_gravity_compensation_scale
+        if master_gravity_compensation_scale_per_joint is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_scale_per_joint"
+            ] = list(master_gravity_compensation_scale_per_joint)
+        if master_gravity_compensation_max_t_ref is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_max_t_ref"
+            ] = master_gravity_compensation_max_t_ref
+        if master_friction_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_enabled"
+            ] = bool(master_friction_compensation_enabled)
+        if master_friction_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_scale"
+            ] = list(master_friction_compensation_scale)
+        if master_friction_compensation_load_scale is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_load_scale"
+            ] = master_friction_compensation_load_scale
+        if master_friction_compensation_min_velocity is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_min_velocity"
+            ] = master_friction_compensation_min_velocity
+        if master_friction_compensation_taper_velocity is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_taper_velocity"
+            ] = master_friction_compensation_taper_velocity
         if follower_gravity_compensation_alpha is not None:
             self._last_requested_mit_params[
                 "follower_gravity_compensation_alpha"
@@ -502,6 +637,34 @@ class RosServiceHelper:
             self._last_requested_mit_params[
                 "follower_gravity_compensation_max_t_ref"
             ] = follower_gravity_compensation_max_t_ref
+        if follower_friction_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_enabled"
+            ] = bool(follower_friction_compensation_enabled)
+        if follower_friction_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_scale"
+            ] = list(follower_friction_compensation_scale)
+        if follower_friction_compensation_load_scale is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_load_scale"
+            ] = follower_friction_compensation_load_scale
+        if follower_friction_compensation_min_velocity is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_min_velocity"
+            ] = follower_friction_compensation_min_velocity
+        if follower_friction_compensation_taper_velocity is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_taper_velocity"
+            ] = follower_friction_compensation_taper_velocity
+        if follower_friction_compensation_static_scale is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_static_scale"
+            ] = list(follower_friction_compensation_static_scale)
+        if follower_friction_compensation_static_velocity is not None:
+            self._last_requested_mit_params[
+                "follower_friction_compensation_static_velocity"
+            ] = follower_friction_compensation_static_velocity
 
         self.logger.info(
             "MIT params set: "
@@ -509,6 +672,20 @@ class RosServiceHelper:
             f"master kp={master_kp}, master kd={master_kd}, "
             f"master vel_ref={master_vel_ref}, "
             f"master torque_ref={master_torque_ref}, "
+            "master gravity_compensation_enabled="
+            f"{master_gravity_compensation_enabled}, "
+            "master gravity_compensation_scale="
+            f"{master_gravity_compensation_scale}, "
+            "master gravity_compensation_scale_per_joint="
+            f"{master_gravity_compensation_scale_per_joint}, "
+            "master gravity_compensation_max_t_ref="
+            f"{master_gravity_compensation_max_t_ref}, "
+            "master friction_compensation_enabled="
+            f"{master_friction_compensation_enabled}, "
+            "master friction_compensation_scale="
+            f"{master_friction_compensation_scale}, "
+            "master friction_compensation_load_scale="
+            f"{master_friction_compensation_load_scale}, "
             f"follower enabled={follower_enabled}, "
             f"follower kp={follower_kp}, follower kd={follower_kd}, "
             f"follower vel_ref={follower_vel_ref}, "

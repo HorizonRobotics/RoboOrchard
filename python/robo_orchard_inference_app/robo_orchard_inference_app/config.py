@@ -104,6 +104,29 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_master_kd: float = 0.8
     default_master_vel_ref: float = 45.0
     default_master_torque_ref: float = 0.0
+    # When enabled the UI forces master kp/kd to 0 and lets the node feed the
+    # rnea(q, 0, 0) gravity torque as the MIT feedforward torque, so the master
+    # arm floats (gravity-compensated, fully backdrivable).
+    default_master_gravity_compensation_enabled: bool = False
+    default_master_gravity_compensation_urdf_path: str = (
+        "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
+    )
+    default_master_gravity_compensation_scale: float = 1.0
+    # Per-joint multiplier applied on top of the global scale.
+    default_master_gravity_compensation_scale_per_joint: list[float] = (
+        pydantic.Field(default_factory=lambda: [1.0] * 6)
+    )
+    default_master_gravity_compensation_max_t_ref: float = 8.0
+    # Master friction compensation (open_manipulator-style): a per-joint torque
+    # added in the direction of measured motion to cancel Coulomb/stiction so
+    # the floating master backdrives smoothly. Disabled by default.
+    default_master_friction_compensation_enabled: bool = False
+    default_master_friction_compensation_scale: list[float] = pydantic.Field(
+        default_factory=lambda: [0.0] * 6
+    )
+    default_master_friction_compensation_load_scale: float = 0.0
+    default_master_friction_compensation_min_velocity: float = 0.02
+    default_master_friction_compensation_taper_velocity: float = 2.0
     default_follower_kp: float = 10.0
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
@@ -111,7 +134,7 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_follower_gravity_compensation_alpha: float = 0.0
     default_follower_gravity_compensation_enabled: bool = False
     default_follower_gravity_compensation_urdf_path: str = (
-        "/data/holobrain/urdf/piper_x_description.urdf"
+        "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
     )
     default_follower_gravity_compensation_scale: float = 1.0
     # Per-joint multiplier applied on top of the global scale.
@@ -119,6 +142,24 @@ class MITControlTuningCfg(pydantic.BaseModel):
         pydantic.Field(default_factory=lambda: [1.0] * 6)
     )
     default_follower_gravity_compensation_max_t_ref: float = 8.0
+    # Follower friction compensation on top of gravity comp. Kinetic part:
+    # per-joint Coulomb torque in the direction of measured motion,
+    # load-scaled and velocity-tapered. Static part: per-joint dither torque
+    # of alternating sign while the joint is near-stationary, so small
+    # commands break stiction smoothly instead of hitting a dead zone.
+    # Disabled by default; coefficients come from hardware-in-the-loop tuning
+    # (ros2 param set on the follower nodes), then get persisted here.
+    default_follower_friction_compensation_enabled: bool = False
+    default_follower_friction_compensation_scale: list[float] = (
+        pydantic.Field(default_factory=lambda: [0.0] * 6)
+    )
+    default_follower_friction_compensation_load_scale: float = 0.0
+    default_follower_friction_compensation_min_velocity: float = 0.02
+    default_follower_friction_compensation_taper_velocity: float = 2.0
+    default_follower_friction_compensation_static_scale: list[float] = (
+        pydantic.Field(default_factory=lambda: [0.0] * 6)
+    )
+    default_follower_friction_compensation_static_velocity: float = 0.05
 
 
 class ScriptedMotionCfg(pydantic.BaseModel):

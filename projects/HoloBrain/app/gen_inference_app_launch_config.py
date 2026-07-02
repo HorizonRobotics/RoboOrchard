@@ -81,7 +81,7 @@ def _make_ros_bridge_config(teleop_source: str) -> ROSBridgeCfg:
                 default_follower_torque_ref=0.0,
                 default_follower_gravity_compensation_alpha=0.0,
                 default_follower_gravity_compensation_urdf_path=(
-                    "/data/holobrain/urdf/piper_x_description.urdf"
+                    "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
                 ),
             ),
             enable_arm_service_name=[

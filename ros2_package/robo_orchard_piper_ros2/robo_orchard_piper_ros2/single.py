@@ -103,13 +103,67 @@ class PiperSingleControlNode(Node):
             "mit_gravity_compensation_scale_per_joint", [1.0] * 6
         )
         self.declare_parameter("mit_gravity_compensation_max_t_ref", 8.0)
+        self.declare_parameter("mit_gravity_compensation_use_kp_offset", True)
+        # When false, gravity/friction compensation sends no t_ff at all:
+        # t_ref stays 0 and the full desired torque acts through the kp
+        # position offset instead. For isolating firmware t_ff behavior.
+        self.declare_parameter("mit_gravity_compensation_use_t_ref", True)
+        # Per-joint measured joint stiffness (Nm/rad) for converting
+        # compensation torque to a position offset. The Piper firmware's
+        # internal loop holds position far stiffer than the MIT kp we send
+        # (~100-180 Nm/rad measured on J2/J3), so dividing by kp
+        # overcompensates. 0 per joint falls back to the legacy /kp.
+        self.declare_parameter(
+            "mit_gravity_compensation_offset_stiffness", [0.0] * 6
+        )
+        # JSON deflection curves for joints whose stiffness is load-dependent
+        # (J2 stiffens 190->370 Nm/rad between 2.6 and 10 Nm). Format:
+        # {"2": [[tau1, delta1], [tau2, delta2], ...]} keyed by 1-based joint
+        # number, knots strictly increasing, implicit (0,0) origin. A joint
+        # with a table ignores its offset_stiffness value. Empty disables.
+        self.declare_parameter(
+            "mit_gravity_compensation_deflection_table", ""
+        )
+        # Toggle for the deflection table without clearing it: False falls
+        # back to offset_stiffness/kp, for live A/B comparison.
+        self.declare_parameter(
+            "mit_gravity_compensation_use_deflection_table", True
+        )
         self.declare_parameter(
             "mit_gravity_compensation_joint_names",
             [f"joint{i}" for i in range(1, 7)],
         )
+        # Friction compensation: a per-joint torque added in the direction of
+        # measured motion to cancel Coulomb/stiction (open_manipulator-style).
+        # Disabled by default (all-zero per-joint scale).
+        self.declare_parameter("mit_friction_compensation_enabled", False)
+        self.declare_parameter(
+            "mit_friction_compensation_scale", [0.0] * 6
+        )
+        # Grows friction with joint load: factor (1 + |gravity_tau|*load_scale).
+        self.declare_parameter("mit_friction_compensation_load_scale", 0.0)
+        # Velocity deadband (rad/s) below which no friction is applied.
+        self.declare_parameter(
+            "mit_friction_compensation_min_velocity", 0.02
+        )
+        # Velocity (rad/s) at which the friction term tapers to zero.
+        self.declare_parameter(
+            "mit_friction_compensation_taper_velocity", 2.0
+        )
+        # Stiction dithering: per-joint torque amplitude (Nm) whose sign
+        # alternates every control cycle while the joint is near-stationary,
+        # keeping the gearbox at the edge of breakaway. All-zero disables it.
+        self.declare_parameter(
+            "mit_friction_compensation_static_scale", [0.0] * 6
+        )
+        # Velocity (rad/s) below which a joint counts as stationary and the
+        # dither is applied.
+        self.declare_parameter(
+            "mit_friction_compensation_static_velocity", 0.05
+        )
         # When non-empty, every gravity-compensation timestep is appended as a
-        # CSV row (raw pin.rnea torque, scale, per-joint, applied torque) for
-        # offline verification. Empty disables recording.
+        # CSV row for offline verification, including raw RNEA, clamped
+        # t_ref, kp offset, and residual torque. Empty disables recording.
         self.declare_parameter("mit_gravity_compensation_record_path", "")
 
         self.can_port = (
@@ -213,6 +267,33 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.mit_gravity_compensation_use_kp_offset = (
+            self.get_parameter("mit_gravity_compensation_use_kp_offset")
+            .get_parameter_value()
+            .bool_value
+        )
+        self.mit_gravity_compensation_use_t_ref = (
+            self.get_parameter("mit_gravity_compensation_use_t_ref")
+            .get_parameter_value()
+            .bool_value
+        )
+        self.mit_gravity_compensation_offset_stiffness = list(
+            self.get_parameter("mit_gravity_compensation_offset_stiffness")
+            .get_parameter_value()
+            .double_array_value
+        )
+        self.mit_gravity_compensation_deflection_table = (
+            self.get_parameter("mit_gravity_compensation_deflection_table")
+            .get_parameter_value()
+            .string_value
+        )
+        self.mit_gravity_compensation_use_deflection_table = (
+            self.get_parameter(
+                "mit_gravity_compensation_use_deflection_table"
+            )
+            .get_parameter_value()
+            .bool_value
+        )
         self.mit_gravity_compensation_joint_names = list(
             self.get_parameter("mit_gravity_compensation_joint_names")
             .get_parameter_value()
@@ -223,6 +304,41 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .string_value
         )
+        self.mit_friction_compensation_enabled = (
+            self.get_parameter("mit_friction_compensation_enabled")
+            .get_parameter_value()
+            .bool_value
+        )
+        self.mit_friction_compensation_scale = list(
+            self.get_parameter("mit_friction_compensation_scale")
+            .get_parameter_value()
+            .double_array_value
+        )
+        self.mit_friction_compensation_load_scale = (
+            self.get_parameter("mit_friction_compensation_load_scale")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_friction_compensation_min_velocity = (
+            self.get_parameter("mit_friction_compensation_min_velocity")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_friction_compensation_taper_velocity = (
+            self.get_parameter("mit_friction_compensation_taper_velocity")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_friction_compensation_static_scale = list(
+            self.get_parameter("mit_friction_compensation_static_scale")
+            .get_parameter_value()
+            .double_array_value
+        )
+        self.mit_friction_compensation_static_velocity = (
+            self.get_parameter("mit_friction_compensation_static_velocity")
+            .get_parameter_value()
+            .double_value
+        )
         self.gravity_compensator = PinocchioGravityCompensator()
         self.gravity_compensator.configure(
             enabled=self.mit_gravity_compensation_enabled,
@@ -231,6 +347,32 @@ class PiperSingleControlNode(Node):
             scale=self.mit_gravity_compensation_scale,
             max_abs_t_ref=self.mit_gravity_compensation_max_t_ref,
             per_joint_scale=self.mit_gravity_compensation_scale_per_joint,
+            use_kp_offset=self.mit_gravity_compensation_use_kp_offset,
+            use_t_ref=self.mit_gravity_compensation_use_t_ref,
+            offset_stiffness=(
+                self.mit_gravity_compensation_offset_stiffness
+            ),
+            offset_deflection_table_json=(
+                self.mit_gravity_compensation_deflection_table
+            ),
+            use_deflection_table=(
+                self.mit_gravity_compensation_use_deflection_table
+            ),
+            friction_enabled=self.mit_friction_compensation_enabled,
+            friction_scale=self.mit_friction_compensation_scale,
+            friction_load_scale=self.mit_friction_compensation_load_scale,
+            friction_min_velocity=(
+                self.mit_friction_compensation_min_velocity
+            ),
+            friction_taper_velocity=(
+                self.mit_friction_compensation_taper_velocity
+            ),
+            friction_static_scale=(
+                self.mit_friction_compensation_static_scale
+            ),
+            friction_static_velocity=(
+                self.mit_friction_compensation_static_velocity
+            ),
         )
         self.gravity_compensator.set_record_path(
             self.mit_gravity_compensation_record_path
@@ -250,7 +392,11 @@ class PiperSingleControlNode(Node):
             "mit_gravity_compensation_enabled = "
             f"{self.mit_gravity_compensation_enabled}, "
             "mit_gravity_compensation_urdf_path = "
-            f"{self.mit_gravity_compensation_urdf_path}"
+            f"{self.mit_gravity_compensation_urdf_path}, "
+            "mit_friction_compensation_enabled = "
+            f"{self.mit_friction_compensation_enabled}, "
+            "mit_friction_compensation_scale = "
+            f"{self.mit_friction_compensation_scale}"
         )
 
         self.piper = create_piper(self.can_port)
@@ -310,6 +456,17 @@ class PiperSingleControlNode(Node):
         next_gravity_urdf_path = self.mit_gravity_compensation_urdf_path
         next_gravity_scale = self.mit_gravity_compensation_scale
         next_gravity_max_t_ref = self.mit_gravity_compensation_max_t_ref
+        next_gravity_use_kp_offset = self.mit_gravity_compensation_use_kp_offset
+        next_gravity_use_t_ref = self.mit_gravity_compensation_use_t_ref
+        next_gravity_offset_stiffness = list(
+            self.mit_gravity_compensation_offset_stiffness
+        )
+        next_gravity_deflection_table = (
+            self.mit_gravity_compensation_deflection_table
+        )
+        next_gravity_use_deflection_table = (
+            self.mit_gravity_compensation_use_deflection_table
+        )
         next_gravity_joint_names = list(
             self.mit_gravity_compensation_joint_names
         )
@@ -317,6 +474,21 @@ class PiperSingleControlNode(Node):
             self.mit_gravity_compensation_scale_per_joint
         )
         next_gravity_record_path = self.mit_gravity_compensation_record_path
+        next_friction_enabled = self.mit_friction_compensation_enabled
+        next_friction_scale = list(self.mit_friction_compensation_scale)
+        next_friction_load_scale = self.mit_friction_compensation_load_scale
+        next_friction_min_velocity = (
+            self.mit_friction_compensation_min_velocity
+        )
+        next_friction_taper_velocity = (
+            self.mit_friction_compensation_taper_velocity
+        )
+        next_friction_static_scale = list(
+            self.mit_friction_compensation_static_scale
+        )
+        next_friction_static_velocity = (
+            self.mit_friction_compensation_static_velocity
+        )
 
         for param in params:
             if param.name == "reset_joint_position":
@@ -353,10 +525,36 @@ class PiperSingleControlNode(Node):
                 next_gravity_per_joint_scale = list(param.value)
             elif param.name == "mit_gravity_compensation_max_t_ref":
                 next_gravity_max_t_ref = float(param.value)
+            elif param.name == "mit_gravity_compensation_use_kp_offset":
+                next_gravity_use_kp_offset = bool(param.value)
+            elif param.name == "mit_gravity_compensation_use_t_ref":
+                next_gravity_use_t_ref = bool(param.value)
+            elif param.name == "mit_gravity_compensation_offset_stiffness":
+                next_gravity_offset_stiffness = list(param.value)
+            elif param.name == "mit_gravity_compensation_deflection_table":
+                next_gravity_deflection_table = str(param.value)
+            elif param.name == (
+                "mit_gravity_compensation_use_deflection_table"
+            ):
+                next_gravity_use_deflection_table = bool(param.value)
             elif param.name == "mit_gravity_compensation_joint_names":
                 next_gravity_joint_names = list(param.value)
             elif param.name == "mit_gravity_compensation_record_path":
                 next_gravity_record_path = str(param.value)
+            elif param.name == "mit_friction_compensation_enabled":
+                next_friction_enabled = bool(param.value)
+            elif param.name == "mit_friction_compensation_scale":
+                next_friction_scale = list(param.value)
+            elif param.name == "mit_friction_compensation_load_scale":
+                next_friction_load_scale = float(param.value)
+            elif param.name == "mit_friction_compensation_min_velocity":
+                next_friction_min_velocity = float(param.value)
+            elif param.name == "mit_friction_compensation_taper_velocity":
+                next_friction_taper_velocity = float(param.value)
+            elif param.name == "mit_friction_compensation_static_scale":
+                next_friction_static_scale = list(param.value)
+            elif param.name == "mit_friction_compensation_static_velocity":
+                next_friction_static_velocity = float(param.value)
 
         if next_mit_kp < 0 or next_mit_kd < 0:
             return SetParametersResult(
@@ -411,6 +609,62 @@ class PiperSingleControlNode(Node):
                     "most as many values as there are joints."
                 ),
             )
+        if len(next_gravity_offset_stiffness) > len(next_gravity_joint_names):
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_gravity_compensation_offset_stiffness must have at "
+                    "most as many values as there are joints."
+                ),
+            )
+        if any(v < 0 for v in next_gravity_offset_stiffness):
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_gravity_compensation_offset_stiffness values must "
+                    "be non-negative (0 falls back to kp)."
+                ),
+            )
+        if len(next_friction_scale) > len(next_gravity_joint_names):
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_scale must have at most as "
+                    "many values as there are joints."
+                ),
+            )
+        if next_friction_min_velocity < 0 or next_friction_taper_velocity < 0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_min_velocity and "
+                    "taper_velocity must be non-negative."
+                ),
+            )
+        if len(next_friction_static_scale) > len(next_gravity_joint_names):
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_static_scale must have at "
+                    "most as many values as there are joints."
+                ),
+            )
+        if any(v < 0 for v in next_friction_static_scale):
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_static_scale amplitudes "
+                    "must be non-negative."
+                ),
+            )
+        if next_friction_static_velocity < 0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_static_velocity must be "
+                    "non-negative."
+                ),
+            )
         try:
             self.gravity_compensator.configure(
                 enabled=next_gravity_enabled,
@@ -419,6 +673,18 @@ class PiperSingleControlNode(Node):
                 scale=next_gravity_scale,
                 max_abs_t_ref=next_gravity_max_t_ref,
                 per_joint_scale=next_gravity_per_joint_scale,
+                use_kp_offset=next_gravity_use_kp_offset,
+                use_t_ref=next_gravity_use_t_ref,
+                offset_stiffness=next_gravity_offset_stiffness,
+                offset_deflection_table_json=next_gravity_deflection_table,
+                use_deflection_table=next_gravity_use_deflection_table,
+                friction_enabled=next_friction_enabled,
+                friction_scale=next_friction_scale,
+                friction_load_scale=next_friction_load_scale,
+                friction_min_velocity=next_friction_min_velocity,
+                friction_taper_velocity=next_friction_taper_velocity,
+                friction_static_scale=next_friction_static_scale,
+                friction_static_velocity=next_friction_static_velocity,
             )
         except Exception as e:
             return SetParametersResult(
@@ -459,7 +725,33 @@ class PiperSingleControlNode(Node):
         )
         self.mit_gravity_compensation_record_path = next_gravity_record_path
         self.mit_gravity_compensation_max_t_ref = next_gravity_max_t_ref
+        self.mit_gravity_compensation_use_kp_offset = next_gravity_use_kp_offset
+        self.mit_gravity_compensation_use_t_ref = next_gravity_use_t_ref
+        self.mit_gravity_compensation_offset_stiffness = (
+            next_gravity_offset_stiffness
+        )
+        self.mit_gravity_compensation_deflection_table = (
+            next_gravity_deflection_table
+        )
+        self.mit_gravity_compensation_use_deflection_table = (
+            next_gravity_use_deflection_table
+        )
         self.mit_gravity_compensation_joint_names = next_gravity_joint_names
+        self.mit_friction_compensation_enabled = next_friction_enabled
+        self.mit_friction_compensation_scale = next_friction_scale
+        self.mit_friction_compensation_load_scale = next_friction_load_scale
+        self.mit_friction_compensation_min_velocity = (
+            next_friction_min_velocity
+        )
+        self.mit_friction_compensation_taper_velocity = (
+            next_friction_taper_velocity
+        )
+        self.mit_friction_compensation_static_scale = (
+            next_friction_static_scale
+        )
+        self.mit_friction_compensation_static_velocity = (
+            next_friction_static_velocity
+        )
 
         if self.is_controlable():
             try:
@@ -632,6 +924,27 @@ class PiperSingleControlNode(Node):
                 return velocity
         return self._estimate_cmd_velocity(joint_data)
 
+    def _measured_joint_velocity(self) -> list[float]:
+        """Measured joint velocity (rad/s) from cached high-speed feedback.
+
+        Friction compensation needs the direction the joint is actually
+        moving, not the commanded velocity, so it reads the arm's own speed
+        feedback. Mirrors the conversion in ``get_arm_state``
+        (motor_speed / 1000). Returns zeros if the feedback is unavailable.
+        """
+        try:
+            spd = self.piper.GetArmHighSpdInfoMsgs()
+            return [
+                spd.motor_1.motor_speed / 1000,
+                spd.motor_2.motor_speed / 1000,
+                spd.motor_3.motor_speed / 1000,
+                spd.motor_4.motor_speed / 1000,
+                spd.motor_5.motor_speed / 1000,
+                spd.motor_6.motor_speed / 1000,
+            ]
+        except Exception:
+            return [0.0] * 6
+
     def joint_callback(self, joint_data):
         """Callback function for joint angles."""
         if self._resetting:
@@ -644,6 +957,15 @@ class PiperSingleControlNode(Node):
                     if self.mit_velocity_feedforward
                     else None
                 )
+                # Friction compensation acts on measured motion direction.
+                measured_velocity = (
+                    self._measured_joint_velocity()
+                    if (
+                        self.gravity_compensator.enabled
+                        and self.gravity_compensator.friction_enabled
+                    )
+                    else None
+                )
                 joint_mit_control(
                     self.piper,
                     joint_data=joint_data,
@@ -654,6 +976,7 @@ class PiperSingleControlNode(Node):
                     has_gripper=self.gripper_exist,
                     gripper_val_mutiple=self.gripper_val_mutiple,
                     velocity_ref=velocity_ref,
+                    measured_velocity=measured_velocity,
                 )
             else:
                 joint_control(

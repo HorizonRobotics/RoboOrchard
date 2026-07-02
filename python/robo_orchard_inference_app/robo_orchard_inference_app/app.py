@@ -75,6 +75,15 @@ def get_app_start_timestr() -> str:
     return time_str_now()
 
 
+def _apply_environment_overrides(launch_cfg: LaunchCfg) -> None:
+    gravity_urdf_path = os.environ.get("PIPER_GRAVITY_URDF_PATH", "").strip()
+    if not gravity_urdf_path:
+        return
+    mit_cfg = launch_cfg.ros_bridge.mit_control
+    mit_cfg.default_master_gravity_compensation_urdf_path = gravity_urdf_path
+    mit_cfg.default_follower_gravity_compensation_urdf_path = gravity_urdf_path
+
+
 def parse_args() -> Tuple[LaunchCfg, TaskCfg]:
     """Parses command-line arguments and loads configuration files.
 
@@ -105,6 +114,7 @@ def parse_args() -> Tuple[LaunchCfg, TaskCfg]:
         )
     with open(args.launch_config, "r") as fr:
         launch_cfg: LaunchCfg = LaunchCfg.model_validate_json(fr.read())
+    _apply_environment_overrides(launch_cfg)
 
     if args.debug:
         launch_cfg.app_cache_directory = os.path.join(
