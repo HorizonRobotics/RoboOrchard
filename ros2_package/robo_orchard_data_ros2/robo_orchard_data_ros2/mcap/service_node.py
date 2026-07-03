@@ -16,6 +16,7 @@
 
 import functools
 import os
+import struct
 from datetime import datetime
 
 import rclpy
@@ -23,7 +24,7 @@ import rosbag2_py
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node, ParameterDescriptor
 from rclpy.qos import QoSProfile
-from rclpy.serialization import serialize_message
+from rclpy.serialization import deserialize_message, serialize_message
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
@@ -63,6 +64,7 @@ class ServiceMcapRecorder(Node):
         self._subscribers = dict()
         self._cnt = 0
         self._hint_freq = 4096
+        self._raw_stamp_parse_error_topics = set()
 
         self._callback_group = ReentrantCallbackGroup()
 
@@ -254,6 +256,30 @@ class ServiceMcapRecorder(Node):
         elif level == "error":
             self.get_logger().error(msg)
 
+    @staticmethod
+    def _message_type_has_header(msg_type_class) -> bool:
+        fields = msg_type_class.get_fields_and_field_types()
+        return next(iter(fields.items()), None) == (
+            "header",
+            "std_msgs/Header",
+        )
+
+    @staticmethod
+    def _header_stamp_from_serialized_msg(serialized_msg: bytes) -> int:
+        # ROS 2 serialized messages use a 4-byte CDR encapsulation header.
+        # For message types whose first field is std_msgs/Header, sec/nanosec
+        # follow immediately after that header.
+        if len(serialized_msg) < 12:
+            raise ValueError("serialized message is too short for Header")
+        # CDR encapsulation byte 1 is 1 for little-endian payloads.
+        fmt = "<iI" if serialized_msg[1] == 1 else ">iI"
+        sec, nanosec = struct.unpack_from(fmt, serialized_msg, 4)
+        if nanosec >= 1_000_000_000:
+            raise ValueError(
+                f"invalid Header nanosecond field: {nanosec}"
+            )
+        return int(sec * 1_000_000_000 + nanosec)
+
     def _flush_latched_msgs(self):
         """Flushes all latched static messages."""
         if not self.writer or not self._latched_msgs:
@@ -323,21 +349,89 @@ class ServiceMcapRecorder(Node):
             if self._cnt % self._hint_freq == 0:
                 self.get_logger().info(f"Recording {self._cnt}-th message")
 
-    def _message_callback(
-        self, msg, src_topic: str, dst_topic: str, spec: TopicSpec
+    def _write_raw_message_internal(
+        self,
+        serialized_msg: bytes,
+        src_topic: str,
+        dst_topic: str,
+        spec: TopicSpec,
+        has_header: bool,
+        msg_type_class,
     ):
-        # 1. Static Latching
-        if src_topic in self.config.static_topics:
-            if src_topic in self._latched_msgs:
-                self._latched_msgs[src_topic][0].append(msg)
+        """Write serialized data with configured stamp semantics."""
+
+        if spec.stamp_type == "msg_header_stamp" and has_header:
+            try:
+                timestamp = self._header_stamp_from_serialized_msg(
+                    serialized_msg
+                )
+            except Exception as e:
+                if src_topic not in self._raw_stamp_parse_error_topics:
+                    self._raw_stamp_parse_error_topics.add(src_topic)
+                    self.get_logger().error(
+                        f"Failed to parse Header stamp for raw topic "
+                        f"{src_topic}: {e}; falling back to deserialization"
+                    )
+                try:
+                    msg = deserialize_message(serialized_msg, msg_type_class)
+                except Exception as deserialize_error:
+                    self.get_logger().error(
+                        f"Failed to deserialize raw topic {src_topic}: "
+                        f"{deserialize_error}"
+                    )
+                    return
+                self._write_message_internal(msg, src_topic, dst_topic, spec)
+                return
+        else:
+            timestamp = self.get_clock().now().nanoseconds
+
+        if self.config.max_timestamp_difference_ns is not None:
+            if self._min_timestamp is None:
+                self._min_timestamp = timestamp
             else:
-                self._latched_msgs[src_topic] = ([msg], dst_topic, spec)
+                if (
+                    timestamp
+                    < self._min_timestamp
+                    - self.config.max_timestamp_difference_ns
+                ):
+                    return
+                self._min_timestamp = min(timestamp, self._min_timestamp)
 
-        # 2. Recording Gate
+            if self._max_timestamp is None:
+                self._max_timestamp = timestamp
+            else:
+                if (
+                    self._max_timestamp
+                    + self.config.max_timestamp_difference_ns
+                    < timestamp
+                ):
+                    return
+                self._max_timestamp = max(timestamp, self._max_timestamp)
+
+        if self.is_recording:
+            try:
+                self.writer.write(dst_topic, serialized_msg, timestamp)
+            except Exception as e:
+                self.get_logger().error(f"Get error while writing: {e}")
+
+            self._cnt += 1
+
+            if dst_topic in self._frame_rate_monitors:
+                self._frame_rate_monitors[dst_topic]["monitor"].update(
+                    timestamp
+                )
+            if dst_topic in self._msg_cnt:
+                self._msg_cnt[dst_topic] += 1
+
+            if self._cnt % self._hint_freq == 0:
+                self.get_logger().info(f"Recording {self._cnt}-th message")
+
+    def _recording_gate(self, src_topic: str) -> bool:
+        """Return True when a message should be written."""
+
         if not self.is_recording:
-            return
+            return False
 
-        # 3. Wait-For-Topics Logic
         if self._session_wait_topics:
             if src_topic in self._session_wait_topics:
                 self._session_wait_topics.remove(src_topic)
@@ -346,9 +440,8 @@ class ServiceMcapRecorder(Node):
                 )
 
             if self._session_wait_topics:
-                return
+                return False
 
-        # 4. Lazy Initialization (First Write Trigger)
         if not self._has_started_writing:
             self.get_logger().info("Beginning writing...")
 
@@ -359,8 +452,42 @@ class ServiceMcapRecorder(Node):
             self._flush_latched_msgs()
             self._has_started_writing = True
 
-        # 5. Normal Write
+        return True
+
+    def _message_callback(
+        self, msg, src_topic: str, dst_topic: str, spec: TopicSpec
+    ):
+        # 1. Static Latching
+        if src_topic in self.config.static_topics:
+            if src_topic in self._latched_msgs:
+                self._latched_msgs[src_topic][0].append(msg)
+            else:
+                self._latched_msgs[src_topic] = ([msg], dst_topic, spec)
+
+        if not self._recording_gate(src_topic):
+            return
+
         self._write_message_internal(msg, src_topic, dst_topic, spec)
+
+    def _raw_message_callback(
+        self,
+        serialized_msg: bytes,
+        src_topic: str,
+        dst_topic: str,
+        spec: TopicSpec,
+        has_header: bool,
+        msg_type_class,
+    ):
+        if not self._recording_gate(src_topic):
+            return
+        self._write_raw_message_internal(
+            serialized_msg,
+            src_topic,
+            dst_topic,
+            spec,
+            has_header,
+            msg_type_class,
+        )
 
     def _initialize_config(self):
         self.declare_parameter(
@@ -434,17 +561,38 @@ class ServiceMcapRecorder(Node):
                 history=spec.qos_profile.history,
             )
 
-            self._subscribers[topic] = self.create_subscription(
-                msg_type_class,
-                topic,
-                functools.partial(
+            has_header = self._message_type_has_header(msg_type_class)
+            use_raw_subscription = (
+                topic not in self.config.static_topics
+                and (
+                    spec.stamp_type == "recorder_clock"
+                    or (spec.stamp_type == "msg_header_stamp" and has_header)
+                )
+            )
+            if use_raw_subscription:
+                callback = functools.partial(
+                    self._raw_message_callback,
+                    src_topic=topic,
+                    dst_topic=dst_topic,
+                    spec=spec,
+                    has_header=has_header,
+                    msg_type_class=msg_type_class,
+                )
+            else:
+                callback = functools.partial(
                     self._message_callback,
                     src_topic=topic,
                     dst_topic=dst_topic,
                     spec=spec,
-                ),
+                )
+
+            self._subscribers[topic] = self.create_subscription(
+                msg_type_class,
+                topic,
+                callback,
                 qos,
                 callback_group=self._callback_group,
+                raw=use_raw_subscription,
             )
 
             meta = rosbag2_py.TopicMetadata(
@@ -465,7 +613,10 @@ class ServiceMcapRecorder(Node):
                 }
             self._msg_cnt[dst_topic] = 0
 
-            log_msg = f"Subscribed to {topic}"
+            if use_raw_subscription:
+                log_msg = f"Subscribed raw to {topic}"
+            else:
+                log_msg = f"Subscribed to {topic}"
             if spec.rename_topic:
                 log_msg += f" as {spec.rename_topic}"
             self.get_logger().info(log_msg)
