@@ -127,7 +127,10 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_master_friction_compensation_load_scale: float = 0.0
     default_master_friction_compensation_min_velocity: float = 0.02
     default_master_friction_compensation_taper_velocity: float = 2.0
-    default_follower_kp: float = 10.0
+    # The follower deflection tables in piper_dagger_compat.launch.py are
+    # calibrated at mit_kp=25; keep this in sync (see
+    # gravity_id/DEFLECTION_CALIBRATION.md).
+    default_follower_kp: float = 25.0
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
     default_follower_torque_ref: float = 0.0

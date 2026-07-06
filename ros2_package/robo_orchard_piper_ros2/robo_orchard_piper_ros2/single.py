@@ -27,6 +27,7 @@ from std_srvs.srv import Trigger
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
+    GravityCompensationError,
     PinocchioGravityCompensator,
     create_piper,
     enable_arm_ctrl,
@@ -36,6 +37,7 @@ from robo_orchard_piper_ros2.ros_bridge import (
     joint_control,
     joint_mit_control,
     reset_piper_ctrl_mode,
+    resolve_deflection_calibration,
     set_ctrl_method,
     switch_piper_ctrl_mode,
 )
@@ -124,6 +126,21 @@ class PiperSingleControlNode(Node):
         # back to offset_stiffness/kp, for live A/B comparison.
         self.declare_parameter(
             "mit_gravity_compensation_use_deflection_table", True
+        )
+        # kp-indexed calibration store (JSON: side -> mit_kp -> values).
+        # When set, offset_stiffness and deflection_table are loaded from
+        # this file for the current mit_kp at startup and on every mit_kp
+        # change; a kp without an entry is rejected with the calibrated
+        # values listed. k_eff depends on the sent mit_kp, so per-kp
+        # entries are the only safe source. Empty keeps the two explicit
+        # parameters authoritative (legacy behaviour).
+        self.declare_parameter(
+            "mit_gravity_compensation_calibration_file", ""
+        )
+        # Side key into the calibration file; empty derives it from the
+        # first gravity joint name prefix ("left_joint1" -> "left").
+        self.declare_parameter(
+            "mit_gravity_compensation_calibration_side", ""
         )
         self.declare_parameter(
             "mit_gravity_compensation_joint_names",
@@ -324,6 +341,40 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.mit_gravity_compensation_calibration_file = (
+            self.get_parameter("mit_gravity_compensation_calibration_file")
+            .get_parameter_value()
+            .string_value
+        )
+        self.mit_gravity_compensation_calibration_side = (
+            self.get_parameter("mit_gravity_compensation_calibration_side")
+            .get_parameter_value()
+            .string_value
+        )
+        if (
+            self.mit_gravity_compensation_calibration_file
+            and self.mit_gravity_compensation_enabled
+        ):
+            try:
+                stiffness, table_json = resolve_deflection_calibration(
+                    self.mit_gravity_compensation_calibration_file,
+                    self._gravity_calibration_side(),
+                    self.mit_kp,
+                )
+            except GravityCompensationError as e:
+                self.get_logger().error(
+                    f"Gravity compensation DISABLED: {e}"
+                )
+                self.mit_gravity_compensation_enabled = False
+            else:
+                self.mit_gravity_compensation_offset_stiffness = stiffness
+                self.mit_gravity_compensation_deflection_table = table_json
+                self.get_logger().info(
+                    "Loaded deflection calibration for mit_kp="
+                    f"{self.mit_kp:g} (side "
+                    f"{self._gravity_calibration_side()!r}) from "
+                    f"{self.mit_gravity_compensation_calibration_file}"
+                )
         self.gravity_compensator = PinocchioGravityCompensator()
         self.gravity_compensator.configure(
             enabled=self.mit_gravity_compensation_enabled,
@@ -363,6 +414,13 @@ class PiperSingleControlNode(Node):
             self.mit_gravity_compensation_record_path
         )
         self.add_on_set_parameters_callback(self._on_set_parameters)
+        # Reflect the resolved calibration (or the disable on a missing
+        # entry) back to the parameter server so `ros2 param get` shows
+        # the effective values. Deferred to the first executor spin: the
+        # parameter callback needs the fully constructed node (it touches
+        # self.piper), which does not exist yet at this point.
+        if self.mit_gravity_compensation_calibration_file:
+            self._schedule_gravity_calibration_sync()
 
         self.get_logger().info(
             f"can_port = {self.can_port}, "
@@ -426,6 +484,60 @@ class PiperSingleControlNode(Node):
         ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
         return self._enable_flag and ctrl_mode == CanControlMode.CAN_MODE
 
+    def _gravity_calibration_side(self, side=None, joint_names=None):
+        """Side key into the calibration file, derived when not explicit."""
+        if side is None:
+            side = self.mit_gravity_compensation_calibration_side
+        if side:
+            return side
+        if joint_names is None:
+            joint_names = self.mit_gravity_compensation_joint_names
+        first = joint_names[0] if joint_names else ""
+        return first.split("_", 1)[0] if "_" in first else ""
+
+    def _schedule_gravity_calibration_sync(self):
+        """Run ``_sync_gravity_calibration_params`` on the next spin.
+
+        ``set_parameters`` runs the parameter callback, which must not
+        execute inside the callback itself (re-entrant) nor during
+        ``__init__`` (the node is not fully constructed yet), so the
+        sync always goes through this one-shot timer.
+        """
+        if getattr(self, "_calibration_sync_timer", None) is not None:
+            self._calibration_sync_timer.cancel()
+
+        def _sync_once():
+            self._calibration_sync_timer.cancel()
+            self._sync_gravity_calibration_params()
+
+        self._calibration_sync_timer = self.create_timer(0.05, _sync_once)
+
+    def _sync_gravity_calibration_params(self):
+        """Publish the effective calibration values as ROS parameters.
+
+        The explicit stiffness/table parameters in the request make
+        ``_on_set_parameters`` skip the calibration lookup, so this does
+        not recurse.
+        """
+        self.set_parameters(
+            [
+                rclpy.parameter.Parameter(
+                    "mit_gravity_compensation_enabled",
+                    value=self.mit_gravity_compensation_enabled,
+                ),
+                rclpy.parameter.Parameter(
+                    "mit_gravity_compensation_offset_stiffness",
+                    value=list(
+                        self.mit_gravity_compensation_offset_stiffness
+                    ),
+                ),
+                rclpy.parameter.Parameter(
+                    "mit_gravity_compensation_deflection_table",
+                    value=self.mit_gravity_compensation_deflection_table,
+                ),
+            ]
+        )
+
     def _on_set_parameters(self, params):
         next_enable_mit_ctrl = self.enable_mit_ctrl
         next_mit_kp = self.mit_kp
@@ -458,6 +570,13 @@ class PiperSingleControlNode(Node):
             self.mit_gravity_compensation_scale_per_joint
         )
         next_gravity_record_path = self.mit_gravity_compensation_record_path
+        next_gravity_calibration_file = (
+            self.mit_gravity_compensation_calibration_file
+        )
+        next_gravity_calibration_side = (
+            self.mit_gravity_compensation_calibration_side
+        )
+        explicit_deflection_params = False
         next_friction_enabled = self.mit_friction_compensation_enabled
         next_friction_scale = list(self.mit_friction_compensation_scale)
         next_friction_load_scale = self.mit_friction_compensation_load_scale
@@ -515,8 +634,14 @@ class PiperSingleControlNode(Node):
                 next_gravity_use_t_ref = bool(param.value)
             elif param.name == "mit_gravity_compensation_offset_stiffness":
                 next_gravity_offset_stiffness = list(param.value)
+                explicit_deflection_params = True
             elif param.name == "mit_gravity_compensation_deflection_table":
                 next_gravity_deflection_table = str(param.value)
+                explicit_deflection_params = True
+            elif param.name == "mit_gravity_compensation_calibration_file":
+                next_gravity_calibration_file = str(param.value)
+            elif param.name == "mit_gravity_compensation_calibration_side":
+                next_gravity_calibration_side = str(param.value)
             elif param.name == (
                 "mit_gravity_compensation_use_deflection_table"
             ):
@@ -649,6 +774,43 @@ class PiperSingleControlNode(Node):
                     "non-negative."
                 ),
             )
+        # kp-indexed calibration: any change that affects which entry
+        # applies (kp, enabling comp, the file/side themselves) reloads
+        # the stiffness/table for the new kp; an uncalibrated kp rejects
+        # the whole request. Explicit stiffness/table values in the same
+        # request win (manual override, and how the resolved values are
+        # reflected back to the parameter server without recursing).
+        needs_calibration_lookup = (
+            next_gravity_calibration_file
+            and next_gravity_enabled
+            and not explicit_deflection_params
+            and (
+                next_mit_kp != self.mit_kp
+                or not self.mit_gravity_compensation_enabled
+                or next_gravity_calibration_file
+                != self.mit_gravity_compensation_calibration_file
+                or next_gravity_calibration_side
+                != self.mit_gravity_compensation_calibration_side
+            )
+        )
+        if needs_calibration_lookup:
+            try:
+                (
+                    next_gravity_offset_stiffness,
+                    next_gravity_deflection_table,
+                ) = resolve_deflection_calibration(
+                    next_gravity_calibration_file,
+                    self._gravity_calibration_side(
+                        next_gravity_calibration_side,
+                        next_gravity_joint_names,
+                    ),
+                    next_mit_kp,
+                )
+            except GravityCompensationError as e:
+                return SetParametersResult(
+                    successful=False, reason=str(e)
+                )
+
         try:
             self.gravity_compensator.configure(
                 enabled=next_gravity_enabled,
@@ -721,6 +883,12 @@ class PiperSingleControlNode(Node):
             next_gravity_use_deflection_table
         )
         self.mit_gravity_compensation_joint_names = next_gravity_joint_names
+        self.mit_gravity_compensation_calibration_file = (
+            next_gravity_calibration_file
+        )
+        self.mit_gravity_compensation_calibration_side = (
+            next_gravity_calibration_side
+        )
         self.mit_friction_compensation_enabled = next_friction_enabled
         self.mit_friction_compensation_scale = next_friction_scale
         self.mit_friction_compensation_load_scale = next_friction_load_scale
@@ -769,6 +937,17 @@ class PiperSingleControlNode(Node):
             "gravity_scale_per_joint = "
             f"{self.mit_gravity_compensation_scale_per_joint}"
         )
+        if needs_calibration_lookup:
+            self.get_logger().info(
+                "Loaded deflection calibration for mit_kp="
+                f"{self.mit_kp:g} (side "
+                f"{self._gravity_calibration_side()!r}) from "
+                f"{self.mit_gravity_compensation_calibration_file}"
+            )
+            # set_parameters cannot run inside this callback; reflect the
+            # resolved stiffness/table on the next executor spin so
+            # `ros2 param get` shows the effective values.
+            self._schedule_gravity_calibration_sync()
         return SetParametersResult(successful=True)
 
     def enable_arm_ctrl(self, force_reset: bool = False) -> bool:

@@ -46,6 +46,7 @@ __all__ = [
     "joint_mit_control",
     "PinocchioGravityCompensator",
     "GravityCompensationCommand",
+    "resolve_deflection_calibration",
     "get_enable_flag",
     "enable_arm_ctrl",
     "switch_piper_ctrl_mode",
@@ -66,6 +67,66 @@ class GravityCompensationCommand:
 
 class GravityCompensationError(RuntimeError):
     pass
+
+
+def resolve_deflection_calibration(
+    calibration_file: str, side: str, kp: float
+) -> tuple[list[float], str]:
+    """Look up the kp-indexed deflection calibration for one arm.
+
+    The calibration file (see gravity_id/deflection_calibrations.json)
+    maps side -> mit_kp -> {offset_stiffness, deflection_table}. The
+    firmware stiffness k_eff depends on the sent mit_kp, so entries are
+    only valid at their own kp: a kp with no entry is an error listing
+    the calibrated values rather than a silent fallback.
+
+    Returns ``(offset_stiffness, deflection_table_json)`` with the table
+    serialized to the string form of the
+    ``mit_gravity_compensation_deflection_table`` parameter.
+    """
+    import json
+
+    path = Path(calibration_file).expanduser()
+    if not path.exists():
+        raise GravityCompensationError(
+            f"Deflection calibration file does not exist: {path}"
+        )
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise GravityCompensationError(
+            f"Deflection calibration file {path} is not valid JSON: {exc}"
+        ) from exc
+    per_side = data.get(side)
+    if not isinstance(per_side, dict):
+        raise GravityCompensationError(
+            f"Deflection calibration file {path} has no entries for "
+            f"side {side!r}."
+        )
+    available = sorted(float(k) for k in per_side)
+    entry = None
+    for key, value in per_side.items():
+        if abs(float(key) - float(kp)) < 1e-6:
+            entry = value
+            break
+    if entry is None:
+        pretty = ", ".join(f"{v:g}" for v in available)
+        raise GravityCompensationError(
+            f"No deflection calibration for mit_kp={kp:g} (side {side}) "
+            f"in {path}. Calibrated kp values: [{pretty}]. Use one of "
+            f"those, or measure this kp with gravity_id/"
+            f"measure_deflection.py and add it with fit_deflection.py "
+            f"--update-calibration."
+        )
+    stiffness = [float(v) for v in entry.get("offset_stiffness", [])]
+    if len(stiffness) != 6:
+        raise GravityCompensationError(
+            f"Calibration entry {side}/{kp:g} in {path} must have 6 "
+            f"offset_stiffness values."
+        )
+    table = entry.get("deflection_table", {})
+    table_json = json.dumps(table, separators=(",", ":")) if table else ""
+    return stiffness, table_json
 
 
 def _clamp_mit_torque_ref(torque_ref: float) -> float:

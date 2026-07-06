@@ -818,6 +818,214 @@ class MainControlComponent(ComponentBase):
                 "Stop recording failed! Please check the log panel."
             )
 
+    # --- kp deflection calibration ---
+    def _calibration_store_path(self) -> Path:
+        repo_root = Path(__file__).resolve().parents[4]
+        return repo_root / "gravity_id" / "deflection_calibrations.json"
+
+    def _calibrated_kps(self) -> dict[str, list[float]]:
+        """side -> sorted calibrated kp values from the deflection store."""
+        import json
+
+        try:
+            data = json.loads(self._calibration_store_path().read_text())
+        except Exception:
+            return {}
+        return {
+            side: sorted(float(k) for k in entries)
+            for side, entries in data.items()
+            if side in ("left", "right") and isinstance(entries, dict)
+        }
+
+    def _render_follower_kp_calibration_hint(
+        self, follower_kp: float
+    ) -> None:
+        """Gravity-comp status line under the follower kp field."""
+        per_side = self._calibrated_kps()
+        if not per_side:
+            st.warning(
+                "Deflection calibration store not found at "
+                f"{self._calibration_store_path()} — the controllers "
+                "cannot validate kp."
+            )
+            return
+        common = sorted(
+            set(per_side.get("left", []))
+            & set(per_side.get("right", []))
+        )
+        kp_list = ", ".join(f"{v:g}" for v in common) if common else "none"
+        if any(abs(float(follower_kp) - v) < 1e-6 for v in common):
+            st.success(
+                "🪶 Gravity compensation is ON — the deflection "
+                f"calibration for kp={follower_kp:g} loads automatically "
+                f"on both arms. Calibrated kp values: {kp_list}."
+            )
+        else:
+            st.warning(
+                f"⚠️ kp={follower_kp:g} has no deflection calibration — "
+                "the controllers will reject it on Apply. Use a "
+                f"calibrated kp ({kp_list}) or run kp Calibration below."
+            )
+
+    def _kp_calibration_process(self) -> subprocess.Popen | None:
+        return st.session_state.get("kp_calibration_process")
+
+    def _is_kp_calibration_running(self) -> bool:
+        process = self._kp_calibration_process()
+        return process is not None and process.poll() is None
+
+    def _start_kp_calibration(self, side: str, kp: float) -> None:
+        repo_root = Path(__file__).resolve().parents[4]
+        script = repo_root / "gravity_id" / "calibrate_kp.py"
+        install_setup = repo_root / "ros2_package/install/setup.bash"
+        inner = (
+            "exec python3 "
+            + shlex.quote(str(script))
+            + f" --side {side} --kp {kp:g}"
+        )
+        if install_setup.exists():
+            inner = f"source {shlex.quote(str(install_setup))} && {inner}"
+        log_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            prefix=f"kp_calibration_{side}_",
+            suffix=".log",
+            delete=False,
+        )
+        process = subprocess.Popen(
+            ["bash", "-lc", inner],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        log_file.close()
+        st.session_state.kp_calibration_process = process
+        st.session_state.kp_calibration_log = log_file.name
+        st.session_state.kp_calibration_label = f"{side} arm, kp={kp:g}"
+        self.logger.info(
+            f"kp calibration started ({side}, kp={kp:g}), "
+            f"log: {log_file.name}"
+        )
+
+    def _render_kp_calibration_log(self, log_path: str | None) -> None:
+        if not log_path or not os.path.exists(log_path):
+            return
+        try:
+            with open(log_path, errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return
+        if lines:
+            st.code("\n".join(lines[-12:]), language="text")
+
+    def _clear_kp_calibration_state(self) -> None:
+        log_path = st.session_state.pop("kp_calibration_log", None)
+        st.session_state.pop("kp_calibration_process", None)
+        st.session_state.pop("kp_calibration_label", None)
+        if log_path:
+            try:
+                os.remove(log_path)
+            except OSError:
+                pass
+
+    def _render_kp_calibration_panel(self) -> None:
+        st.subheader("kp Calibration")
+        process = self._kp_calibration_process()
+        label = st.session_state.get("kp_calibration_label", "")
+        log_path = st.session_state.get("kp_calibration_log")
+
+        if process is not None and process.poll() is None:
+            st.info(
+                f"Calibrating {label} — the follower is moving through "
+                "the measurement grid with compensation OFF (~10 min). "
+                "Keep the e-stop in reach."
+            )
+            self._render_kp_calibration_log(log_path)
+            running_cols = st.columns([1, 1])
+            with running_cols[0]:
+                if st.button(
+                    "Refresh status",
+                    key=f"{self.key_prefix}_kp_calibration_refresh",
+                    use_container_width=True,
+                ):
+                    st.rerun()
+            with running_cols[1]:
+                if st.button(
+                    "Abort calibration",
+                    key=f"{self.key_prefix}_kp_calibration_abort",
+                    use_container_width=True,
+                ):
+                    try:
+                        stop_process(process, timeout=10.0)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to stop kp calibration: {e}"
+                        )
+                    st.rerun()
+            return
+
+        if process is not None:
+            if process.returncode == 0:
+                st.success(
+                    f"Calibration finished: {label} is now in the store "
+                    "— set that kp and Apply MIT Params to use it."
+                )
+            else:
+                st.error(
+                    f"Calibration failed ({label}, "
+                    f"exit code {process.returncode})."
+                )
+            self._render_kp_calibration_log(log_path)
+            if st.button(
+                "Clear result",
+                key=f"{self.key_prefix}_kp_calibration_clear",
+                use_container_width=True,
+            ):
+                self._clear_kp_calibration_state()
+                st.rerun()
+            return
+
+        st.caption(
+            "Measure a new kp's firmware deflection on one arm and add "
+            "it to the calibration store (measure + fit, one shot)."
+        )
+        control_mode = self.collecting_state.inference_state.control_mode
+        can_run = (
+            control_mode == "stop"
+            and not self.collecting_state.is_recording
+            and not self._is_scripted_motion_running()
+        )
+        calib_cols = st.columns([1, 1, 2])
+        with calib_cols[0]:
+            side = st.selectbox(
+                "Arm",
+                ("left", "right"),
+                key=f"{self.key_prefix}_kp_calibration_side",
+            )
+        with calib_cols[1]:
+            new_kp = st.number_input(
+                "New kp",
+                min_value=1.0,
+                value=25.0,
+                step=1.0,
+                format="%g",
+                key=f"{self.key_prefix}_kp_calibration_kp",
+            )
+        with calib_cols[2]:
+            st.caption("")
+            if st.button(
+                "Measure & Calibrate",
+                key=f"{self.key_prefix}_kp_calibration_start",
+                disabled=not can_run,
+                use_container_width=True,
+            ):
+                self._start_kp_calibration(str(side), float(new_kp))
+                st.rerun()
+        if not can_run:
+            st.caption(
+                "Requires control mode Stop with no active recording or "
+                "scripted motion."
+            )
+
     def _render_mit_control_panel(
         self,
     ) -> dict[str, bool | float | str | list[float]]:
@@ -859,7 +1067,7 @@ class MainControlComponent(ComponentBase):
                 "feedforward torque. Requires Master MIT mode."
             ),
         )
-        master_cols = st.columns([1, 1, 1, 1])
+        master_cols = st.columns([1, 1])
         with master_cols[0]:
             master_kp = _number_input(
                 "Master kp",
@@ -878,20 +1086,10 @@ class MainControlComponent(ComponentBase):
                 min_value=0.0,
                 disabled=master_gravity_enabled,
             )
-        with master_cols[2]:
-            master_vel_ref = _number_input(
-                "Master vel_ref",
-                mit_cfg.default_master_vel_ref,
-                0.1,
-                "master_mit_vel_ref",
-            )
-        with master_cols[3]:
-            master_torque_ref = _number_input(
-                "Master torque_ref",
-                mit_cfg.default_master_torque_ref,
-                0.1,
-                "master_mit_torque_ref",
-            )
+        # vel_ref/torque_ref are not operator knobs: always the config
+        # defaults.
+        master_vel_ref = float(mit_cfg.default_master_vel_ref)
+        master_torque_ref = float(mit_cfg.default_master_torque_ref)
 
         # Gravity compensation makes the master float: zero out the
         # position/velocity gains so only the rnea feedforward torque acts.
@@ -900,45 +1098,6 @@ class MainControlComponent(ComponentBase):
             master_enabled = True
             master_kp = 0.0
             master_kd = 0.0
-            st.caption("Master gravity")
-            master_gravity_cols = st.columns([2, 1, 1])
-            with master_gravity_cols[0]:
-                master_gravity_urdf_path = (
-                    mit_cfg.default_master_gravity_compensation_urdf_path
-                )
-                st.caption("URDF path")
-                st.code(master_gravity_urdf_path, language=None)
-            with master_gravity_cols[1]:
-                master_gravity_scale = _number_input(
-                    "Scale ",
-                    mit_cfg.default_master_gravity_compensation_scale,
-                    0.05,
-                    "master_gravity_scale",
-                )
-            with master_gravity_cols[2]:
-                master_gravity_max_t_ref = _number_input(
-                    "Max t_ref ",
-                    mit_cfg.default_master_gravity_compensation_max_t_ref,
-                    0.1,
-                    "master_gravity_max_t_ref",
-                    min_value=0.0,
-                )
-            master_default_per_joint = (
-                self._default_master_gravity_per_joint()
-            )
-            master_per_joint_cols = st.columns(6)
-            master_gravity_per_joint: list[float] = []
-            for j in range(6):
-                with master_per_joint_cols[j]:
-                    master_gravity_per_joint.append(
-                        _number_input(
-                            f"j{j + 1} ",
-                            master_default_per_joint[j],
-                            0.05,
-                            f"master_gravity_pj{j + 1}",
-                            min_value=0.0,
-                        )
-                    )
 
             # Friction compensation on top of gravity: a per-joint torque in
             # the direction of measured motion so the floating master
@@ -1006,22 +1165,6 @@ class MainControlComponent(ComponentBase):
                         )
                     )
         else:
-            master_gravity_urdf_path = (
-                mit_cfg.default_master_gravity_compensation_urdf_path
-            )
-            master_gravity_scale = float(
-                self._session_value(
-                    "master_gravity_scale",
-                    mit_cfg.default_master_gravity_compensation_scale,
-                )
-            )
-            master_gravity_max_t_ref = float(
-                self._session_value(
-                    "master_gravity_max_t_ref",
-                    mit_cfg.default_master_gravity_compensation_max_t_ref,
-                )
-            )
-            master_gravity_per_joint = self._master_gravity_per_joint()
             master_friction_enabled = bool(
                 self._session_value(
                     "master_friction_enabled",
@@ -1055,7 +1198,7 @@ class MainControlComponent(ComponentBase):
             value=mit_cfg.default_follower_enabled,
             key=f"{self.key_prefix}_follower_mit_enabled",
         )
-        follower_cols = st.columns([1, 1, 1, 1])
+        follower_cols = st.columns([1, 1])
         with follower_cols[0]:
             follower_kp = _number_input(
                 "Follower kp",
@@ -1072,20 +1215,11 @@ class MainControlComponent(ComponentBase):
                 "follower_mit_kd",
                 min_value=0.0,
             )
-        with follower_cols[2]:
-            follower_vel_ref = _number_input(
-                "Follower vel_ref",
-                mit_cfg.default_follower_vel_ref,
-                0.1,
-                "follower_mit_vel_ref",
-            )
-        with follower_cols[3]:
-            follower_torque_ref = _number_input(
-                "Follower torque_ref",
-                mit_cfg.default_follower_torque_ref,
-                0.1,
-                "follower_mit_torque_ref",
-            )
+        # vel_ref/torque_ref are not operator knobs: always the config
+        # defaults.
+        follower_vel_ref = float(mit_cfg.default_follower_vel_ref)
+        follower_torque_ref = float(mit_cfg.default_follower_torque_ref)
+        self._render_follower_kp_calibration_hint(follower_kp)
 
         follower_velocity_feedforward = st.checkbox(
             "Velocity feedforward (follower)",
@@ -1098,45 +1232,6 @@ class MainControlComponent(ComponentBase):
                 "overshoot/lag during motion."
             ),
         )
-
-        st.caption("Follower gravity")
-        gravity_cols = st.columns([2, 1, 1])
-        with gravity_cols[0]:
-            follower_gravity_urdf_path = (
-                mit_cfg.default_follower_gravity_compensation_urdf_path
-            )
-            st.caption("URDF path")
-            st.code(follower_gravity_urdf_path, language=None)
-        with gravity_cols[1]:
-            follower_gravity_scale = _number_input(
-                "Scale",
-                mit_cfg.default_follower_gravity_compensation_scale,
-                0.05,
-                "follower_gravity_scale",
-            )
-        with gravity_cols[2]:
-            follower_gravity_max_t_ref = _number_input(
-                "Max t_ref",
-                mit_cfg.default_follower_gravity_compensation_max_t_ref,
-                0.1,
-                "follower_gravity_max_t_ref",
-                min_value=0.0,
-            )
-        # Per-joint multiplier on the rnea gravity torque.
-        default_per_joint = self._default_follower_gravity_per_joint()
-        per_joint_cols = st.columns(6)
-        follower_gravity_per_joint: list[float] = []
-        for j in range(6):
-            with per_joint_cols[j]:
-                follower_gravity_per_joint.append(
-                    _number_input(
-                        f"j{j + 1}",
-                        default_per_joint[j],
-                        0.05,
-                        f"follower_gravity_pj{j + 1}",
-                        min_value=0.0,
-                    )
-                )
 
         follower_friction_enabled = st.checkbox(
             "Follower friction compensation",
@@ -1231,6 +1326,10 @@ class MainControlComponent(ComponentBase):
                     )
                 )
 
+        # Gravity urdf path / scale / max_t_ref / per-joint scales are
+        # deliberately absent: they are calibration state owned by the
+        # launch defaults and the kp-indexed deflection store, not
+        # operator knobs, so the app never pushes them.
         return {
             "master_enabled": master_enabled,
             "master_kp": master_kp,
@@ -1238,16 +1337,6 @@ class MainControlComponent(ComponentBase):
             "master_vel_ref": master_vel_ref,
             "master_torque_ref": master_torque_ref,
             "master_gravity_compensation_enabled": master_gravity_enabled,
-            "master_gravity_compensation_urdf_path": (
-                master_gravity_urdf_path.strip()
-            ),
-            "master_gravity_compensation_scale": master_gravity_scale,
-            "master_gravity_compensation_scale_per_joint": (
-                master_gravity_per_joint
-            ),
-            "master_gravity_compensation_max_t_ref": (
-                master_gravity_max_t_ref
-            ),
             "master_friction_compensation_enabled": master_friction_enabled,
             "master_friction_compensation_scale": master_friction_per_joint,
             "master_friction_compensation_load_scale": (
@@ -1266,16 +1355,6 @@ class MainControlComponent(ComponentBase):
             "follower_torque_ref": follower_torque_ref,
             "follower_velocity_feedforward": follower_velocity_feedforward,
             "follower_gravity_compensation_enabled": True,
-            "follower_gravity_compensation_urdf_path": (
-                follower_gravity_urdf_path.strip()
-            ),
-            "follower_gravity_compensation_scale": follower_gravity_scale,
-            "follower_gravity_compensation_scale_per_joint": (
-                follower_gravity_per_joint
-            ),
-            "follower_gravity_compensation_max_t_ref": (
-                follower_gravity_max_t_ref
-            ),
             "follower_friction_compensation_enabled": (
                 follower_friction_enabled
             ),
@@ -1624,6 +1703,11 @@ class MainControlComponent(ComponentBase):
         if self._is_scripted_motion_running():
             self.logger.warning("Scripted motion is already running.")
             return
+        if self._is_kp_calibration_running():
+            self.logger.warning(
+                "kp calibration is running; not starting scripted motion."
+            )
+            return
 
         scripted_start_position = self._scripted_motion_reset_position()
         if len(scripted_start_position) != 7:
@@ -1802,11 +1886,16 @@ class MainControlComponent(ComponentBase):
             st.button(
                 "Apply MIT Params",
                 key=f"{self.key_prefix}_apply_mit_params",
-                disabled=self.collecting_state.is_recording,
+                disabled=(
+                    self.collecting_state.is_recording
+                    or self._is_kp_calibration_running()
+                ),
                 on_click=self.ros_helper.set_mit_params,
                 kwargs=mit_params,
                 use_container_width=True,
             )
+
+            self._render_kp_calibration_panel()
 
             # --- Control Mode ---
             st.subheader("Control Mode")
@@ -1825,6 +1914,13 @@ class MainControlComponent(ComponentBase):
                         show_name.capitalize(),
                         use_container_width=True,
                         key=f"{self.key_prefix}_set_control_mode_{value}",
+                        # The measurement owns the follower joint_cmd
+                        # topic while a kp calibration runs; only Stop
+                        # stays available.
+                        disabled=(
+                            value != "stop"
+                            and self._is_kp_calibration_running()
+                        ),
                     ):
                         if value == "stop":
                             self._stop_scripted_motion_and_robot()
