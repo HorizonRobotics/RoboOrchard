@@ -127,16 +127,29 @@ def generate_launch_description():
     )
     follower_gravity_compensation_enabled_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_enabled",
-        default_value="false",
+        default_value="true",
         description=(
             "Master switch for follower MIT gravity compensation. The scale "
-            "and per-joint parameters have no effect unless this is true."
+            "and per-joint parameters have no effect unless this is true. "
+            "Requires pinocchio in the controller python environment."
         ),
     )
     follower_gravity_compensation_urdf_path_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_urdf_path",
         default_value="/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf",
         description="URDF path used for follower MIT gravity compensation.",
+    )
+    follower_gravity_calibration_file_arg = DeclareLaunchArgument(
+        "follower_gravity_calibration_file",
+        default_value=(
+            "/opt/roboorchard/gravity_id/deflection_calibrations.json"
+        ),
+        description=(
+            "kp-indexed deflection calibration store (side -> mit_kp -> "
+            "offset_stiffness/deflection_table). The follower controllers "
+            "load the entry matching their mit_kp and reject uncalibrated "
+            "kp values."
+        ),
     )
     follower_gravity_compensation_scale_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_scale",
@@ -158,10 +171,12 @@ def generate_launch_description():
     )
     follower_gravity_compensation_use_t_ref_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_use_t_ref",
-        default_value="true",
+        default_value="false",
         description=(
             "When false, follower gravity compensation sends no t_ff: the "
-            "full desired torque acts through the kp position offset."
+            "full desired torque acts through the kp position offset. The "
+            "calibrated deflection tables below assume this is false (the "
+            "t_ff channel delivers less physical torque than nominal)."
         ),
     )
 
@@ -362,6 +377,20 @@ def generate_launch_description():
                     ),
                     value_type=bool,
                 ),
+                # Calibrated firmware torque->deflection compensation for
+                # the kp position-offset path. The controller loads the
+                # offset_stiffness + deflection_table entry matching its
+                # mit_kp from the kp-indexed calibration file (and rejects
+                # uncalibrated kp values). See
+                # gravity_id/DEFLECTION_CALIBRATION.md.
+                "mit_gravity_compensation_use_kp_offset": True,
+                "mit_gravity_compensation_use_deflection_table": True,
+                "mit_gravity_compensation_calibration_file": (
+                    LaunchConfiguration(
+                        "follower_gravity_calibration_file"
+                    )
+                ),
+                "mit_gravity_compensation_calibration_side": "left",
                 # Dual-arm URDF: the left chain is prefixed "left_*".
                 "mit_gravity_compensation_joint_names": [
                     "left_joint1", "left_joint2", "left_joint3",
@@ -489,6 +518,20 @@ def generate_launch_description():
                     ),
                     value_type=bool,
                 ),
+                # Calibrated firmware torque->deflection compensation for
+                # the kp position-offset path. The controller loads the
+                # offset_stiffness + deflection_table entry matching its
+                # mit_kp from the kp-indexed calibration file (and rejects
+                # uncalibrated kp values). See
+                # gravity_id/DEFLECTION_CALIBRATION.md.
+                "mit_gravity_compensation_use_kp_offset": True,
+                "mit_gravity_compensation_use_deflection_table": True,
+                "mit_gravity_compensation_calibration_file": (
+                    LaunchConfiguration(
+                        "follower_gravity_calibration_file"
+                    )
+                ),
+                "mit_gravity_compensation_calibration_side": "right",
                 # Dual-arm URDF: the right chain is prefixed "right_*".
                 "mit_gravity_compensation_joint_names": [
                     "right_joint1", "right_joint2", "right_joint3",
@@ -526,6 +569,7 @@ def generate_launch_description():
             follower_mit_torque_ref_arg,
             follower_gravity_compensation_enabled_arg,
             follower_gravity_compensation_urdf_path_arg,
+            follower_gravity_calibration_file_arg,
             follower_gravity_compensation_scale_arg,
             follower_gravity_compensation_scale_per_joint_arg,
             follower_gravity_compensation_max_t_ref_arg,
