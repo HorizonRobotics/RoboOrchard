@@ -134,6 +134,10 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
     default_follower_torque_ref: float = 0.0
+    # Opt-in via the app's "Velocity feedforward (follower)" checkbox.
+    # Probe-validated 2026-07-06 (gravity_id/probe_kd_vdes.py): halves
+    # follower phase lag when enabled.
+    default_follower_velocity_feedforward: bool = False
     default_follower_gravity_compensation_alpha: float = 0.0
     default_follower_gravity_compensation_enabled: bool = False
     default_follower_gravity_compensation_urdf_path: str = (

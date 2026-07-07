@@ -108,6 +108,17 @@ def generate_launch_description():
         default_value="0.0",
         description="MIT torque reference for the follower arms.",
     )
+    follower_velocity_feedforward_arg = DeclareLaunchArgument(
+        "follower_velocity_feedforward",
+        default_value="false",
+        description=(
+            "Send estimated command velocity as MIT v_des on the follower "
+            "arms so kd damps the tracking error instead of dragging "
+            "against motion. Probe-validated 2026-07-06: halves teleop "
+            "phase lag (48->16 ms on J3) with the default position_delta "
+            "estimator."
+        ),
+    )
     follower_gravity_compensation_enabled_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_enabled",
         default_value="true",
@@ -323,6 +334,10 @@ def generate_launch_description():
                     LaunchConfiguration("follower_mit_torque_ref"),
                     value_type=float,
                 ),
+                "mit_velocity_feedforward": ParameterValue(
+                    LaunchConfiguration("follower_velocity_feedforward"),
+                    value_type=bool,
+                ),
                 "mit_gravity_compensation_enabled": ParameterValue(
                     LaunchConfiguration(
                         "follower_gravity_compensation_enabled"
@@ -460,6 +475,10 @@ def generate_launch_description():
                     LaunchConfiguration("follower_mit_torque_ref"),
                     value_type=float,
                 ),
+                "mit_velocity_feedforward": ParameterValue(
+                    LaunchConfiguration("follower_velocity_feedforward"),
+                    value_type=bool,
+                ),
                 "mit_gravity_compensation_enabled": ParameterValue(
                     LaunchConfiguration(
                         "follower_gravity_compensation_enabled"
@@ -542,6 +561,7 @@ def generate_launch_description():
             follower_mit_kd_arg,
             follower_mit_vel_ref_arg,
             follower_mit_torque_ref_arg,
+            follower_velocity_feedforward_arg,
             follower_gravity_compensation_enabled_arg,
             follower_gravity_compensation_urdf_path_arg,
             follower_gravity_calibration_file_arg,

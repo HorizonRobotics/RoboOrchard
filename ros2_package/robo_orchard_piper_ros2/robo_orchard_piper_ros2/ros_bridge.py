@@ -192,6 +192,17 @@ class PinocchioGravityCompensator:
         # Disabled by default (all-zero amplitude).
         self.friction_static_scale = [0.0] * 6
         self.friction_static_velocity = 0.05
+        # Inertial (acceleration) feedforward: adds the commanded
+        # trajectory's dynamic torque, rnea(q, v_cmd, a_cmd) minus the
+        # gravity-only rnea(q, 0, 0), so fast direction changes do not have
+        # to generate their inertial torque through tracking error against
+        # the firmware spring. The delta rides the same t_ref/kp-offset
+        # split as gravity. Disabled by default; the per-joint delta is
+        # clamped to +/- inertial_max_torque so a noisy double-derivative
+        # of the command stream cannot inject large torque spikes.
+        self.inertial_enabled = False
+        self.inertial_scale = 1.0
+        self.inertial_max_torque = 4.0
         self._dither_switch = False
         self._pin = None
         self._np = None
@@ -240,6 +251,7 @@ class PinocchioGravityCompensator:
         header += [f"kp_offset_tau{i}" for i in range(1, n + 1)]
         header += [f"residual_tau{i}" for i in range(1, n + 1)]
         header += [f"friction_tau{i}" for i in range(1, n + 1)]
+        header += [f"inertial_tau{i}" for i in range(1, n + 1)]
         self._record_file.write(",".join(header) + "\n")
         self._record_count = 0
 
@@ -261,6 +273,7 @@ class PinocchioGravityCompensator:
         kp_offset_torques: Sequence[float],
         residual_torques: Sequence[float],
         friction_torques: Sequence[float] | None = None,
+        inertial_torques: Sequence[float] | None = None,
     ) -> None:
         if self._record_file is None:
             return
@@ -285,6 +298,7 @@ class PinocchioGravityCompensator:
         row += _cells(kp_offset_torques)
         row += _cells(residual_torques)
         row += _cells(friction_torques or [])
+        row += _cells(inertial_torques or [])
         self._record_file.write(",".join(row) + "\n")
         self._record_count += 1
 
@@ -309,6 +323,9 @@ class PinocchioGravityCompensator:
         friction_taper_velocity: float = 2.0,
         friction_static_scale: Sequence[float] | None = None,
         friction_static_velocity: float = 0.05,
+        inertial_enabled: bool = False,
+        inertial_scale: float = 1.0,
+        inertial_max_torque: float = 4.0,
     ) -> None:
         old_state = (
             self.enabled,
@@ -329,6 +346,9 @@ class PinocchioGravityCompensator:
             self.friction_taper_velocity,
             list(self.friction_static_scale),
             self.friction_static_velocity,
+            self.inertial_enabled,
+            self.inertial_scale,
+            self.inertial_max_torque,
             self._model,
             self._data,
             self._neutral_q,
@@ -366,6 +386,9 @@ class PinocchioGravityCompensator:
                 friction_static_scale, len(self.joint_names), default=0.0
             )
             self.friction_static_velocity = float(friction_static_velocity)
+            self.inertial_enabled = bool(inertial_enabled)
+            self.inertial_scale = float(inertial_scale)
+            self.inertial_max_torque = float(inertial_max_torque)
             model_key = (self.urdf_path, tuple(self.joint_names))
             if model_key != self._model_key:
                 self._model = None
@@ -397,6 +420,9 @@ class PinocchioGravityCompensator:
                 self.friction_taper_velocity,
                 self.friction_static_scale,
                 self.friction_static_velocity,
+                self.inertial_enabled,
+                self.inertial_scale,
+                self.inertial_max_torque,
                 self._model,
                 self._data,
                 self._neutral_q,
@@ -800,6 +826,8 @@ class PinocchioGravityCompensator:
         *,
         kp: float,
         velocities: Sequence[float] | None = None,
+        command_velocities: Sequence[float] | None = None,
+        command_accelerations: Sequence[float] | None = None,
     ) -> GravityCompensationCommand:
         joint_count = min(6, len(positions))
         if not self.enabled:
@@ -828,6 +856,34 @@ class PinocchioGravityCompensator:
         tau = self._pin.rnea(
             self._model, self._data, q, self._zero_v, self._zero_a
         )
+        # Inertial feedforward: full inverse dynamics of the commanded
+        # trajectory minus the gravity-only torque above. The delta is the
+        # inertia + Coriolis torque the motors must produce during
+        # commanded accelerations.
+        inertial_deltas = [0.0] * joint_count
+        if (
+            self.inertial_enabled
+            and command_accelerations is not None
+        ):
+            v = self._zero_v.copy()
+            a = self._zero_a.copy()
+            for joint_pos, (_, idx_v) in enumerate(self._joint_indices):
+                if (
+                    command_velocities is not None
+                    and joint_pos < len(command_velocities)
+                ):
+                    v[idx_v] = float(command_velocities[joint_pos])
+                if joint_pos < len(command_accelerations):
+                    a[idx_v] = float(command_accelerations[joint_pos])
+            tau_dyn = self._pin.rnea(self._model, self._data, q, v, a)
+            clamp = abs(self.inertial_max_torque)
+            for joint_pos, (_, idx_v) in enumerate(
+                self._joint_indices[:joint_count]
+            ):
+                delta = (
+                    float(tau_dyn[idx_v]) - float(tau[idx_v])
+                ) * self.inertial_scale
+                inertial_deltas[joint_pos] = max(-clamp, min(clamp, delta))
         torque_refs: list[float] = []
         position_offsets: list[float] = []
         desired_torques: list[float] = []
@@ -854,8 +910,13 @@ class PinocchioGravityCompensator:
             friction_torque = self._friction_torque(
                 joint_pos, velocity, gravity_torque
             ) + self._static_friction_torque(joint_pos, velocity)
-            # Friction rides the same MIT t_ref/kp split + clamp as gravity.
-            desired_torque = gravity_torque + friction_torque
+            # Friction and inertial feedforward ride the same MIT t_ref/kp
+            # split + clamp as gravity.
+            desired_torque = (
+                gravity_torque
+                + friction_torque
+                + inertial_deltas[joint_pos]
+            )
             (
                 torque_ref,
                 position_offset,
@@ -902,6 +963,7 @@ class PinocchioGravityCompensator:
                 kp_offset_torques,
                 residual_torques,
                 friction_torques,
+                inertial_deltas,
             )
         return GravityCompensationCommand(
             torque_refs=torque_refs,
@@ -1154,6 +1216,8 @@ def joint_mit_control(
     gripper_val_mutiple: float = 1.0,
     velocity_ref: Sequence[float] | None = None,
     measured_velocity: Sequence[float] | None = None,
+    command_velocity: Sequence[float] | None = None,
+    command_acceleration: Sequence[float] | None = None,
 ):
     joint_count = min(6, len(joint_data.position))
     gravity_command = GravityCompensationCommand(
@@ -1168,6 +1232,8 @@ def joint_mit_control(
             joint_data.position[:joint_count],
             kp=float(mit_kp),
             velocities=measured_velocity,
+            command_velocities=command_velocity,
+            command_accelerations=command_acceleration,
         )
 
     for idx in range(joint_count):

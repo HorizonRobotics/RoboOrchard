@@ -408,7 +408,10 @@ class MainControlComponent(ComponentBase):
                     )
                 ),
                 "follower_velocity_feedforward": bool(
-                    self._session_value("follower_velocity_ff", False)
+                    self._session_value(
+                        "follower_velocity_ff",
+                        mit_cfg.default_follower_velocity_feedforward,
+                    )
                 ),
                 "follower_gravity_compensation_enabled": True,
                 "follower_gravity_compensation_urdf_path": (
@@ -1223,7 +1226,7 @@ class MainControlComponent(ComponentBase):
 
         follower_velocity_feedforward = st.checkbox(
             "Velocity feedforward (follower)",
-            value=False,
+            value=bool(mit_cfg.default_follower_velocity_feedforward),
             key=f"{self.key_prefix}_follower_velocity_ff",
             help=(
                 "Feed the commanded joint velocity (finite-differenced from "
@@ -1988,7 +1991,7 @@ class MainControlComponent(ComponentBase):
                 scripted_amplitude_scale = st.slider(
                     "Amplitude scale",
                     min_value=1.0,
-                    max_value=5.0,
+                    max_value=10.0,
                     value=max(1.0, float(scripted_cfg.amplitude_scale)),
                     step=0.05,
                     disabled=scripted_running,
@@ -1998,7 +2001,7 @@ class MainControlComponent(ComponentBase):
                 scripted_frequency_scale = st.slider(
                     "Frequency scale",
                     min_value=0.25,
-                    max_value=3.0,
+                    max_value=6.0,
                     value=float(scripted_cfg.frequency_scale),
                     step=0.05,
                     disabled=scripted_running,
