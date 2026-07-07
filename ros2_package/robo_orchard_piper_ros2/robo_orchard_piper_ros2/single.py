@@ -96,6 +96,20 @@ class PiperSingleControlNode(Node):
         self.declare_parameter(
             "mit_velocity_feedforward_deadband", 0.02
         )
+        # Inertial (acceleration) feedforward: adds the commanded
+        # trajectory's dynamic torque (full RNEA minus gravity RNEA) to the
+        # gravity-compensation output, so sharp direction changes do not
+        # have to generate their inertial torque through tracking error.
+        # Requires gravity compensation to be enabled. The acceleration is
+        # double-differentiated from the command stream, so it gets its own
+        # EMA smoothing and the resulting torque delta is clamped.
+        self.declare_parameter("mit_inertial_feedforward", False)
+        self.declare_parameter("mit_inertial_feedforward_scale", 1.0)
+        # EMA smoothing for the finite-differenced command acceleration
+        # (lower = smoother but more lag on a 10-100 ms transient signal).
+        self.declare_parameter("mit_inertial_feedforward_alpha", 0.15)
+        # Per-joint clamp (Nm) on the inertial torque delta.
+        self.declare_parameter("mit_inertial_feedforward_max_torque", 4.0)
         self.declare_parameter("mit_gravity_compensation_enabled", False)
         self.declare_parameter("mit_gravity_compensation_urdf_path", "")
         self.declare_parameter("mit_gravity_compensation_scale", 1.0)
@@ -255,10 +269,34 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.mit_inertial_feedforward = (
+            self.get_parameter("mit_inertial_feedforward")
+            .get_parameter_value()
+            .bool_value
+        )
+        self.mit_inertial_feedforward_scale = (
+            self.get_parameter("mit_inertial_feedforward_scale")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_inertial_feedforward_alpha = (
+            self.get_parameter("mit_inertial_feedforward_alpha")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_inertial_feedforward_max_torque = (
+            self.get_parameter("mit_inertial_feedforward_max_torque")
+            .get_parameter_value()
+            .double_value
+        )
         # Finite-difference state for commanded-velocity feedforward.
         self._prev_cmd_pos: list[float] | None = None
         self._prev_cmd_vel: list[float] | None = None
         self._prev_cmd_time: float | None = None
+        # Finite-difference state for commanded-acceleration feedforward.
+        self._prev_ff_vel: list[float] | None = None
+        self._prev_ff_vel_time: float | None = None
+        self._prev_cmd_accel: list[float] | None = None
         self.mit_gravity_compensation_enabled = (
             self.get_parameter("mit_gravity_compensation_enabled")
             .get_parameter_value()
@@ -424,6 +462,9 @@ class PiperSingleControlNode(Node):
             friction_static_velocity=(
                 self.mit_friction_compensation_static_velocity
             ),
+            inertial_enabled=self.mit_inertial_feedforward,
+            inertial_scale=self.mit_inertial_feedforward_scale,
+            inertial_max_torque=self.mit_inertial_feedforward_max_torque,
         )
         self.gravity_compensator.set_record_path(
             self.mit_gravity_compensation_record_path
@@ -608,6 +649,12 @@ class PiperSingleControlNode(Node):
         next_friction_static_velocity = (
             self.mit_friction_compensation_static_velocity
         )
+        next_inertial_ff = self.mit_inertial_feedforward
+        next_inertial_ff_scale = self.mit_inertial_feedforward_scale
+        next_inertial_ff_alpha = self.mit_inertial_feedforward_alpha
+        next_inertial_ff_max_torque = (
+            self.mit_inertial_feedforward_max_torque
+        )
 
         for param in params:
             if param.name == "reset_joint_position":
@@ -680,6 +727,14 @@ class PiperSingleControlNode(Node):
                 next_friction_static_scale = list(param.value)
             elif param.name == "mit_friction_compensation_static_velocity":
                 next_friction_static_velocity = float(param.value)
+            elif param.name == "mit_inertial_feedforward":
+                next_inertial_ff = bool(param.value)
+            elif param.name == "mit_inertial_feedforward_scale":
+                next_inertial_ff_scale = float(param.value)
+            elif param.name == "mit_inertial_feedforward_alpha":
+                next_inertial_ff_alpha = float(param.value)
+            elif param.name == "mit_inertial_feedforward_max_torque":
+                next_inertial_ff_max_torque = float(param.value)
 
         if next_mit_kp < 0 or next_mit_kd < 0:
             return SetParametersResult(
@@ -707,6 +762,24 @@ class PiperSingleControlNode(Node):
                 successful=False,
                 reason=(
                     "mit_velocity_feedforward_deadband must be non-negative."
+                ),
+            )
+        if not 0.0 <= next_inertial_ff_alpha <= 1.0:
+            return SetParametersResult(
+                successful=False,
+                reason="mit_inertial_feedforward_alpha must be in [0.0, 1.0].",
+            )
+        if next_inertial_ff_scale < 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason="mit_inertial_feedforward_scale must be non-negative.",
+            )
+        if next_inertial_ff_max_torque < 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_inertial_feedforward_max_torque must be "
+                    "non-negative."
                 ),
             )
 
@@ -847,6 +920,9 @@ class PiperSingleControlNode(Node):
                 friction_taper_velocity=next_friction_taper_velocity,
                 friction_static_scale=next_friction_static_scale,
                 friction_static_velocity=next_friction_static_velocity,
+                inertial_enabled=next_inertial_ff,
+                inertial_scale=next_inertial_ff_scale,
+                inertial_max_torque=next_inertial_ff_max_torque,
             )
         except Exception as e:
             return SetParametersResult(
@@ -879,6 +955,16 @@ class PiperSingleControlNode(Node):
             self._prev_cmd_pos = None
             self._prev_cmd_vel = None
             self._prev_cmd_time = None
+        if self.mit_inertial_feedforward != next_inertial_ff:
+            self._prev_ff_vel = None
+            self._prev_ff_vel_time = None
+            self._prev_cmd_accel = None
+        self.mit_inertial_feedforward = next_inertial_ff
+        self.mit_inertial_feedforward_scale = next_inertial_ff_scale
+        self.mit_inertial_feedforward_alpha = next_inertial_ff_alpha
+        self.mit_inertial_feedforward_max_torque = (
+            next_inertial_ff_max_torque
+        )
         self.mit_gravity_compensation_enabled = next_gravity_enabled
         self.mit_gravity_compensation_urdf_path = next_gravity_urdf_path
         self.mit_gravity_compensation_scale = next_gravity_scale
@@ -947,6 +1033,8 @@ class PiperSingleControlNode(Node):
             f"{self.mit_velocity_feedforward}, "
             "velocity_feedforward_source = "
             f"{self.mit_velocity_feedforward_source}, "
+            "inertial_feedforward = "
+            f"{self.mit_inertial_feedforward}, "
             "gravity_compensation_enabled = "
             f"{self.mit_gravity_compensation_enabled}, "
             f"gravity_scale = {self.mit_gravity_compensation_scale}, "
@@ -1103,6 +1191,39 @@ class PiperSingleControlNode(Node):
                 return velocity
         return self._estimate_cmd_velocity(joint_data)
 
+    def _estimate_cmd_accel(
+        self, velocity: list[float], joint_data
+    ) -> list[float]:
+        """Estimate commanded acceleration from the v_des estimate.
+
+        Finite-differences the command-velocity vector (whatever source
+        produced it) with its own EMA smoothing. Double differentiation is
+        noisy — the deadband steps in the velocity estimate alone produce
+        multi-rad/s^2 spikes — so alpha here should stay low and the
+        compensator clamps the resulting torque delta.
+        """
+        n = len(velocity)
+        now = self._command_stamp_seconds(joint_data)
+        accel = [0.0] * n
+        if (
+            self._prev_ff_vel is not None
+            and len(self._prev_ff_vel) == n
+            and self._prev_ff_vel_time is not None
+        ):
+            dt = now - self._prev_ff_vel_time
+            if 1e-4 < dt < 0.5:
+                prev_accel = self._prev_cmd_accel or [0.0] * n
+                alpha = self.mit_inertial_feedforward_alpha
+                for i in range(n):
+                    raw = (velocity[i] - self._prev_ff_vel[i]) / dt
+                    accel[i] = alpha * raw + (1.0 - alpha) * (
+                        prev_accel[i] if i < len(prev_accel) else 0.0
+                    )
+        self._prev_ff_vel = list(velocity)
+        self._prev_ff_vel_time = now
+        self._prev_cmd_accel = accel
+        return accel
+
     def _measured_joint_velocity(self) -> list[float]:
         """Measured joint velocity (rad/s) from cached high-speed feedback.
 
@@ -1131,9 +1252,25 @@ class PiperSingleControlNode(Node):
 
         if self.is_controlable():
             if self.enable_mit_ctrl:
-                velocity_ref = (
+                # Inertial feedforward needs the command-velocity estimate
+                # even when v_des is not sent to the firmware.
+                inertial_active = (
+                    self.mit_inertial_feedforward
+                    and self.gravity_compensator.enabled
+                )
+                command_velocity = (
                     self._command_velocity(joint_data)
+                    if self.mit_velocity_feedforward or inertial_active
+                    else None
+                )
+                velocity_ref = (
+                    command_velocity
                     if self.mit_velocity_feedforward
+                    else None
+                )
+                command_accel = (
+                    self._estimate_cmd_accel(command_velocity, joint_data)
+                    if inertial_active and command_velocity is not None
                     else None
                 )
                 # Friction compensation acts on measured motion direction.
@@ -1156,6 +1293,8 @@ class PiperSingleControlNode(Node):
                     gripper_val_mutiple=self.gripper_val_mutiple,
                     velocity_ref=velocity_ref,
                     measured_velocity=measured_velocity,
+                    command_velocity=command_velocity,
+                    command_acceleration=command_accel,
                 )
             else:
                 joint_control(
