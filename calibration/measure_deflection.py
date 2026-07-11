@@ -1,42 +1,10 @@
 #!/usr/bin/env python3
-"""Measure Piper MIT static torque-to-deflection data (online half).
+"""Measure one Piper arm's static MIT torque-to-deflection response.
 
-Commands a grid of static poses to one follower arm with gravity/friction
-compensation DISABLED and mit_kp forced to the operating value, waits for
-each pose to settle, and records the settled joint positions. The offline
-companion (``fit_deflection.py``) converts the CSV this script writes into
-the ``mit_gravity_compensation_offset_stiffness`` and
-``mit_gravity_compensation_deflection_table`` controller parameters.
-
-Physics: with compensation off, the firmware's internal loop holds the
-joint near the command with a static error (sag). At equilibrium the
-firmware torque equals the gravity torque, so each settled pose yields one
-(gravity torque, deflection) sample of the firmware's effective stiffness
-at the chosen mit_kp. The stiffness depends on mit_kp, so re-run this
-whenever the deployment kp changes.
-
-Run INSIDE the holobrain container with the ROS environment sourced:
-
-    docker exec -it holobrain bash
-    source /opt/ros/humble/setup.bash
-    python3 /opt/roboorchard/gravity_id/measure_deflection.py \
-        --side left --kp 40 --out /data/holobrain/deflection/left_kp40.csv
-
-PREREQUISITES (same as kp_offset_consistency_check.md):
-  * The ``single_ctrl`` controllers must be running.
-  * Stop every other publisher on /robot/<side>/joint_cmd first
-    (take_over muxer, aloha_orchestrator, inference app/policy). The
-    script refuses to start if it detects an existing publisher —
-    duplicate joint_cmd publishers caused the kd-buzz incident.
-  * Keep the e-stop within reach; the arm moves through extended,
-    gravity-loaded poses.
-
-The script saves the controller parameters it touches and restores them
-on exit (including Ctrl-C), and ramps the arm back to its starting pose.
+Hardware tool; see CALIBRATION.md for prerequisites and safe operation.
 """
 
 from __future__ import annotations
-
 import argparse
 import csv
 import math
@@ -46,8 +14,11 @@ import sys
 import time
 
 import rclpy
-from rcl_interfaces.msg import Parameter as ParameterMsg
-from rcl_interfaces.msg import ParameterType, ParameterValue
+from rcl_interfaces.msg import (
+    Parameter as ParameterMsg,
+    ParameterType,
+    ParameterValue,
+)
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -92,33 +63,42 @@ CSV_FIELDS = (
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument(
-        "--kp", type=float, required=True,
+        "--kp",
+        type=float,
+        required=True,
         help="mit_kp to measure at (the deployment kp).",
     )
     parser.add_argument(
-        "--kd", type=float, default=None,
+        "--kd",
+        type=float,
+        default=None,
         help="Optional mit_kd override during measurement.",
     )
     parser.add_argument(
         "--out", required=True, help="Output CSV path (container-visible)."
     )
     parser.add_argument(
-        "--poses", default="",
+        "--poses",
+        default="",
         help="Optional pose file: one pose per line, 6 comma-separated "
         "joint radians. Default: built-in 8-pose grid.",
     )
     parser.add_argument(
-        "--approach", choices=("both", "above", "below", "none"),
+        "--approach",
+        choices=("both", "above", "below", "none"),
         default="both",
         help="Approach direction(s) per pose. 'both' measures each pose "
         "twice so stiction cancels in the offline average (default).",
     )
     parser.add_argument(
-        "--approach-offset", type=float, default=0.10,
+        "--approach-offset",
+        type=float,
+        default=0.10,
         help="Radians added to J2/J3 for the approach pre-pose. 0.10 "
         "clears the table on the default grid's high-torque pre-poses "
         "at low kp while still dominating the stiction band "
@@ -128,21 +108,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--seconds", type=float, default=2.0)
     parser.add_argument("--rate", type=float, default=50.0)
     parser.add_argument(
-        "--max-speed", type=float, default=0.15,
+        "--max-speed",
+        type=float,
+        default=0.15,
         help="Max joint speed (rad/s) for ramps between poses.",
     )
     parser.add_argument(
-        "--max-error", type=float, default=0.35,
+        "--max-error",
+        type=float,
+        default=0.35,
         help="Abort if any joint deviates from its command by more than "
         "this (rad) while holding.",
     )
     parser.add_argument(
-        "--max-std", type=float, default=0.002,
+        "--max-std",
+        type=float,
+        default=0.002,
         help="Reject a sample window whose per-joint std exceeds this "
         "(not settled); the pose is retried once.",
     )
     parser.add_argument(
-        "--yes", action="store_true",
+        "--yes",
+        action="store_true",
         help="Skip the interactive pose-grid confirmation.",
     )
     return parser.parse_args()
@@ -242,7 +229,7 @@ class _DeflectionMeasurer(Node):
         req = GetParameters.Request(names=names)
         res = self._call(self._get_cli, req)
         out = {}
-        for name, value in zip(names, res.values):
+        for name, value in zip(names, res.values, strict=True):
             if value.type == ParameterType.PARAMETER_BOOL:
                 out[name] = value.bool_value
             elif value.type == ParameterType.PARAMETER_DOUBLE:
@@ -258,6 +245,9 @@ class _DeflectionMeasurer(Node):
             if isinstance(val, bool):
                 pv.type = ParameterType.PARAMETER_BOOL
                 pv.bool_value = val
+            elif isinstance(val, (list, tuple)):
+                pv.type = ParameterType.PARAMETER_DOUBLE_ARRAY
+                pv.double_array_value = [float(v) for v in val]
             else:
                 pv.type = ParameterType.PARAMETER_DOUBLE
                 pv.double_value = float(val)
@@ -265,7 +255,7 @@ class _DeflectionMeasurer(Node):
         res = self._call(
             self._set_cli, SetParameters.Request(parameters=params)
         )
-        for name, result in zip(values, res.results):
+        for name, result in zip(values, res.results, strict=True):
             if not result.successful:
                 raise SystemExit(
                     f"set_parameters rejected {name}: {result.reason}"
@@ -285,11 +275,11 @@ class _DeflectionMeasurer(Node):
         self, target: list[float], rate: float, max_speed: float
     ) -> None:
         start = self.wait_for_state()
-        dist = max(abs(t - s) for t, s in zip(target, start))
+        dist = max(abs(t - s) for t, s in zip(target, start, strict=True))
         steps = max(2, int(math.ceil(dist / max_speed * rate)))
         for i in range(1, steps + 1):
             a = i / steps
-            q = [s + a * (t - s) for s, t in zip(start, target)]
+            q = [s + a * (t - s) for s, t in zip(start, target, strict=True)]
             self.publish_cmd(q)
             self._spin_sleep(1.0 / rate)
 
@@ -315,7 +305,7 @@ class _DeflectionMeasurer(Node):
         seconds: float,
         max_error: float,
     ) -> tuple[list[float], list[float], list[float], int]:
-        """Hold ``target``, settle, then sample; returns (mean, std, eff, n)."""
+        """Hold, settle, and return mean, std, effort, and sample count."""
         self.hold(target, rate, settle, max_error)
         self.samples, self.effort_samples = [], []
         self.sampling = True
@@ -330,12 +320,8 @@ class _DeflectionMeasurer(Node):
             raise SystemExit(
                 f"only {len(samples)} samples on {self.state_topic}"
             )
-        mean = [
-            statistics.fmean(s[j] for s in samples) for j in range(6)
-        ]
-        std = [
-            statistics.pstdev([s[j] for s in samples]) for j in range(6)
-        ]
+        mean = [statistics.fmean(s[j] for s in samples) for j in range(6)]
+        std = [statistics.pstdev([s[j] for s in samples]) for j in range(6)]
         eff = [0.0] * 6
         if self.effort_samples:
             eff = [
@@ -347,7 +333,7 @@ class _DeflectionMeasurer(Node):
     def _check_error(self, target: list[float], max_error: float) -> None:
         if self.latest is None:
             return
-        for j, (cmd, meas) in enumerate(zip(target, self.latest)):
+        for j, (cmd, meas) in enumerate(zip(target, self.latest, strict=True)):
             if abs(cmd - meas) > max_error:
                 raise RuntimeError(
                     f"joint{j + 1} error {abs(cmd - meas):.3f} rad exceeds "
@@ -359,8 +345,10 @@ def main() -> None:
     args = _parse_args()
     poses = _load_poses(args.poses)
 
-    print(f"side={args.side} kp={args.kp} poses={len(poses)} "
-          f"approach={args.approach}")
+    print(
+        f"side={args.side} kp={args.kp} poses={len(poses)} "
+        f"approach={args.approach}"
+    )
     for i, p in enumerate(poses):
         print(f"  P{i}: {p}")
     if not args.yes:
@@ -411,22 +399,28 @@ def main() -> None:
                 node.ramp_to(pre, args.rate, args.max_speed)
                 node.hold(pre, args.rate, 1.5, args.max_error)
                 node.ramp_to(pose, args.rate, args.max_speed)
-                for attempt in (1, 2):
+                for _attempt in (1, 2):
                     mean, std, eff, n = node.hold_and_sample(
-                        pose, args.rate, args.settle, args.seconds,
+                        pose,
+                        args.rate,
+                        args.settle,
+                        args.seconds,
                         args.max_error,
                     )
                     if max(std) <= args.max_std:
                         break
                     print(f"  retry: std {max(std):.4f} > {args.max_std}")
-                sag = [c - m for c, m in zip(pose, mean)]
+                sag = [c - m for c, m in zip(pose, mean, strict=True)]
                 print(
                     f"  sag(rad) J2={sag[1]:+.4f} J3={sag[2]:+.4f} "
                     f"J4={sag[3]:+.4f}  max_std={max(std):.4f} n={n}"
                 )
                 row = {
-                    "side": args.side, "kp": args.kp, "pose_idx": idx,
-                    "approach": approach, "n_samples": n,
+                    "side": args.side,
+                    "kp": args.kp,
+                    "pose_idx": idx,
+                    "approach": approach,
+                    "n_samples": n,
                 }
                 for j in range(6):
                     row[f"q_cmd{j + 1}"] = round(pose[j], 6)
@@ -464,7 +458,7 @@ def main() -> None:
     if not ok:
         sys.exit(1)
     print(
-        "next: python3 gravity_id/fit_deflection.py "
+        "next: python3 calibration/fit_deflection.py "
         f"--csv {args.out} --side {args.side}"
     )
 

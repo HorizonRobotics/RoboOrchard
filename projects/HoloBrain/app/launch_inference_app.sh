@@ -1,5 +1,10 @@
 set -ex
 
+# Kill stale instance so re-running script will restart
+pkill -TERM -f "[r]obo-orchard inference-app launch" || true
+sleep 1
+pkill -KILL -f "[r]obo-orchard inference-app launch" || true
+
 SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
 

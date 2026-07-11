@@ -95,19 +95,26 @@ def test_scripted_motion_float_params_stay_double_like():
     assert MainControlComponent._scripted_param_value(0.25) == "0.25"
     assert MainControlComponent._scripted_param_value(2) == "2"
     assert MainControlComponent._scripted_param_value(True) == "true"
-    assert MainControlComponent._scripted_param_value(
-        [0.0, 0.1, -0.7]
-    ) == "[0.0, 0.1, -0.7]"
+    assert (
+        MainControlComponent._scripted_param_value([0.0, 0.1, -0.7])
+        == "[0.0, 0.1, -0.7]"
+    )
 
 
-def test_scripted_motion_recording_subscriber_gate_params():
+def test_scripted_motion_recording_subscriber_gate_params(monkeypatch):
     from robo_orchard_inference_app.components.main_control import (
         MainControlComponent,
     )
     from robo_orchard_inference_app.config import LaunchCfg
 
     component = object.__new__(MainControlComponent)
-    component.launch_cfg = LaunchCfg()
+    launch_cfg = LaunchCfg()
+    monkeypatch.setattr(
+        MainControlComponent,
+        "launch_cfg",
+        property(lambda _self: launch_cfg),
+        raising=False,
+    )
 
     args = component._scripted_motion_args(
         duration_s=10.0,

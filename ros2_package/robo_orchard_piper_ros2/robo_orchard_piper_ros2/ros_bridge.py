@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""Piper SDK helpers for arm state, joint commands, and MIT compensation."""
+
 import logging
 import math
 import time
@@ -47,6 +49,8 @@ __all__ = [
     "PinocchioGravityCompensator",
     "GravityCompensationCommand",
     "resolve_deflection_calibration",
+    "resolve_friction_calibration",
+    "resolve_gravity_scale_calibration",
     "get_enable_flag",
     "enable_arm_ctrl",
     "switch_piper_ctrl_mode",
@@ -72,18 +76,7 @@ class GravityCompensationError(RuntimeError):
 def resolve_deflection_calibration(
     calibration_file: str, side: str, kp: float
 ) -> tuple[list[float], str]:
-    """Look up the kp-indexed deflection calibration for one arm.
-
-    The calibration file (see gravity_id/deflection_calibrations.json)
-    maps side -> mit_kp -> {offset_stiffness, deflection_table}. The
-    firmware stiffness k_eff depends on the sent mit_kp, so entries are
-    only valid at their own kp: a kp with no entry is an error listing
-    the calibrated values rather than a silent fallback.
-
-    Returns ``(offset_stiffness, deflection_table_json)`` with the table
-    serialized to the string form of the
-    ``mit_gravity_compensation_deflection_table`` parameter.
-    """
+    """Load the kp-indexed deflection calibration for one arm."""
     import json
 
     path = Path(calibration_file).expanduser()
@@ -114,7 +107,7 @@ def resolve_deflection_calibration(
         raise GravityCompensationError(
             f"No deflection calibration for mit_kp={kp:g} (side {side}) "
             f"in {path}. Calibrated kp values: [{pretty}]. Use one of "
-            f"those, or measure this kp with gravity_id/"
+            f"those, or measure this kp with calibration/"
             f"measure_deflection.py and add it with fit_deflection.py "
             f"--update-calibration."
         )
@@ -129,80 +122,133 @@ def resolve_deflection_calibration(
     return stiffness, table_json
 
 
+def _load_calibration_store(calibration_file: str) -> dict:
+    """Load and validate the calibration store."""
+    import json
+
+    path = Path(calibration_file).expanduser()
+    if not path.exists():
+        raise GravityCompensationError(
+            f"Calibration file does not exist: {path}"
+        )
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise GravityCompensationError(
+            f"Calibration file {path} is not valid JSON: {exc}"
+        ) from exc
+
+
+def resolve_friction_calibration(
+    calibration_file: str, side: str
+) -> dict | None:
+    """Load the optional Coulomb friction calibration for one arm."""
+    data = _load_calibration_store(calibration_file)
+    section = data.get("friction")
+    if not isinstance(section, dict):
+        return None
+    entry = section.get(side)
+    if entry is None:
+        return None
+    if not isinstance(entry, dict):
+        raise GravityCompensationError(
+            f"friction/{side} in {calibration_file} must be an object."
+        )
+    try:
+        scale = [float(v) for v in entry["scale"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GravityCompensationError(
+            f"friction/{side}/scale in {calibration_file} must be a "
+            f"list of numbers: {exc}"
+        ) from exc
+    if len(scale) != 6 or any(v < 0.0 or v > 1.5 for v in scale):
+        raise GravityCompensationError(
+            f"friction/{side}/scale in {calibration_file} must have 6 "
+            f"values in [0, 1.5] Nm, got {scale}."
+        )
+    taper = entry.get("taper_velocity")
+    if taper is not None:
+        taper = float(taper)
+        if taper < 0.0:
+            raise GravityCompensationError(
+                f"friction/{side}/taper_velocity in {calibration_file} "
+                f"must be >= 0, got {taper}."
+            )
+    return {"scale": scale, "taper_velocity": taper}
+
+
+def resolve_gravity_scale_calibration(
+    calibration_file: str, side: str
+) -> list[float] | None:
+    """Load the optional per-joint gravity scale for one arm."""
+    data = _load_calibration_store(calibration_file)
+    section = data.get("gravity")
+    if not isinstance(section, dict):
+        return None
+    entry = section.get(side)
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or "scale_per_joint" not in entry:
+        raise GravityCompensationError(
+            f"gravity/{side} in {calibration_file} must be an object "
+            f"with a scale_per_joint list."
+        )
+    try:
+        scale = [float(v) for v in entry["scale_per_joint"]]
+    except (TypeError, ValueError) as exc:
+        raise GravityCompensationError(
+            f"gravity/{side}/scale_per_joint in {calibration_file} must "
+            f"be a list of numbers: {exc}"
+        ) from exc
+    if len(scale) != 6 or any(v < 0.0 or v > 2.0 for v in scale):
+        raise GravityCompensationError(
+            f"gravity/{side}/scale_per_joint in {calibration_file} must "
+            f"have 6 values in [0, 2], got {scale}."
+        )
+    return scale
+
+
 def _clamp_mit_torque_ref(torque_ref: float) -> float:
-    return max(
-        MIT_TORQUE_REF_MIN, min(MIT_TORQUE_REF_MAX, float(torque_ref))
-    )
+    return max(MIT_TORQUE_REF_MIN, min(MIT_TORQUE_REF_MAX, float(torque_ref)))
 
 
 class PinocchioGravityCompensator:
+    """Compute calibrated MIT gravity-compensation commands."""
+
     def __init__(self) -> None:
         self.enabled = False
         self.urdf_path = ""
         self.joint_names = [f"joint{i}" for i in range(1, 7)]
         self.scale = 1.0
-        # Per-joint multiplier applied on top of ``scale``. An empty/short
-        # vector is padded with 1.0, which reproduces the original single-scale
-        # behaviour.
+        # Short per-joint scale vectors are padded with 1.0.
         self.per_joint_scale = [1.0] * 6
         self.max_abs_t_ref = 8.0
-        # If true, torque beyond the MIT t_ref clamp is represented as a
-        # position-reference offset. Disable for diagnostics where t_ref-only
-        # behavior must be measured.
+        # Route torque beyond the t_ref clamp through a position offset.
         self.use_kp_offset = True
-        # If false, no compensation torque is sent through the MIT t_ff
-        # channel: t_ref stays 0 and the full desired torque is routed
-        # through the kp position offset. Useful when the firmware's t_ff
-        # handling is suspect (the two channels have been observed to apply
-        # different physical torque for the same nominal Nm).
+        # When false, route all compensation through the position offset.
         self.use_t_ref = True
-        # Per-joint measured torque-to-deflection stiffness (Nm/rad) used to
-        # convert compensation torque into a position offset. The firmware's
-        # internal loop makes the joint far stiffer than the MIT kp we send,
-        # so using kp overcompensates. 0 (default) falls back to kp.
+        # Measured stiffness (Nm/rad); zero falls back to MIT kp.
         self.offset_stiffness = [0.0] * 6
-        # Per-joint measured deflection curves for joints whose stiffness is
-        # load-dependent (J2 stiffens from ~190 to ~370 Nm/rad between 2.6
-        # and 10 Nm). Each entry is a list of (|tau| Nm, |deflection| rad)
-        # knots, both strictly increasing, with an implicit (0, 0) origin;
-        # odd symmetry handles negative torque. A non-empty table takes
-        # precedence over offset_stiffness for that joint.
+        # Monotone (|torque|, |deflection|) tables override stiffness.
+        # The origin is implicit and negative torque uses odd symmetry.
         self.offset_deflection_tables: list[list[tuple[float, float]]] = [
             [] for _ in range(6)
         ]
-        # Master switch for the deflection tables: False falls back to
-        # offset_stiffness/kp without clearing the configured table, so the
-        # two conversions can be A/B compared live.
+        # Disable tables to fall back to measured stiffness or kp.
         self.use_deflection_table = True
-        # Friction compensation (open_manipulator-style): a per-joint torque
-        # added in the direction of motion to cancel Coulomb/stiction. The
-        # magnitude is load-scaled (grows with |gravity torque|) and
-        # velocity-tapered (full just above the deadband, fading to zero by
-        # ``friction_taper_velocity``). Disabled by default (all-zero scale).
+        # Per-joint Coulomb torque with load scaling and velocity tapering.
+        # An all-zero scale disables it.
         self.friction_enabled = False
         self.friction_scale = [0.0] * 6
         self.friction_load_scale = 0.0
         self.friction_min_velocity = 0.02
+        # Ramp in by this velocity to avoid held-joint limit cycles.
+        self.friction_full_velocity = 0.15
         self.friction_taper_velocity = 2.0
-        # Static friction (stiction) dithering: while a joint is essentially
-        # stationary (|velocity| < friction_static_velocity), a per-joint
-        # torque of alternating sign is added every cycle. The zero-mean
-        # perturbation keeps the mechanism at the edge of breakaway so small
-        # commands move it smoothly instead of hitting a stiction dead zone.
-        # Disabled by default (all-zero amplitude).
+        # Alternate near-zero-speed torque to reduce stiction deadband.
+        # An all-zero amplitude disables it.
         self.friction_static_scale = [0.0] * 6
         self.friction_static_velocity = 0.05
-        # Inertial (acceleration) feedforward: adds the commanded
-        # trajectory's dynamic torque, rnea(q, v_cmd, a_cmd) minus the
-        # gravity-only rnea(q, 0, 0), so fast direction changes do not have
-        # to generate their inertial torque through tracking error against
-        # the firmware spring. The delta rides the same t_ref/kp-offset
-        # split as gravity. Disabled by default; the per-joint delta is
-        # clamped to +/- inertial_max_torque so a noisy double-derivative
-        # of the command stream cannot inject large torque spikes.
-        self.inertial_enabled = False
-        self.inertial_scale = 1.0
-        self.inertial_max_torque = 4.0
         self._dither_switch = False
         self._pin = None
         self._np = None
@@ -213,22 +259,13 @@ class PinocchioGravityCompensator:
         self._zero_a = None
         self._joint_indices: list[tuple[int, int]] = []
         self._model_key: tuple[str, tuple[str, ...]] | None = None
-        # Per-timestep recording of the gravity-compensation computation.
-        # When a path is set, every compute() call appends one CSV row with
-        # raw RNEA, clamped t_ref, kp offset, and residual torque.
+        # Optional per-step compensation CSV recording.
         self._record_path = ""
         self._record_file = None
         self._record_count = 0
 
     def set_record_path(self, path: str) -> None:
-        """Enable/disable per-timestep CSV recording of the computation.
-
-        An empty path disables recording. Each row records the joint
-        positions, the raw ``pin.rnea`` gravity torque, the per-joint scale,
-        the desired torque, clamped MIT t_ref torque, kp-derived position
-        offset, and any residual torque not representable through either
-        channel.
-        """
+        """Configure per-step compensation CSV recording."""
         path = str(path or "").strip()
         if path == self._record_path and self._record_file is not None:
             return
@@ -251,7 +288,8 @@ class PinocchioGravityCompensator:
         header += [f"kp_offset_tau{i}" for i in range(1, n + 1)]
         header += [f"residual_tau{i}" for i in range(1, n + 1)]
         header += [f"friction_tau{i}" for i in range(1, n + 1)]
-        header += [f"inertial_tau{i}" for i in range(1, n + 1)]
+        # Appended last so older column-position-based readers still work.
+        header += ["comp_gain"]
         self._record_file.write(",".join(header) + "\n")
         self._record_count = 0
 
@@ -273,7 +311,7 @@ class PinocchioGravityCompensator:
         kp_offset_torques: Sequence[float],
         residual_torques: Sequence[float],
         friction_torques: Sequence[float] | None = None,
-        inertial_torques: Sequence[float] | None = None,
+        comp_gain: float = 1.0,
     ) -> None:
         if self._record_file is None:
             return
@@ -298,7 +336,7 @@ class PinocchioGravityCompensator:
         row += _cells(kp_offset_torques)
         row += _cells(residual_torques)
         row += _cells(friction_torques or [])
-        row += _cells(inertial_torques or [])
+        row += [f"{float(comp_gain):.6g}"]
         self._record_file.write(",".join(row) + "\n")
         self._record_count += 1
 
@@ -320,12 +358,10 @@ class PinocchioGravityCompensator:
         friction_scale: Sequence[float] | None = None,
         friction_load_scale: float = 0.0,
         friction_min_velocity: float = 0.02,
+        friction_full_velocity: float = 0.15,
         friction_taper_velocity: float = 2.0,
         friction_static_scale: Sequence[float] | None = None,
         friction_static_velocity: float = 0.05,
-        inertial_enabled: bool = False,
-        inertial_scale: float = 1.0,
-        inertial_max_torque: float = 4.0,
     ) -> None:
         old_state = (
             self.enabled,
@@ -343,12 +379,10 @@ class PinocchioGravityCompensator:
             list(self.friction_scale),
             self.friction_load_scale,
             self.friction_min_velocity,
+            self.friction_full_velocity,
             self.friction_taper_velocity,
             list(self.friction_static_scale),
             self.friction_static_velocity,
-            self.inertial_enabled,
-            self.inertial_scale,
-            self.inertial_max_torque,
             self._model,
             self._data,
             self._neutral_q,
@@ -381,14 +415,12 @@ class PinocchioGravityCompensator:
             )
             self.friction_load_scale = float(friction_load_scale)
             self.friction_min_velocity = float(friction_min_velocity)
+            self.friction_full_velocity = float(friction_full_velocity)
             self.friction_taper_velocity = float(friction_taper_velocity)
             self.friction_static_scale = self._normalize_per_joint(
                 friction_static_scale, len(self.joint_names), default=0.0
             )
             self.friction_static_velocity = float(friction_static_velocity)
-            self.inertial_enabled = bool(inertial_enabled)
-            self.inertial_scale = float(inertial_scale)
-            self.inertial_max_torque = float(inertial_max_torque)
             model_key = (self.urdf_path, tuple(self.joint_names))
             if model_key != self._model_key:
                 self._model = None
@@ -417,12 +449,10 @@ class PinocchioGravityCompensator:
                 self.friction_scale,
                 self.friction_load_scale,
                 self.friction_min_velocity,
+                self.friction_full_velocity,
                 self.friction_taper_velocity,
                 self.friction_static_scale,
                 self.friction_static_velocity,
-                self.inertial_enabled,
-                self.inertial_scale,
-                self.inertial_max_torque,
                 self._model,
                 self._data,
                 self._neutral_q,
@@ -469,15 +499,7 @@ class PinocchioGravityCompensator:
     def _friction_torque(
         self, joint_pos: int, velocity: float, gravity_torque: float
     ) -> float:
-        """Direction-of-motion friction feedforward for one joint.
-
-        Mirrors open_manipulator's gravity-compensation controller: a Coulomb
-        term applied in the direction of travel, scaled up with joint load
-        (``1 + |gravity_torque| * friction_load_scale``) and tapered so it is
-        full just above ``friction_min_velocity`` and fades to zero by
-        ``friction_taper_velocity``. Returns 0 inside the velocity deadband
-        (avoids chatter while the joint is held).
-        """
+        """Compute direction-dependent friction torque for one joint."""
         if not self.friction_enabled:
             return 0.0
         base = (
@@ -490,7 +512,15 @@ class PinocchioGravityCompensator:
         av = abs(float(velocity))
         if av <= self.friction_min_velocity:
             return 0.0
-        load_factor = 1.0 + abs(float(gravity_torque)) * self.friction_load_scale
+        # Ramp engagement to avoid held-joint limit cycles.
+        ramp_span = self.friction_full_velocity - self.friction_min_velocity
+        if ramp_span > 0.0:
+            engage = min(1.0, (av - self.friction_min_velocity) / ramp_span)
+        else:
+            engage = 1.0
+        load_factor = (
+            1.0 + abs(float(gravity_torque)) * self.friction_load_scale
+        )
         denom = self.friction_taper_velocity - self.friction_min_velocity
         if denom <= 0.0:
             taper = 1.0
@@ -499,21 +529,12 @@ class PinocchioGravityCompensator:
         else:
             taper = 1.0 - (av - self.friction_min_velocity) / denom
         direction = 1.0 if velocity > 0.0 else -1.0
-        return direction * base * load_factor * taper
+        return direction * base * load_factor * taper * engage
 
     def _static_friction_torque(
         self, joint_pos: int, velocity: float
     ) -> float:
-        """Stiction dither for one joint.
-
-        While the joint is essentially stationary
-        (``|velocity| < friction_static_velocity``), returns a per-joint
-        amplitude whose sign alternates every compute cycle
-        (``_dither_switch``). The zero-mean perturbation keeps the gearbox at
-        the edge of breakaway so small commands move it smoothly instead of
-        sticking, then lurching. Complements ``_friction_torque``, which only
-        acts once the joint is already moving.
-        """
+        """Compute stiction dither torque for one joint."""
         if not self.friction_enabled:
             return 0.0
         amplitude = (
@@ -531,13 +552,7 @@ class PinocchioGravityCompensator:
     def _parse_deflection_tables(
         table_json: str, joint_count: int
     ) -> list[list[tuple[float, float]]]:
-        """Parse the deflection-table JSON parameter.
-
-        Format: ``{"2": [[2.61, 0.0137], [9.93, 0.0272]], "3": [...]}``
-        keyed by 1-based joint number; each value is a list of
-        ``[|torque| Nm, |deflection| rad]`` knots, both strictly increasing.
-        An empty string disables all tables.
-        """
+        """Parse deflection tables from a JSON parameter."""
         tables: list[list[tuple[float, float]]] = [
             [] for _ in range(joint_count)
         ]
@@ -593,18 +608,7 @@ class PinocchioGravityCompensator:
     def _monotone_tangents(
         table: Sequence[tuple[float, float]],
     ) -> list[tuple[float, float, float]]:
-        """Knots (with implicit origin) plus monotone Hermite tangents.
-
-        Tangents are the harmonic mean of adjacent secant slopes (endpoint
-        tangents equal the end secants). All secants are positive for a
-        validated table, so every tangent/secant ratio is <= 2, which keeps
-        the cubic inside the Fritsch-Carlson monotonicity region: the spline
-        is strictly increasing and therefore invertible. A cubic through the
-        same knots is used instead of straight segments because the slope
-        breaks of piecewise-linear interpolation put velocity kinks into the
-        position reference as the load sweeps across a knot (felt as bumpy
-        motion on the arm).
-        """
+        """Build monotone Hermite spline knots and tangents."""
         pts = [(0.0, 0.0)] + [(float(t), float(d)) for t, d in table]
         n = len(pts) - 1
         secants = [
@@ -616,14 +620,16 @@ class PinocchioGravityCompensator:
             s0, s1 = secants[i - 1], secants[i]
             tangents.append(2.0 * s0 * s1 / (s0 + s1))
         tangents.append(secants[-1])
-        return [
-            (pts[i][0], pts[i][1], tangents[i]) for i in range(len(pts))
-        ]
+        return [(pts[i][0], pts[i][1], tangents[i]) for i in range(len(pts))]
 
     @staticmethod
     def _hermite_eval(
-        x0: float, y0: float, m0: float,
-        x1: float, y1: float, m1: float,
+        x0: float,
+        y0: float,
+        m0: float,
+        x1: float,
+        y1: float,
+        m1: float,
         x: float,
     ) -> float:
         h = x1 - x0
@@ -641,11 +647,7 @@ class PinocchioGravityCompensator:
     def _deflection_from_torque(
         table: Sequence[tuple[float, float]], torque: float
     ) -> float:
-        """|torque| -> |deflection|, odd-symmetric monotone-cubic spline.
-
-        Exact at every knot (implicit (0, 0) origin), C1-smooth in between;
-        beyond the last knot, extrapolates linearly with the end tangent.
-        """
+        """Map torque magnitude to deflection with a monotone spline."""
         a = abs(float(torque))
         sign = 1.0 if torque >= 0.0 else -1.0
         knots = PinocchioGravityCompensator._monotone_tangents(table)
@@ -665,7 +667,7 @@ class PinocchioGravityCompensator:
     def _torque_from_deflection(
         table: Sequence[tuple[float, float]], deflection: float
     ) -> float:
-        """Inverse of ``_deflection_from_torque`` (spline is monotone)."""
+        """Invert the monotone torque-to-deflection spline."""
         a = abs(float(deflection))
         sign = 1.0 if deflection >= 0.0 else -1.0
         knots = PinocchioGravityCompensator._monotone_tangents(table)
@@ -680,9 +682,12 @@ class PinocchioGravityCompensator:
                 lo, hi = x0, x1
                 for _ in range(60):
                     mid = 0.5 * (lo + hi)
-                    if PinocchioGravityCompensator._hermite_eval(
-                        x0, y0, m0, x1, y1, m1, mid
-                    ) < a:
+                    if (
+                        PinocchioGravityCompensator._hermite_eval(
+                            x0, y0, m0, x1, y1, m1, mid
+                        )
+                        < a
+                    ):
                         lo = mid
                     else:
                         hi = mid
@@ -713,10 +718,7 @@ class PinocchioGravityCompensator:
                 min(effective_max_abs_t_ref, torque_ref),
             )
 
-        # The Piper firmware tracks position_ref with its own internal loop,
-        # so the joint's real torque-to-deflection compliance is NOT 1/kp.
-        # Precedence for the conversion: measured deflection table (handles
-        # load-dependent stiffness) > measured scalar stiffness > legacy kp.
+        # Conversion precedence: deflection table, stiffness, then MIT kp.
         stiffness = (
             float(offset_stiffness) if offset_stiffness > 0.0 else float(kp)
         )
@@ -827,7 +829,7 @@ class PinocchioGravityCompensator:
         kp: float,
         velocities: Sequence[float] | None = None,
         command_velocities: Sequence[float] | None = None,
-        command_accelerations: Sequence[float] | None = None,
+        comp_gain: float = 1.0,
     ) -> GravityCompensationCommand:
         joint_count = min(6, len(positions))
         if not self.enabled:
@@ -856,34 +858,6 @@ class PinocchioGravityCompensator:
         tau = self._pin.rnea(
             self._model, self._data, q, self._zero_v, self._zero_a
         )
-        # Inertial feedforward: full inverse dynamics of the commanded
-        # trajectory minus the gravity-only torque above. The delta is the
-        # inertia + Coriolis torque the motors must produce during
-        # commanded accelerations.
-        inertial_deltas = [0.0] * joint_count
-        if (
-            self.inertial_enabled
-            and command_accelerations is not None
-        ):
-            v = self._zero_v.copy()
-            a = self._zero_a.copy()
-            for joint_pos, (_, idx_v) in enumerate(self._joint_indices):
-                if (
-                    command_velocities is not None
-                    and joint_pos < len(command_velocities)
-                ):
-                    v[idx_v] = float(command_velocities[joint_pos])
-                if joint_pos < len(command_accelerations):
-                    a[idx_v] = float(command_accelerations[joint_pos])
-            tau_dyn = self._pin.rnea(self._model, self._data, q, v, a)
-            clamp = abs(self.inertial_max_torque)
-            for joint_pos, (_, idx_v) in enumerate(
-                self._joint_indices[:joint_count]
-            ):
-                delta = (
-                    float(tau_dyn[idx_v]) - float(tau[idx_v])
-                ) * self.inertial_scale
-                inertial_deltas[joint_pos] = max(-clamp, min(clamp, delta))
         torque_refs: list[float] = []
         position_offsets: list[float] = []
         desired_torques: list[float] = []
@@ -907,16 +881,24 @@ class PinocchioGravityCompensator:
                 if velocities is not None and joint_pos < len(velocities)
                 else 0.0
             )
-            friction_torque = self._friction_torque(
-                joint_pos, velocity, gravity_torque
-            ) + self._static_friction_torque(joint_pos, velocity)
-            # Friction and inertial feedforward ride the same MIT t_ref/kp
-            # split + clamp as gravity.
-            desired_torque = (
-                gravity_torque
-                + friction_torque
-                + inertial_deltas[joint_pos]
+            # Prefer command direction: measured direction anti-damps
+            # settling. Master float falls back to measured velocity.
+            friction_velocity = (
+                float(command_velocities[joint_pos])
+                if command_velocities is not None
+                and joint_pos < len(command_velocities)
+                else velocity
             )
+            # The oscillation guard suppresses friction during feedback rings.
+            friction_torque = (
+                self._friction_torque(
+                    joint_pos, friction_velocity, gravity_torque
+                )
+                + self._static_friction_torque(joint_pos, velocity)
+            ) * comp_gain
+            # Friction feedforward rides the same MIT t_ref/kp split and
+            # clamp as gravity.
+            desired_torque = gravity_torque + friction_torque
             (
                 torque_ref,
                 position_offset,
@@ -963,7 +945,7 @@ class PinocchioGravityCompensator:
                 kp_offset_torques,
                 residual_torques,
                 friction_torques,
-                inertial_deltas,
+                comp_gain,
             )
         return GravityCompensationCommand(
             torque_refs=torque_refs,
@@ -972,6 +954,7 @@ class PinocchioGravityCompensator:
             kp_offset_torques=kp_offset_torques,
             residual_torques=residual_torques,
         )
+
 
 global_logger = logging.getLogger(__name__)
 
@@ -984,8 +967,7 @@ def create_piper(can_port: str) -> C_PiperInterface:
     piper = C_PiperInterface(can_name=can_port)
     piper.ConnectPort()
 
-    # NOTE: refresh piper message, without this stage,
-    # you may get error message
+    # Refresh SDK feedback before reading arm state.
     _ = piper.GetArmStatus()
     _ = get_arm_ctrl_state(piper)
     _ = get_arm_ee_pose(piper)
@@ -1098,10 +1080,7 @@ def get_arm_state(piper: C_PiperInterface) -> JointState:
     spd_info_msg = piper.GetArmHighSpdInfoMsgs()
     gripper_msg = piper.GetArmGripperMsgs()
 
-    # Here, you can set the joint positions to any value you want
-    # The raw data obtained is in degrees multiplied by 1000.
-    # To convert to radians, divide by 1000, multiply by π/180,
-    # and limit to 5 decimal places
+    # Convert SDK millidegrees to radians.
     joint_0: float = (joint_msg.joint_state.joint_1 / 1000) * 0.017444
     joint_1: float = (joint_msg.joint_state.joint_2 / 1000) * 0.017444
     joint_2: float = (joint_msg.joint_state.joint_3 / 1000) * 0.017444
@@ -1217,7 +1196,7 @@ def joint_mit_control(
     velocity_ref: Sequence[float] | None = None,
     measured_velocity: Sequence[float] | None = None,
     command_velocity: Sequence[float] | None = None,
-    command_acceleration: Sequence[float] | None = None,
+    comp_gain: float = 1.0,
 ):
     joint_count = min(6, len(joint_data.position))
     gravity_command = GravityCompensationCommand(
@@ -1233,13 +1212,11 @@ def joint_mit_control(
             kp=float(mit_kp),
             velocities=measured_velocity,
             command_velocities=command_velocity,
-            command_accelerations=command_acceleration,
+            comp_gain=comp_gain,
         )
 
     for idx in range(joint_count):
-        # v_des feedforward: kd then damps the velocity tracking error
-        # (v_des - q_dot) instead of absolute velocity, removing the drag the
-        # kd term otherwise applies while following a moving command.
+        # v_des makes kd damp velocity error instead of absolute velocity.
         v_des = (
             float(velocity_ref[idx])
             if velocity_ref is not None and idx < len(velocity_ref)

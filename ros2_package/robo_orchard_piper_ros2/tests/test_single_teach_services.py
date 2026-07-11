@@ -123,9 +123,24 @@ def _install_stub_modules():
     sys.modules["robo_orchard_piper_msg_ros2.msg"] = piper_msg.msg
 
     fake_bridge = types.ModuleType("robo_orchard_piper_ros2.ros_bridge")
-    fake_bridge.PinocchioGravityCompensator = lambda *args, **kwargs: types.SimpleNamespace(
-        configure=lambda *a, **k: None,
-        set_record_path=lambda *a, **k: None,
+    fake_bridge.GravityCompensationError = type(
+        "GravityCompensationError", (RuntimeError,), {}
+    )
+    fake_bridge.resolve_deflection_calibration = lambda *args, **kwargs: (
+        [],
+        [],
+        "",
+    )
+    # None = store has no friction/gravity section (fallback path)
+    fake_bridge.resolve_friction_calibration = lambda *args, **kwargs: None
+    fake_bridge.resolve_gravity_scale_calibration = lambda *args, **kwargs: (
+        None
+    )
+    fake_bridge.PinocchioGravityCompensator = lambda *args, **kwargs: (
+        types.SimpleNamespace(
+            configure=lambda *a, **k: None,
+            set_record_path=lambda *a, **k: None,
+        )
     )
     fake_bridge.create_piper = lambda *args, **kwargs: types.SimpleNamespace(
         GetArmStatus=lambda: types.SimpleNamespace(
@@ -182,10 +197,17 @@ def _build_velocity_node(source: str = "position_delta"):
     node = PiperSingleControlNode.__new__(PiperSingleControlNode)
     node.mit_velocity_feedforward_source = source
     node.mit_velocity_feedforward_alpha = 1.0
+    # 0 selects the legacy single-EMA path, so alpha=1.0 passes the raw
+    # finite difference through unchanged.
+    node.mit_velocity_feedforward_cutoff_hz = 0.0
     node.mit_velocity_feedforward_deadband = 0.0
+    node.mit_velocity_feedforward_phase_lead = 0.0
     node._prev_cmd_pos = None
     node._prev_cmd_vel = None
     node._prev_cmd_time = None
+    node._vel_lp1 = None
+    node._vel_lp2 = None
+    node._last_cmd_dt = None
     return node
 
 
@@ -234,6 +256,46 @@ def test_enable_arm_ctrl_in_active_teach_mode_does_not_attempt_recovery(
     assert ret is False
     assert node._enable_flag is False
     assert calls == []
+
+
+def test_enable_arm_ctrl_force_resets_active_teach_mode(monkeypatch):
+    node = _build_node(ctrl_mode=0x02, teach_status=1)
+    calls = []
+
+    monkeypatch.setattr(
+        single_module,
+        "reset_piper_ctrl_mode",
+        lambda *args, **kwargs: calls.append("reset") or True,
+    )
+    monkeypatch.setattr(
+        single_module,
+        "set_ctrl_method",
+        lambda *args, **kwargs: calls.append("set_ctrl_method"),
+    )
+
+    assert node.enable_arm_ctrl(force_reset=True) is True
+    assert node._enable_flag is True
+    assert calls == ["reset", "set_ctrl_method"]
+
+
+def test_enable_arm_ctrl_force_reset_failure_stays_disabled(monkeypatch):
+    node = _build_node(ctrl_mode=0x02, teach_status=1)
+    calls = []
+
+    monkeypatch.setattr(
+        single_module,
+        "reset_piper_ctrl_mode",
+        lambda *args, **kwargs: calls.append("reset") or False,
+    )
+    monkeypatch.setattr(
+        single_module,
+        "set_ctrl_method",
+        lambda *args, **kwargs: calls.append("set_ctrl_method"),
+    )
+
+    assert node.enable_arm_ctrl(force_reset=True) is False
+    assert node._enable_flag is False
+    assert calls == ["reset"]
 
 
 def test_enable_arm_ctrl_in_post_teach_mode_succeeds_after_ctrl_mode_recovery(
@@ -459,11 +521,62 @@ def test_velocity_feedforward_message_source_is_explicit_opt_in():
         velocity=[0.01, 0.04, 99.0, -99.0, 1.5, -1.5],
     )
 
-    assert node._command_velocity(command) == [
-        0.0,
-        0.04,
-        45.0,
-        -45.0,
-        1.5,
-        -1.5,
-    ]
+    # Soft-threshold deadband: below-threshold values zero, the rest are
+    # shrunk toward zero by the deadband before the +/-45 clamp.
+    expected = [0.0, 0.02, 45.0, -45.0, 1.48, -1.48]
+    velocity = node._command_velocity(command)
+    assert all(
+        abs(v - e) < 1e-9 for v, e in zip(velocity, expected, strict=True)
+    ), velocity
+
+
+def _build_phase_lead_node():
+    node = _build_velocity_node()
+    node.mit_velocity_feedforward_cutoff_hz = 10.0
+    node.mit_velocity_feedforward_phase_lead = 1.0
+    node._last_cmd_dt = 0.01
+    return node
+
+
+def test_phase_lead_predicts_v_des_forward_by_the_filter_delay():
+    node = _build_phase_lead_node()
+
+    velocity = [1.0, -0.5, 0.0, 0.0, 0.0, 0.0]
+    accel = [10.0, 4.0, 0.0, 0.0, 0.0, 0.0]
+    delay = 2.0 / (2.0 * 3.141592653589793 * 10.0) + 0.5 * 0.01
+
+    led = node._phase_lead_velocity(velocity, accel)
+
+    assert abs(led[0] - (1.0 + delay * 10.0)) < 1e-9
+    assert abs(led[1] - (-0.5 + delay * 4.0)) < 1e-9
+    assert led[2:] == [0.0] * 4
+
+
+def test_phase_lead_output_stays_within_firmware_velocity_clamp():
+    node = _build_phase_lead_node()
+
+    led = node._phase_lead_velocity([44.9, -44.9], [1e5, -1e5])
+
+    assert led == [45.0, -45.0]
+
+
+def test_phase_lead_is_inert_when_disabled_or_inapplicable():
+    velocity = [1.0] * 6
+    accel = [10.0] * 6
+
+    node = _build_phase_lead_node()
+    node.mit_velocity_feedforward_phase_lead = 0.0
+    assert node._phase_lead_velocity(velocity, accel) == velocity
+
+    node = _build_phase_lead_node()
+    assert node._phase_lead_velocity(velocity, None) == velocity
+
+    # Legacy EMA path: group delay is alpha/rate-dependent, lead unmodeled.
+    node = _build_phase_lead_node()
+    node.mit_velocity_feedforward_cutoff_hz = 0.0
+    assert node._phase_lead_velocity(velocity, accel) == velocity
+
+    # Message-sourced velocity never went through the smoothing chain.
+    node = _build_phase_lead_node()
+    node.mit_velocity_feedforward_source = "message"
+    assert node._phase_lead_velocity(velocity, accel) == velocity

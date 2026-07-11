@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import os
+from pathlib import Path
 from typing import Dict, List, Literal
 from urllib.parse import urlencode
 
@@ -25,6 +27,37 @@ __all__ = [
     "ScriptedMotionCfg",
     "TaskCfg",
 ]
+
+
+def _resolve_default_gravity_urdf_path() -> str:
+    """The dual-arm gravity URDF path.
+
+    Written exactly once, in configs/piper_urdf_path.txt (see
+    calibration/paths.py); resolved here via the PIPER_GRAVITY_URDF_PATH
+    env override, then the repo the package runs from (editable install
+    or source tree), then the container mount.
+    """
+    env = os.environ.get("PIPER_GRAVITY_URDF_PATH")
+    if env:
+        return env
+    candidates = [
+        parent / "configs" / "piper_urdf_path.txt"
+        for parent in Path(__file__).resolve().parents
+    ]
+    candidates.append(Path("/opt/roboorchard/configs/piper_urdf_path.txt"))
+    for candidate in candidates:
+        try:
+            return candidate.read_text().strip()
+        except OSError:
+            continue
+    raise RuntimeError(
+        "Cannot resolve the default gravity URDF path: set "
+        "PIPER_GRAVITY_URDF_PATH or make configs/piper_urdf_path.txt "
+        "reachable (repo checkout or /opt/roboorchard mount)."
+    )
+
+
+DEFAULT_GRAVITY_URDF_PATH = _resolve_default_gravity_urdf_path()
 
 
 class FoxgloveCfg(pydantic.BaseModel):
@@ -109,7 +142,7 @@ class MITControlTuningCfg(pydantic.BaseModel):
     # arm floats (gravity-compensated, fully backdrivable).
     default_master_gravity_compensation_enabled: bool = False
     default_master_gravity_compensation_urdf_path: str = (
-        "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
+        DEFAULT_GRAVITY_URDF_PATH
     )
     default_master_gravity_compensation_scale: float = 1.0
     # Per-joint multiplier applied on top of the global scale.
@@ -127,21 +160,22 @@ class MITControlTuningCfg(pydantic.BaseModel):
     default_master_friction_compensation_load_scale: float = 0.0
     default_master_friction_compensation_min_velocity: float = 0.02
     default_master_friction_compensation_taper_velocity: float = 2.0
-    # The follower deflection tables in piper_dagger_compat.launch.py are
-    # calibrated at mit_kp=25; keep this in sync (see
-    # gravity_id/DEFLECTION_CALIBRATION.md).
+    # The deflection tables in the calibration store
+    # (calibration/deflection_calibrations.json) are calibrated at
+    # mit_kp=25; keep this in sync (see calibration/CALIBRATION.md).
     default_follower_kp: float = 25.0
     default_follower_kd: float = 0.8
     default_follower_vel_ref: float = 45.0
     default_follower_torque_ref: float = 0.0
     # Opt-in via the app's "Velocity feedforward (follower)" checkbox.
-    # Probe-validated 2026-07-06 (gravity_id/probe_kd_vdes.py): halves
-    # follower phase lag when enabled.
-    default_follower_velocity_feedforward: bool = False
+    # Hardware-characterized 2026-07-06: halves
+    # follower phase lag when enabled. Default on since 2026-07-08:
+    # without it the follower lags the command by ~50 ms vs ~16 ms.
+    default_follower_velocity_feedforward: bool = True
     default_follower_gravity_compensation_alpha: float = 0.0
     default_follower_gravity_compensation_enabled: bool = False
     default_follower_gravity_compensation_urdf_path: str = (
-        "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
+        DEFAULT_GRAVITY_URDF_PATH
     )
     default_follower_gravity_compensation_scale: float = 1.0
     # Per-joint multiplier applied on top of the global scale.
@@ -149,24 +183,6 @@ class MITControlTuningCfg(pydantic.BaseModel):
         pydantic.Field(default_factory=lambda: [1.0] * 6)
     )
     default_follower_gravity_compensation_max_t_ref: float = 8.0
-    # Follower friction compensation on top of gravity comp. Kinetic part:
-    # per-joint Coulomb torque in the direction of measured motion,
-    # load-scaled and velocity-tapered. Static part: per-joint dither torque
-    # of alternating sign while the joint is near-stationary, so small
-    # commands break stiction smoothly instead of hitting a dead zone.
-    # Disabled by default; coefficients come from hardware-in-the-loop tuning
-    # (ros2 param set on the follower nodes), then get persisted here.
-    default_follower_friction_compensation_enabled: bool = False
-    default_follower_friction_compensation_scale: list[float] = (
-        pydantic.Field(default_factory=lambda: [0.0] * 6)
-    )
-    default_follower_friction_compensation_load_scale: float = 0.0
-    default_follower_friction_compensation_min_velocity: float = 0.02
-    default_follower_friction_compensation_taper_velocity: float = 2.0
-    default_follower_friction_compensation_static_scale: list[float] = (
-        pydantic.Field(default_factory=lambda: [0.0] * 6)
-    )
-    default_follower_friction_compensation_static_velocity: float = 0.05
 
 
 class ScriptedMotionCfg(pydantic.BaseModel):
@@ -193,12 +209,11 @@ class ScriptedMotionCfg(pydantic.BaseModel):
     prelaunched scripted motion after its trigger file appears. This lets the
     recorder discover command publishers before the first command sample."""
     recording_command_subscriber_wait_timeout_s: float = 2.0
-    duration_s: float = 10.0
-    amplitude_scale: float = 1.0
-    frequency_scale: float = 1.0
     reset_position: list[float] = pydantic.Field(default_factory=list)
     """Reset pose (7 joint values) used when stopping scripted motion;
     empty list falls back to the standard arm reset pose."""
+    scenario_directory: str = ""
+    """Optional override for the packaged robot-eval scenario registry."""
 
 
 class ROSBridgeCfg(pydantic.BaseModel):

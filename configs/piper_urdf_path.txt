@@ -1,0 +1,1 @@
+/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "sine",
+  "label": "Sinusoidal",
+  "description": "Deterministic multi-frequency joint sweep around the configured reset pose.",
+  "executor": {
+    "mode": "sine",
+    "parameters": {
+      "duration_s": 10.0,
+      "amplitude_scale": 1.0,
+      "frequency_scale": 1.0
+    }
+  },
+  "ui": {
+    "order": 10,
+    "speed_control": "frequency",
+    "record_default": false
+  },
+  "safety": {
+    "use_current_state": false,
+    "requires_reset_pose": true
+  },
+  "tools": {}
+}
