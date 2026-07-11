@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+"""ROS 2 control node for one Piper arm."""
 
 import time
 from enum import IntEnum
@@ -26,6 +27,7 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
+from robo_orchard_piper_ros2.oscillation_guard import OscillationGuard
 from robo_orchard_piper_ros2.ros_bridge import (
     GravityCompensationError,
     PinocchioGravityCompensator,
@@ -38,13 +40,15 @@ from robo_orchard_piper_ros2.ros_bridge import (
     joint_mit_control,
     reset_piper_ctrl_mode,
     resolve_deflection_calibration,
+    resolve_friction_calibration,
+    resolve_gravity_scale_calibration,
     set_ctrl_method,
     switch_piper_ctrl_mode,
 )
 
 
 class CanControlMode(IntEnum):
-    """CAN control mode values reported by Piper SDK."""
+    """CAN control modes reported by the Piper SDK."""
 
     IDLE_MODE = 0x00
     CAN_MODE = 0x01
@@ -52,7 +56,7 @@ class CanControlMode(IntEnum):
 
 
 class TeachStatusMode(IntEnum):
-    """Teach status values reported by Piper SDK."""
+    """Teach states reported by the Piper SDK."""
 
     TEACHING_CLOSED = 0x00
     IN_TEACHING = 0x01
@@ -60,6 +64,8 @@ class TeachStatusMode(IntEnum):
 
 
 class PiperSingleControlNode(Node):
+    """Control one Piper arm through ROS 2 topics, parameters, and services."""
+
     def __init__(self) -> None:
         super().__init__("piper_single_ctrl")
 
@@ -76,110 +82,82 @@ class PiperSingleControlNode(Node):
         # When true, feed forward commanded joint velocity as v_des, so the kd
         # term damps velocity error instead of absolute velocity.
         self.declare_parameter("mit_velocity_feedforward", False)
-        # "position_delta" estimates v_des from the same position command
-        # stream. "message" uses JointState.velocity and should only be used
-        # when that velocity is generated from the same trajectory sample as
-        # JointState.position, not from independent hardware feedback.
+        # Use message velocity only when synchronized with command position.
         self.declare_parameter(
             "mit_velocity_feedforward_source", "position_delta"
         )
-        # EMA smoothing for the finite-differenced v_des (lower = smoother but
-        # more lag). Differentiating quantized/jittery commands is noisy, and
-        # kd amplifies that into torque chatter, so this trades noise vs lag.
+        # Legacy EMA smoothing when cutoff_hz is zero.
         self.declare_parameter("mit_velocity_feedforward_alpha", 0.2)
+        # Second-order v_des low-pass cutoff in Hz; zero uses legacy EMA.
+        self.declare_parameter("mit_velocity_feedforward_cutoff_hz", 10.0)
         # Velocities with magnitude below this (rad/s) are zeroed, to stop
         # feedforward chatter while holding position.
+        self.declare_parameter("mit_velocity_feedforward_deadband", 0.02)
+        # Per-joint firmware v_des trim; does not alter the estimator.
+        self.declare_parameter("mit_velocity_feedforward_scale", [1.0] * 6)
+        # Phase lead compensates v_des filter delay at reversals.
+        # Zero disables it; one compensates the modeled delay.
+        self.declare_parameter("mit_velocity_feedforward_phase_lead", 1.0)
+        # Legacy acceleration EMA when cutoff_hz is zero.
+        self.declare_parameter("mit_command_acceleration_filter_alpha", 0.15)
+        # Acceleration low-pass cutoff in Hz; zero uses legacy EMA.
         self.declare_parameter(
-            "mit_velocity_feedforward_deadband", 0.02
+            "mit_command_acceleration_filter_cutoff_hz", 8.0
         )
-        # Inertial (acceleration) feedforward: adds the commanded
-        # trajectory's dynamic torque (full RNEA minus gravity RNEA) to the
-        # gravity-compensation output, so sharp direction changes do not
-        # have to generate their inertial torque through tracking error.
-        # Requires gravity compensation to be enabled. The acceleration is
-        # double-differentiated from the command stream, so it gets its own
-        # EMA smoothing and the resulting torque delta is clamped.
-        self.declare_parameter("mit_inertial_feedforward", False)
-        self.declare_parameter("mit_inertial_feedforward_scale", 1.0)
-        # EMA smoothing for the finite-differenced command acceleration
-        # (lower = smoother but more lag on a 10-100 ms transient signal).
-        self.declare_parameter("mit_inertial_feedforward_alpha", 0.15)
-        # Per-joint clamp (Nm) on the inertial torque delta.
-        self.declare_parameter("mit_inertial_feedforward_max_torque", 4.0)
+        # Suppress friction and phase lead during sustained command rings.
+        # Gravity compensation remains active.
+        self.declare_parameter("mit_comp_oscillation_guard", True)
+        # Minimum band velocity (rad/s) for a qualifying half-cycle.
+        self.declare_parameter(
+            "mit_comp_oscillation_guard_min_amplitude", 0.15
+        )
+        # Consecutive qualifying half-cycles required to trip.
+        self.declare_parameter(
+            "mit_comp_oscillation_guard_trip_half_cycles", 5
+        )
         self.declare_parameter("mit_gravity_compensation_enabled", False)
         self.declare_parameter("mit_gravity_compensation_urdf_path", "")
         self.declare_parameter("mit_gravity_compensation_scale", 1.0)
-        # Per-joint multiplier on top of the global scale. The default
-        # reproduces the original single-scale behaviour.
+        # Per-joint gravity scale; explicit runtime values take precedence.
         self.declare_parameter(
             "mit_gravity_compensation_scale_per_joint", [1.0] * 6
         )
         self.declare_parameter("mit_gravity_compensation_max_t_ref", 8.0)
         self.declare_parameter("mit_gravity_compensation_use_kp_offset", True)
-        # When false, gravity/friction compensation sends no t_ff at all:
-        # t_ref stays 0 and the full desired torque acts through the kp
-        # position offset instead. For isolating firmware t_ff behavior.
+        # When false, route compensation through the position offset.
         self.declare_parameter("mit_gravity_compensation_use_t_ref", True)
-        # Per-joint measured joint stiffness (Nm/rad) for converting
-        # compensation torque to a position offset. The Piper firmware's
-        # internal loop holds position far stiffer than the MIT kp we send
-        # (~100-180 Nm/rad measured on J2/J3), so dividing by kp
-        # overcompensates. 0 per joint falls back to the legacy /kp.
+        # Measured stiffness (Nm/rad); zero falls back to MIT kp.
         self.declare_parameter(
             "mit_gravity_compensation_offset_stiffness", [0.0] * 6
         )
-        # JSON deflection curves for joints whose stiffness is load-dependent
-        # (J2 stiffens 190->370 Nm/rad between 2.6 and 10 Nm). Format:
-        # {"2": [[tau1, delta1], [tau2, delta2], ...]} keyed by 1-based joint
-        # number, knots strictly increasing, implicit (0,0) origin. A joint
-        # with a table ignores its offset_stiffness value. Empty disables.
-        self.declare_parameter(
-            "mit_gravity_compensation_deflection_table", ""
-        )
-        # Toggle for the deflection table without clearing it: False falls
-        # back to offset_stiffness/kp, for live A/B comparison.
+        # Monotone deflection tables keyed by 1-based joint number.
+        # Tables override scalar stiffness; empty disables them.
+        self.declare_parameter("mit_gravity_compensation_deflection_table", "")
+        # Disable tables to fall back to stiffness or kp.
         self.declare_parameter(
             "mit_gravity_compensation_use_deflection_table", True
         )
-        # kp-indexed calibration store (JSON: side -> mit_kp -> values).
-        # When set, offset_stiffness and deflection_table are loaded from
-        # this file for the current mit_kp at startup and on every mit_kp
-        # change; a kp without an entry is rejected with the calibrated
-        # values listed. k_eff depends on the sent mit_kp, so per-kp
-        # entries are the only safe source. Empty keeps the two explicit
-        # parameters authoritative (legacy behaviour).
-        self.declare_parameter(
-            "mit_gravity_compensation_calibration_file", ""
-        )
-        # Side key into the calibration file; empty derives it from the
-        # first gravity joint name prefix ("left_joint1" -> "left").
-        self.declare_parameter(
-            "mit_gravity_compensation_calibration_side", ""
-        )
+        # Calibration store for kp-indexed deflection and per-arm scales.
+        # Empty keeps explicit parameters authoritative.
+        self.declare_parameter("mit_gravity_compensation_calibration_file", "")
+        # Empty side derives from the first gravity joint name.
+        self.declare_parameter("mit_gravity_compensation_calibration_side", "")
         self.declare_parameter(
             "mit_gravity_compensation_joint_names",
             [f"joint{i}" for i in range(1, 7)],
         )
-        # Friction compensation: a per-joint torque added in the direction of
-        # measured motion to cancel Coulomb/stiction (open_manipulator-style).
-        # Disabled by default (all-zero per-joint scale).
+        # Per-joint Coulomb friction torque; an all-zero scale disables it.
         self.declare_parameter("mit_friction_compensation_enabled", False)
-        self.declare_parameter(
-            "mit_friction_compensation_scale", [0.0] * 6
-        )
-        # Grows friction with joint load: factor (1 + |gravity_tau|*load_scale).
+        self.declare_parameter("mit_friction_compensation_scale", [0.0] * 6)
+        # Scale friction with load: 1 + |gravity_tau| * load_scale.
         self.declare_parameter("mit_friction_compensation_load_scale", 0.0)
         # Velocity deadband (rad/s) below which no friction is applied.
-        self.declare_parameter(
-            "mit_friction_compensation_min_velocity", 0.02
-        )
+        self.declare_parameter("mit_friction_compensation_min_velocity", 0.02)
+        # Velocity (rad/s) where Coulomb torque reaches full magnitude.
+        self.declare_parameter("mit_friction_compensation_full_velocity", 0.15)
         # Velocity (rad/s) at which the friction term tapers to zero.
-        self.declare_parameter(
-            "mit_friction_compensation_taper_velocity", 2.0
-        )
-        # Stiction dithering: per-joint torque amplitude (Nm) whose sign
-        # alternates every control cycle while the joint is near-stationary,
-        # keeping the gearbox at the edge of breakaway. All-zero disables it.
+        self.declare_parameter("mit_friction_compensation_taper_velocity", 2.0)
+        # Near-zero-speed dither amplitude (Nm); all-zero disables it.
         self.declare_parameter(
             "mit_friction_compensation_static_scale", [0.0] * 6
         )
@@ -188,9 +166,7 @@ class PiperSingleControlNode(Node):
         self.declare_parameter(
             "mit_friction_compensation_static_velocity", 0.05
         )
-        # When non-empty, every gravity-compensation timestep is appended as a
-        # CSV row for offline verification, including raw RNEA, clamped
-        # t_ref, kp offset, and residual torque. Empty disables recording.
+        # Optional per-step compensation CSV recording path.
         self.declare_parameter("mit_gravity_compensation_record_path", "")
         self.declare_parameter("reset_position", [0.0] * 7)
 
@@ -249,39 +225,76 @@ class PiperSingleControlNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.mit_velocity_feedforward_cutoff_hz = (
+            self.get_parameter("mit_velocity_feedforward_cutoff_hz")
+            .get_parameter_value()
+            .double_value
+        )
         self.mit_velocity_feedforward_deadband = (
             self.get_parameter("mit_velocity_feedforward_deadband")
             .get_parameter_value()
             .double_value
         )
-        self.mit_inertial_feedforward = (
-            self.get_parameter("mit_inertial_feedforward")
+        self.mit_velocity_feedforward_scale = list(
+            self.get_parameter("mit_velocity_feedforward_scale")
+            .get_parameter_value()
+            .double_array_value
+        )
+        self.mit_velocity_feedforward_phase_lead = (
+            self.get_parameter("mit_velocity_feedforward_phase_lead")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_command_acceleration_filter_alpha = (
+            self.get_parameter("mit_command_acceleration_filter_alpha")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_command_acceleration_filter_cutoff_hz = (
+            self.get_parameter("mit_command_acceleration_filter_cutoff_hz")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_comp_oscillation_guard = (
+            self.get_parameter("mit_comp_oscillation_guard")
             .get_parameter_value()
             .bool_value
         )
-        self.mit_inertial_feedforward_scale = (
-            self.get_parameter("mit_inertial_feedforward_scale")
+        self.mit_comp_oscillation_guard_min_amplitude = (
+            self.get_parameter("mit_comp_oscillation_guard_min_amplitude")
             .get_parameter_value()
             .double_value
         )
-        self.mit_inertial_feedforward_alpha = (
-            self.get_parameter("mit_inertial_feedforward_alpha")
+        self.mit_comp_oscillation_guard_trip_half_cycles = (
+            self.get_parameter("mit_comp_oscillation_guard_trip_half_cycles")
             .get_parameter_value()
-            .double_value
+            .integer_value
         )
-        self.mit_inertial_feedforward_max_torque = (
-            self.get_parameter("mit_inertial_feedforward_max_torque")
-            .get_parameter_value()
-            .double_value
+        self._oscillation_guard = OscillationGuard(
+            min_amplitude=self.mit_comp_oscillation_guard_min_amplitude,
+            trip_half_cycles=(
+                self.mit_comp_oscillation_guard_trip_half_cycles
+            ),
         )
+        # Guard trip state at the previous command, for edge-triggered
+        # trip/recovery log lines.
+        self._oscillation_guard_was_tripping = False
         # Finite-difference state for commanded-velocity feedforward.
         self._prev_cmd_pos: list[float] | None = None
         self._prev_cmd_vel: list[float] | None = None
         self._prev_cmd_time: float | None = None
+        # Last valid command-sample spacing, for the phase-lead delay model.
+        self._last_cmd_dt: float | None = None
+        # Cascaded first-order low-pass states for the v_des estimate.
+        self._vel_lp1: list[float] | None = None
+        self._vel_lp2: list[float] | None = None
         # Finite-difference state for commanded-acceleration feedforward.
         self._prev_ff_vel: list[float] | None = None
         self._prev_ff_vel_time: float | None = None
         self._prev_cmd_accel: list[float] | None = None
+        # Cascaded first-order low-pass states for the accel estimate.
+        self._accel_lp1: list[float] | None = None
+        self._accel_lp2: list[float] | None = None
         self.mit_gravity_compensation_enabled = (
             self.get_parameter("mit_gravity_compensation_enabled")
             .get_parameter_value()
@@ -328,9 +341,7 @@ class PiperSingleControlNode(Node):
             .string_value
         )
         self.mit_gravity_compensation_use_deflection_table = (
-            self.get_parameter(
-                "mit_gravity_compensation_use_deflection_table"
-            )
+            self.get_parameter("mit_gravity_compensation_use_deflection_table")
             .get_parameter_value()
             .bool_value
         )
@@ -356,6 +367,11 @@ class PiperSingleControlNode(Node):
         )
         self.mit_friction_compensation_load_scale = (
             self.get_parameter("mit_friction_compensation_load_scale")
+            .get_parameter_value()
+            .double_value
+        )
+        self.mit_friction_compensation_full_velocity = (
+            self.get_parameter("mit_friction_compensation_full_velocity")
             .get_parameter_value()
             .double_value
         )
@@ -400,9 +416,7 @@ class PiperSingleControlNode(Node):
                     self.mit_kp,
                 )
             except GravityCompensationError as e:
-                self.get_logger().error(
-                    f"Gravity compensation DISABLED: {e}"
-                )
+                self.get_logger().error(f"Gravity compensation DISABLED: {e}")
                 self.mit_gravity_compensation_enabled = False
             else:
                 self.mit_gravity_compensation_offset_stiffness = stiffness
@@ -413,6 +427,17 @@ class PiperSingleControlNode(Node):
                     f"{self._gravity_calibration_side()!r}) from "
                     f"{self.mit_gravity_compensation_calibration_file}"
                 )
+        # Missing friction or gravity scales retain declared values.
+        if (
+            self.mit_gravity_compensation_calibration_file
+            and self.mit_friction_compensation_enabled
+        ):
+            self._load_friction_calibration_or_warn()
+        if (
+            self.mit_gravity_compensation_calibration_file
+            and self.mit_gravity_compensation_enabled
+        ):
+            self._load_gravity_scale_calibration_or_warn()
         self.gravity_compensator = PinocchioGravityCompensator()
         self.gravity_compensator.configure(
             enabled=self.mit_gravity_compensation_enabled,
@@ -423,9 +448,7 @@ class PiperSingleControlNode(Node):
             per_joint_scale=self.mit_gravity_compensation_scale_per_joint,
             use_kp_offset=self.mit_gravity_compensation_use_kp_offset,
             use_t_ref=self.mit_gravity_compensation_use_t_ref,
-            offset_stiffness=(
-                self.mit_gravity_compensation_offset_stiffness
-            ),
+            offset_stiffness=(self.mit_gravity_compensation_offset_stiffness),
             offset_deflection_table_json=(
                 self.mit_gravity_compensation_deflection_table
             ),
@@ -438,6 +461,9 @@ class PiperSingleControlNode(Node):
             friction_min_velocity=(
                 self.mit_friction_compensation_min_velocity
             ),
+            friction_full_velocity=(
+                self.mit_friction_compensation_full_velocity
+            ),
             friction_taper_velocity=(
                 self.mit_friction_compensation_taper_velocity
             ),
@@ -447,19 +473,12 @@ class PiperSingleControlNode(Node):
             friction_static_velocity=(
                 self.mit_friction_compensation_static_velocity
             ),
-            inertial_enabled=self.mit_inertial_feedforward,
-            inertial_scale=self.mit_inertial_feedforward_scale,
-            inertial_max_torque=self.mit_inertial_feedforward_max_torque,
         )
         self.gravity_compensator.set_record_path(
             self.mit_gravity_compensation_record_path
         )
         self.add_on_set_parameters_callback(self._on_set_parameters)
-        # Reflect the resolved calibration (or the disable on a missing
-        # entry) back to the parameter server so `ros2 param get` shows
-        # the effective values. Deferred to the first executor spin: the
-        # parameter callback needs the fully constructed node (it touches
-        # self.piper), which does not exist yet at this point.
+        # Publish resolved calibration after node construction completes.
         if self.mit_gravity_compensation_calibration_file:
             self._schedule_gravity_calibration_sync()
 
@@ -526,7 +545,7 @@ class PiperSingleControlNode(Node):
         return self._enable_flag and ctrl_mode == CanControlMode.CAN_MODE
 
     def _gravity_calibration_side(self, side=None, joint_names=None):
-        """Side key into the calibration file, derived when not explicit."""
+        """Resolve the arm side used for calibration lookup."""
         if side is None:
             side = self.mit_gravity_compensation_calibration_side
         if side:
@@ -536,14 +555,86 @@ class PiperSingleControlNode(Node):
         first = joint_names[0] if joint_names else ""
         return first.split("_", 1)[0] if "_" in first else ""
 
-    def _schedule_gravity_calibration_sync(self):
-        """Run ``_sync_gravity_calibration_params`` on the next spin.
+    def _lookup_friction_calibration_or_warn(self, calibration_file, side):
+        """Load friction calibration and log failures."""
+        try:
+            entry = resolve_friction_calibration(calibration_file, side)
+        except GravityCompensationError as e:
+            self.get_logger().warning(
+                f"Friction calibration not loaded ({e}); keeping "
+                "parameter values "
+                f"{self.mit_friction_compensation_scale}."
+            )
+            return None
+        if entry is None:
+            self.get_logger().warning(
+                f"Calibration store {calibration_file} has no friction "
+                f"entry for side {side!r}; keeping parameter values "
+                f"{self.mit_friction_compensation_scale}."
+            )
+        return entry
 
-        ``set_parameters`` runs the parameter callback, which must not
-        execute inside the callback itself (re-entrant) nor during
-        ``__init__`` (the node is not fully constructed yet), so the
-        sync always goes through this one-shot timer.
-        """
+    def _lookup_gravity_scale_calibration_or_warn(
+        self, calibration_file, side
+    ):
+        """Load gravity scale calibration and log failures."""
+        try:
+            scale = resolve_gravity_scale_calibration(calibration_file, side)
+        except GravityCompensationError as e:
+            self.get_logger().warning(
+                f"Gravity scale calibration not loaded ({e}); keeping "
+                "parameter values "
+                f"{self.mit_gravity_compensation_scale_per_joint}."
+            )
+            return None
+        if scale is None:
+            self.get_logger().info(
+                f"Calibration store {calibration_file} has no gravity "
+                f"scale entry for side {side!r}; keeping parameter "
+                "values "
+                f"{self.mit_gravity_compensation_scale_per_joint}."
+            )
+        return scale
+
+    def _load_friction_calibration_or_warn(self):
+        """Apply stored friction calibration at startup."""
+        entry = self._lookup_friction_calibration_or_warn(
+            self.mit_gravity_compensation_calibration_file,
+            self._gravity_calibration_side(),
+        )
+        if entry is None:
+            return
+        self.mit_friction_compensation_scale = entry["scale"]
+        if entry["taper_velocity"] is not None:
+            self.mit_friction_compensation_taper_velocity = entry[
+                "taper_velocity"
+            ]
+        self.get_logger().info(
+            "Loaded friction calibration (side "
+            f"{self._gravity_calibration_side()!r}) from "
+            f"{self.mit_gravity_compensation_calibration_file}: "
+            f"scale={self.mit_friction_compensation_scale}, "
+            f"taper_velocity="
+            f"{self.mit_friction_compensation_taper_velocity}"
+        )
+
+    def _load_gravity_scale_calibration_or_warn(self):
+        """Apply stored gravity scale calibration at startup."""
+        scale = self._lookup_gravity_scale_calibration_or_warn(
+            self.mit_gravity_compensation_calibration_file,
+            self._gravity_calibration_side(),
+        )
+        if scale is None:
+            return
+        self.mit_gravity_compensation_scale_per_joint = scale
+        self.get_logger().info(
+            "Loaded gravity scale calibration (side "
+            f"{self._gravity_calibration_side()!r}) from "
+            f"{self.mit_gravity_compensation_calibration_file}: {scale}"
+        )
+
+    def _schedule_gravity_calibration_sync(self):
+        """Schedule calibration parameter synchronization."""
         if getattr(self, "_calibration_sync_timer", None) is not None:
             self._calibration_sync_timer.cancel()
 
@@ -554,12 +645,7 @@ class PiperSingleControlNode(Node):
         self._calibration_sync_timer = self.create_timer(0.05, _sync_once)
 
     def _sync_gravity_calibration_params(self):
-        """Publish the effective calibration values as ROS parameters.
-
-        The explicit stiffness/table parameters in the request make
-        ``_on_set_parameters`` skip the calibration lookup, so this does
-        not recurse.
-        """
+        """Publish effective calibration values as ROS parameters."""
         self.set_parameters(
             [
                 rclpy.parameter.Parameter(
@@ -568,13 +654,23 @@ class PiperSingleControlNode(Node):
                 ),
                 rclpy.parameter.Parameter(
                     "mit_gravity_compensation_offset_stiffness",
-                    value=list(
-                        self.mit_gravity_compensation_offset_stiffness
-                    ),
+                    value=list(self.mit_gravity_compensation_offset_stiffness),
                 ),
                 rclpy.parameter.Parameter(
                     "mit_gravity_compensation_deflection_table",
                     value=self.mit_gravity_compensation_deflection_table,
+                ),
+                rclpy.parameter.Parameter(
+                    "mit_gravity_compensation_scale_per_joint",
+                    value=list(self.mit_gravity_compensation_scale_per_joint),
+                ),
+                rclpy.parameter.Parameter(
+                    "mit_friction_compensation_scale",
+                    value=list(self.mit_friction_compensation_scale),
+                ),
+                rclpy.parameter.Parameter(
+                    "mit_friction_compensation_taper_velocity",
+                    value=float(self.mit_friction_compensation_taper_velocity),
                 ),
             ]
         )
@@ -588,12 +684,17 @@ class PiperSingleControlNode(Node):
         next_velocity_ff = self.mit_velocity_feedforward
         next_velocity_ff_source = self.mit_velocity_feedforward_source
         next_velocity_ff_alpha = self.mit_velocity_feedforward_alpha
+        next_velocity_ff_cutoff_hz = self.mit_velocity_feedforward_cutoff_hz
         next_velocity_ff_deadband = self.mit_velocity_feedforward_deadband
+        next_velocity_ff_scale = list(self.mit_velocity_feedforward_scale)
+        next_velocity_ff_phase_lead = self.mit_velocity_feedforward_phase_lead
         next_gravity_enabled = self.mit_gravity_compensation_enabled
         next_gravity_urdf_path = self.mit_gravity_compensation_urdf_path
         next_gravity_scale = self.mit_gravity_compensation_scale
         next_gravity_max_t_ref = self.mit_gravity_compensation_max_t_ref
-        next_gravity_use_kp_offset = self.mit_gravity_compensation_use_kp_offset
+        next_gravity_use_kp_offset = (
+            self.mit_gravity_compensation_use_kp_offset
+        )
         next_gravity_use_t_ref = self.mit_gravity_compensation_use_t_ref
         next_gravity_offset_stiffness = list(
             self.mit_gravity_compensation_offset_stiffness
@@ -618,11 +719,16 @@ class PiperSingleControlNode(Node):
             self.mit_gravity_compensation_calibration_side
         )
         explicit_deflection_params = False
+        explicit_gravity_per_joint = False
+        explicit_friction_params = False
         next_friction_enabled = self.mit_friction_compensation_enabled
         next_friction_scale = list(self.mit_friction_compensation_scale)
         next_friction_load_scale = self.mit_friction_compensation_load_scale
         next_friction_min_velocity = (
             self.mit_friction_compensation_min_velocity
+        )
+        next_friction_full_velocity = (
+            self.mit_friction_compensation_full_velocity
         )
         next_friction_taper_velocity = (
             self.mit_friction_compensation_taper_velocity
@@ -633,13 +739,17 @@ class PiperSingleControlNode(Node):
         next_friction_static_velocity = (
             self.mit_friction_compensation_static_velocity
         )
-        next_inertial_ff = self.mit_inertial_feedforward
-        next_inertial_ff_scale = self.mit_inertial_feedforward_scale
-        next_inertial_ff_alpha = self.mit_inertial_feedforward_alpha
-        next_inertial_ff_max_torque = (
-            self.mit_inertial_feedforward_max_torque
+        next_accel_filter_alpha = self.mit_command_acceleration_filter_alpha
+        next_accel_filter_cutoff_hz = (
+            self.mit_command_acceleration_filter_cutoff_hz
         )
-
+        next_osc_guard = self.mit_comp_oscillation_guard
+        next_osc_guard_min_amplitude = (
+            self.mit_comp_oscillation_guard_min_amplitude
+        )
+        next_osc_guard_trip_half_cycles = (
+            self.mit_comp_oscillation_guard_trip_half_cycles
+        )
         for param in params:
             if param.name == "reset_position":
                 if len(param.value) != 7:
@@ -663,8 +773,14 @@ class PiperSingleControlNode(Node):
                 next_velocity_ff_source = str(param.value)
             elif param.name == "mit_velocity_feedforward_alpha":
                 next_velocity_ff_alpha = float(param.value)
+            elif param.name == "mit_velocity_feedforward_cutoff_hz":
+                next_velocity_ff_cutoff_hz = float(param.value)
             elif param.name == "mit_velocity_feedforward_deadband":
                 next_velocity_ff_deadband = float(param.value)
+            elif param.name == "mit_velocity_feedforward_scale":
+                next_velocity_ff_scale = list(param.value)
+            elif param.name == "mit_velocity_feedforward_phase_lead":
+                next_velocity_ff_phase_lead = float(param.value)
             elif param.name == "mit_gravity_compensation_enabled":
                 next_gravity_enabled = bool(param.value)
             elif param.name == "mit_gravity_compensation_urdf_path":
@@ -673,6 +789,7 @@ class PiperSingleControlNode(Node):
                 next_gravity_scale = float(param.value)
             elif param.name == "mit_gravity_compensation_scale_per_joint":
                 next_gravity_per_joint_scale = list(param.value)
+                explicit_gravity_per_joint = True
             elif param.name == "mit_gravity_compensation_max_t_ref":
                 next_gravity_max_t_ref = float(param.value)
             elif param.name == "mit_gravity_compensation_use_kp_offset":
@@ -701,24 +818,30 @@ class PiperSingleControlNode(Node):
                 next_friction_enabled = bool(param.value)
             elif param.name == "mit_friction_compensation_scale":
                 next_friction_scale = list(param.value)
+                explicit_friction_params = True
             elif param.name == "mit_friction_compensation_load_scale":
                 next_friction_load_scale = float(param.value)
             elif param.name == "mit_friction_compensation_min_velocity":
                 next_friction_min_velocity = float(param.value)
+            elif param.name == "mit_friction_compensation_full_velocity":
+                next_friction_full_velocity = float(param.value)
             elif param.name == "mit_friction_compensation_taper_velocity":
                 next_friction_taper_velocity = float(param.value)
+                explicit_friction_params = True
             elif param.name == "mit_friction_compensation_static_scale":
                 next_friction_static_scale = list(param.value)
             elif param.name == "mit_friction_compensation_static_velocity":
                 next_friction_static_velocity = float(param.value)
-            elif param.name == "mit_inertial_feedforward":
-                next_inertial_ff = bool(param.value)
-            elif param.name == "mit_inertial_feedforward_scale":
-                next_inertial_ff_scale = float(param.value)
-            elif param.name == "mit_inertial_feedforward_alpha":
-                next_inertial_ff_alpha = float(param.value)
-            elif param.name == "mit_inertial_feedforward_max_torque":
-                next_inertial_ff_max_torque = float(param.value)
+            elif param.name == "mit_command_acceleration_filter_alpha":
+                next_accel_filter_alpha = float(param.value)
+            elif param.name == "mit_command_acceleration_filter_cutoff_hz":
+                next_accel_filter_cutoff_hz = float(param.value)
+            elif param.name == "mit_comp_oscillation_guard":
+                next_osc_guard = bool(param.value)
+            elif param.name == "mit_comp_oscillation_guard_min_amplitude":
+                next_osc_guard_min_amplitude = float(param.value)
+            elif param.name == ("mit_comp_oscillation_guard_trip_half_cycles"):
+                next_osc_guard_trip_half_cycles = int(param.value)
 
         if next_mit_kp < 0 or next_mit_kd < 0:
             return SetParametersResult(
@@ -741,6 +864,14 @@ class PiperSingleControlNode(Node):
                     "mit_velocity_feedforward_alpha must be in [0.0, 1.0]."
                 ),
             )
+        if next_velocity_ff_cutoff_hz < 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_velocity_feedforward_cutoff_hz must be "
+                    "non-negative (0 = legacy single-EMA alpha)."
+                ),
+            )
         if next_velocity_ff_deadband < 0.0:
             return SetParametersResult(
                 successful=False,
@@ -748,22 +879,54 @@ class PiperSingleControlNode(Node):
                     "mit_velocity_feedforward_deadband must be non-negative."
                 ),
             )
-        if not 0.0 <= next_inertial_ff_alpha <= 1.0:
-            return SetParametersResult(
-                successful=False,
-                reason="mit_inertial_feedforward_alpha must be in [0.0, 1.0].",
-            )
-        if next_inertial_ff_scale < 0.0:
-            return SetParametersResult(
-                successful=False,
-                reason="mit_inertial_feedforward_scale must be non-negative.",
-            )
-        if next_inertial_ff_max_torque < 0.0:
+        if len(next_velocity_ff_scale) > 6 or any(
+            not 0.0 <= float(s) <= 2.0 for s in next_velocity_ff_scale
+        ):
             return SetParametersResult(
                 successful=False,
                 reason=(
-                    "mit_inertial_feedforward_max_torque must be "
-                    "non-negative."
+                    "mit_velocity_feedforward_scale must have at most 6 "
+                    "values, each in [0.0, 2.0]."
+                ),
+            )
+        if not 0.0 <= next_velocity_ff_phase_lead <= 2.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_velocity_feedforward_phase_lead must be in "
+                    "[0.0, 2.0] (0 = off, 1 = full group-delay lead)."
+                ),
+            )
+        if not 0.0 <= next_accel_filter_alpha <= 1.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_command_acceleration_filter_alpha must be "
+                    "in [0.0, 1.0]."
+                ),
+            )
+        if next_accel_filter_cutoff_hz < 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_command_acceleration_filter_cutoff_hz must be "
+                    "non-negative (0 = legacy single-EMA alpha)."
+                ),
+            )
+        if next_osc_guard_min_amplitude <= 0.0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_comp_oscillation_guard_min_amplitude must be "
+                    "positive (rad/s of band velocity)."
+                ),
+            )
+        if next_osc_guard_trip_half_cycles < 2:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_comp_oscillation_guard_trip_half_cycles must "
+                    "be at least 2 (one full oscillation cycle)."
                 ),
             )
 
@@ -771,8 +934,7 @@ class PiperSingleControlNode(Node):
             return SetParametersResult(
                 successful=False,
                 reason=(
-                    "mit_gravity_compensation_max_t_ref must be "
-                    "non-negative."
+                    "mit_gravity_compensation_max_t_ref must be non-negative."
                 ),
             )
         if len(next_gravity_joint_names) != 6:
@@ -815,6 +977,14 @@ class PiperSingleControlNode(Node):
                     "many values as there are joints."
                 ),
             )
+        if next_friction_full_velocity < 0:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "mit_friction_compensation_full_velocity must be "
+                    "non-negative."
+                ),
+            )
         if next_friction_min_velocity < 0 or next_friction_taper_velocity < 0:
             return SetParametersResult(
                 successful=False,
@@ -847,12 +1017,8 @@ class PiperSingleControlNode(Node):
                     "non-negative."
                 ),
             )
-        # kp-indexed calibration: any change that affects which entry
-        # applies (kp, enabling comp, the file/side themselves) reloads
-        # the stiffness/table for the new kp; an uncalibrated kp rejects
-        # the whole request. Explicit stiffness/table values in the same
-        # request win (manual override, and how the resolved values are
-        # reflected back to the parameter server without recursing).
+        # Reload kp-indexed calibration; reject uncalibrated kp values.
+        # Explicit values in this request take precedence.
         needs_calibration_lookup = (
             next_gravity_calibration_file
             and next_gravity_enabled
@@ -880,9 +1046,57 @@ class PiperSingleControlNode(Node):
                     next_mit_kp,
                 )
             except GravityCompensationError as e:
-                return SetParametersResult(
-                    successful=False, reason=str(e)
-                )
+                return SetParametersResult(successful=False, reason=str(e))
+        # Reload kp-independent scales on enable or store changes.
+        # Lookup failures retain current values.
+        friction_calibration_loaded = False
+        if (
+            next_gravity_calibration_file
+            and next_friction_enabled
+            and not explicit_friction_params
+            and (
+                not self.mit_friction_compensation_enabled
+                or next_gravity_calibration_file
+                != self.mit_gravity_compensation_calibration_file
+                or next_gravity_calibration_side
+                != self.mit_gravity_compensation_calibration_side
+            )
+        ):
+            entry = self._lookup_friction_calibration_or_warn(
+                next_gravity_calibration_file,
+                self._gravity_calibration_side(
+                    next_gravity_calibration_side,
+                    next_gravity_joint_names,
+                ),
+            )
+            if entry is not None:
+                next_friction_scale = entry["scale"]
+                if entry["taper_velocity"] is not None:
+                    next_friction_taper_velocity = entry["taper_velocity"]
+                friction_calibration_loaded = True
+        gravity_scale_calibration_loaded = False
+        if (
+            next_gravity_calibration_file
+            and next_gravity_enabled
+            and not explicit_gravity_per_joint
+            and (
+                not self.mit_gravity_compensation_enabled
+                or next_gravity_calibration_file
+                != self.mit_gravity_compensation_calibration_file
+                or next_gravity_calibration_side
+                != self.mit_gravity_compensation_calibration_side
+            )
+        ):
+            scale = self._lookup_gravity_scale_calibration_or_warn(
+                next_gravity_calibration_file,
+                self._gravity_calibration_side(
+                    next_gravity_calibration_side,
+                    next_gravity_joint_names,
+                ),
+            )
+            if scale is not None:
+                next_gravity_per_joint_scale = scale
+                gravity_scale_calibration_loaded = True
 
         try:
             self.gravity_compensator.configure(
@@ -901,12 +1115,10 @@ class PiperSingleControlNode(Node):
                 friction_scale=next_friction_scale,
                 friction_load_scale=next_friction_load_scale,
                 friction_min_velocity=next_friction_min_velocity,
+                friction_full_velocity=next_friction_full_velocity,
                 friction_taper_velocity=next_friction_taper_velocity,
                 friction_static_scale=next_friction_static_scale,
                 friction_static_velocity=next_friction_static_velocity,
-                inertial_enabled=next_inertial_ff,
-                inertial_scale=next_inertial_ff_scale,
-                inertial_max_torque=next_inertial_ff_max_torque,
             )
         except Exception as e:
             return SetParametersResult(
@@ -934,20 +1146,49 @@ class PiperSingleControlNode(Node):
         self.mit_velocity_feedforward = next_velocity_ff
         self.mit_velocity_feedforward_source = next_velocity_ff_source
         self.mit_velocity_feedforward_alpha = next_velocity_ff_alpha
+        self.mit_velocity_feedforward_cutoff_hz = next_velocity_ff_cutoff_hz
         self.mit_velocity_feedforward_deadband = next_velocity_ff_deadband
+        self.mit_velocity_feedforward_scale = next_velocity_ff_scale
+        self.mit_velocity_feedforward_phase_lead = next_velocity_ff_phase_lead
         if reset_velocity_state:
             self._prev_cmd_pos = None
             self._prev_cmd_vel = None
             self._prev_cmd_time = None
-        if self.mit_inertial_feedforward != next_inertial_ff:
+            self._vel_lp1 = None
+            self._vel_lp2 = None
+        reset_acceleration_state = (
+            self.mit_command_acceleration_filter_cutoff_hz
+            != next_accel_filter_cutoff_hz
+            or self.mit_command_acceleration_filter_alpha
+            != next_accel_filter_alpha
+        )
+        if reset_acceleration_state:
             self._prev_ff_vel = None
             self._prev_ff_vel_time = None
             self._prev_cmd_accel = None
-        self.mit_inertial_feedforward = next_inertial_ff
-        self.mit_inertial_feedforward_scale = next_inertial_ff_scale
-        self.mit_inertial_feedforward_alpha = next_inertial_ff_alpha
-        self.mit_inertial_feedforward_max_torque = (
-            next_inertial_ff_max_torque
+            self._accel_lp1 = None
+            self._accel_lp2 = None
+        self.mit_command_acceleration_filter_cutoff_hz = (
+            next_accel_filter_cutoff_hz
+        )
+        self.mit_command_acceleration_filter_alpha = next_accel_filter_alpha
+        if (
+            next_osc_guard_min_amplitude
+            != self.mit_comp_oscillation_guard_min_amplitude
+            or next_osc_guard_trip_half_cycles
+            != self.mit_comp_oscillation_guard_trip_half_cycles
+        ):
+            self._oscillation_guard = OscillationGuard(
+                min_amplitude=next_osc_guard_min_amplitude,
+                trip_half_cycles=next_osc_guard_trip_half_cycles,
+            )
+            self._oscillation_guard_was_tripping = False
+        self.mit_comp_oscillation_guard = next_osc_guard
+        self.mit_comp_oscillation_guard_min_amplitude = (
+            next_osc_guard_min_amplitude
+        )
+        self.mit_comp_oscillation_guard_trip_half_cycles = (
+            next_osc_guard_trip_half_cycles
         )
         self.mit_gravity_compensation_enabled = next_gravity_enabled
         self.mit_gravity_compensation_urdf_path = next_gravity_urdf_path
@@ -957,7 +1198,9 @@ class PiperSingleControlNode(Node):
         )
         self.mit_gravity_compensation_record_path = next_gravity_record_path
         self.mit_gravity_compensation_max_t_ref = next_gravity_max_t_ref
-        self.mit_gravity_compensation_use_kp_offset = next_gravity_use_kp_offset
+        self.mit_gravity_compensation_use_kp_offset = (
+            next_gravity_use_kp_offset
+        )
         self.mit_gravity_compensation_use_t_ref = next_gravity_use_t_ref
         self.mit_gravity_compensation_offset_stiffness = (
             next_gravity_offset_stiffness
@@ -980,6 +1223,9 @@ class PiperSingleControlNode(Node):
         self.mit_friction_compensation_load_scale = next_friction_load_scale
         self.mit_friction_compensation_min_velocity = (
             next_friction_min_velocity
+        )
+        self.mit_friction_compensation_full_velocity = (
+            next_friction_full_velocity
         )
         self.mit_friction_compensation_taper_velocity = (
             next_friction_taper_velocity
@@ -1017,8 +1263,10 @@ class PiperSingleControlNode(Node):
             f"{self.mit_velocity_feedforward}, "
             "velocity_feedforward_source = "
             f"{self.mit_velocity_feedforward_source}, "
-            "inertial_feedforward = "
-            f"{self.mit_inertial_feedforward}, "
+            "velocity_feedforward_scale = "
+            f"{self.mit_velocity_feedforward_scale}, "
+            "velocity_feedforward_phase_lead = "
+            f"{self.mit_velocity_feedforward_phase_lead}, "
             "gravity_compensation_enabled = "
             f"{self.mit_gravity_compensation_enabled}, "
             f"gravity_scale = {self.mit_gravity_compensation_scale}, "
@@ -1032,27 +1280,42 @@ class PiperSingleControlNode(Node):
                 f"{self._gravity_calibration_side()!r}) from "
                 f"{self.mit_gravity_compensation_calibration_file}"
             )
-            # set_parameters cannot run inside this callback; reflect the
-            # resolved stiffness/table on the next executor spin so
-            # `ros2 param get` shows the effective values.
+        if friction_calibration_loaded:
+            self.get_logger().info(
+                "Loaded friction calibration (side "
+                f"{self._gravity_calibration_side()!r}) from "
+                f"{self.mit_gravity_compensation_calibration_file}: "
+                f"scale={self.mit_friction_compensation_scale}, "
+                "taper_velocity="
+                f"{self.mit_friction_compensation_taper_velocity}"
+            )
+        if gravity_scale_calibration_loaded:
+            self.get_logger().info(
+                "Loaded gravity scale calibration (side "
+                f"{self._gravity_calibration_side()!r}) from "
+                f"{self.mit_gravity_compensation_calibration_file}: "
+                f"{self.mit_gravity_compensation_scale_per_joint}"
+            )
+        if (
+            needs_calibration_lookup
+            or friction_calibration_loaded
+            or gravity_scale_calibration_loaded
+        ):
+            # Publish resolved values on the next executor spin.
             self._schedule_gravity_calibration_sync()
         return SetParametersResult(successful=True)
 
     def enable_arm_ctrl(self, force_reset: bool = False) -> bool:
-        ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
-        if ctrl_mode == 0x02:
-            self.get_logger().warn(
-                f"ctrl_mode is {ctrl_mode}, try to reset..."
-            )
-            if force_reset:
-                if not reset_piper_ctrl_mode(self.piper, 0x01):
-                    return False
-    def enable_arm_ctrl(self) -> bool:
         arm_status = self.piper.GetArmStatus().arm_status
         ctrl_mode = arm_status.ctrl_mode
         if ctrl_mode == CanControlMode.TEACH_MODE:
-            # TEACH_MODE + IN_TEACHING means the robot is in active teach mode.
-            if arm_status.teach_status == TeachStatusMode.IN_TEACHING:
+            if force_reset:
+                self.get_logger().warn("Force-resetting arm to CAN mode.")
+                if not reset_piper_ctrl_mode(
+                    self.piper, CanControlMode.CAN_MODE
+                ):
+                    return False
+            elif arm_status.teach_status == TeachStatusMode.IN_TEACHING:
                 self.get_logger().warn(
                     "Skip enable: arm is in active teach mode "
                     "(ctrl_mode=TEACH_MODE, teach_status=IN_TEACHING). "
@@ -1060,7 +1323,6 @@ class PiperSingleControlNode(Node):
                     "then retry."
                 )
                 return False
-            # TEACH_MODE + POST_TEACHING means the robot has exited teach mode.
             elif arm_status.teach_status == TeachStatusMode.POST_TEACHING:
                 self.get_logger().warn("Switch to CAN control mode.")
                 switch_piper_ctrl_mode(
@@ -1073,7 +1335,6 @@ class PiperSingleControlNode(Node):
                     f"Invalid teach status: {arm_status.teach_status}"
                 )
                 return False
-        # Non-TEACH_MODE status is treated as cold start or normal enable.
         else:
             enable_arm_ctrl(self.piper)
         set_ctrl_method(
@@ -1111,16 +1372,12 @@ class PiperSingleControlNode(Node):
         return time.time()
 
     def _estimate_cmd_velocity(self, joint_data) -> list[float]:
-        """Estimate commanded joint velocity by finite-differencing commands.
-
-        v_des is derived from command-position samples, using the command stamp
-        when available so the velocity and position reference share one timing
-        source.
-        """
+        """Estimate commanded velocity from position commands."""
         n = min(6, len(joint_data.position))
         now = self._command_stamp_seconds(joint_data)
         pos = [float(joint_data.position[i]) for i in range(n)]
         vel = [0.0] * n
+        ema = [0.0] * n
         if (
             self._prev_cmd_pos is not None
             and len(self._prev_cmd_pos) == n
@@ -1129,21 +1386,47 @@ class PiperSingleControlNode(Node):
             dt = now - self._prev_cmd_time
             # Ignore degenerate / stale gaps to avoid huge spurious velocities.
             if 1e-4 < dt < 0.5:
+                self._last_cmd_dt = dt
                 prev_vel = self._prev_cmd_vel or [0.0] * n
                 alpha = self.mit_velocity_feedforward_alpha
                 deadband = self.mit_velocity_feedforward_deadband
+                cutoff = self.mit_velocity_feedforward_cutoff_hz
+                if cutoff > 0.0:
+                    # Two low-pass stages overcome differentiation noise.
+                    tau = 1.0 / (2.0 * 3.141592653589793 * cutoff)
+                    a = dt / (dt + tau)
+                    lp1 = self._vel_lp1 or [0.0] * n
+                    lp2 = self._vel_lp2 or [0.0] * n
+                else:
+                    lp1 = lp2 = None
                 for i in range(n):
                     raw = (pos[i] - self._prev_cmd_pos[i]) / dt
-                    # EMA low-pass to tame finite-difference noise.
-                    smoothed = alpha * raw + (1.0 - alpha) * (
-                        prev_vel[i] if i < len(prev_vel) else 0.0
-                    )
-                    # Deadband suppresses chatter while holding position.
+                    if lp1 is not None:
+                        s1 = lp1[i] if i < len(lp1) else 0.0
+                        s1 += a * (raw - s1)
+                        s2 = lp2[i] if i < len(lp2) else 0.0
+                        s2 += a * (s1 - s2)
+                        lp1[i], lp2[i] = s1, s2
+                        smoothed = s2
+                    else:
+                        # Legacy EMA low-pass (cutoff_hz = 0).
+                        smoothed = alpha * raw + (1.0 - alpha) * (
+                            prev_vel[i] if i < len(prev_vel) else 0.0
+                        )
+                    # Keep filter state pre-deadband to avoid bias.
+                    ema[i] = smoothed
+                    # Soft threshold avoids torque steps near zero speed.
                     if abs(smoothed) < deadband:
                         smoothed = 0.0
+                    elif smoothed > 0.0:
+                        smoothed -= deadband
+                    else:
+                        smoothed += deadband
                     vel[i] = max(-45.0, min(45.0, smoothed))
+                if lp1 is not None:
+                    self._vel_lp1, self._vel_lp2 = lp1, lp2
         self._prev_cmd_pos = pos
-        self._prev_cmd_vel = vel
+        self._prev_cmd_vel = ema
         self._prev_cmd_time = now
         return vel
 
@@ -1157,18 +1440,59 @@ class PiperSingleControlNode(Node):
         vel: list[float] = []
         for i in range(n):
             v = float(msg_velocity[i])
+            # Soft-threshold deadband (see _estimate_cmd_velocity).
             if abs(v) < deadband:
                 v = 0.0
+            elif v > 0.0:
+                v -= deadband
+            else:
+                v += deadband
             vel.append(max(-45.0, min(45.0, v)))
         return vel
 
-    def _command_velocity(self, joint_data) -> list[float]:
-        """Velocity feedforward source for v_des.
+    def _scaled_velocity_ref(self, velocity: list[float]) -> list[float]:
+        """Apply per-joint scaling to the velocity reference."""
+        scale = self.mit_velocity_feedforward_scale
+        return [
+            v * (scale[i] if i < len(scale) else 1.0)
+            for i, v in enumerate(velocity)
+        ]
 
-        The default source is position_delta because hardware feedback often
-        publishes position and velocity from different sensors/update rates.
-        Message velocity is an explicit opt-in for synchronized planner output.
-        """
+    def _phase_lead_velocity(
+        self,
+        velocity: list[float],
+        accel: list[float] | None,
+        comp_gain: float = 1.0,
+    ) -> list[float]:
+        """Compensate group delay in the velocity reference."""
+        lead_scale = self.mit_velocity_feedforward_phase_lead
+        cutoff = self.mit_velocity_feedforward_cutoff_hz
+        if (
+            lead_scale <= 0.0
+            or accel is None
+            or cutoff <= 0.0
+            # Message velocity bypasses smoothing and its delay model.
+            or self.mit_velocity_feedforward_source != "position_delta"
+        ):
+            return velocity
+        delay = 2.0 / (2.0 * 3.141592653589793 * cutoff)
+        if self._last_cmd_dt is not None:
+            delay += 0.5 * self._last_cmd_dt
+        # Suppress phase lead while the oscillation guard is active.
+        lead = lead_scale * delay * comp_gain
+        return [
+            max(
+                -45.0,
+                min(
+                    45.0,
+                    v + lead * (accel[i] if i < len(accel) else 0.0),
+                ),
+            )
+            for i, v in enumerate(velocity)
+        ]
+
+    def _command_velocity(self, joint_data) -> list[float]:
+        """Select the configured velocity reference source."""
         if self.mit_velocity_feedforward_source == "message":
             velocity = self._message_cmd_velocity(joint_data)
             if velocity is not None:
@@ -1178,14 +1502,7 @@ class PiperSingleControlNode(Node):
     def _estimate_cmd_accel(
         self, velocity: list[float], joint_data
     ) -> list[float]:
-        """Estimate commanded acceleration from the v_des estimate.
-
-        Finite-differences the command-velocity vector (whatever source
-        produced it) with its own EMA smoothing. Double differentiation is
-        noisy — the deadband steps in the velocity estimate alone produce
-        multi-rad/s^2 spikes — so alpha here should stay low and the
-        compensator clamps the resulting torque delta.
-        """
+        """Estimate commanded acceleration from the velocity reference."""
         n = len(velocity)
         now = self._command_stamp_seconds(joint_data)
         accel = [0.0] * n
@@ -1196,26 +1513,36 @@ class PiperSingleControlNode(Node):
         ):
             dt = now - self._prev_ff_vel_time
             if 1e-4 < dt < 0.5:
-                prev_accel = self._prev_cmd_accel or [0.0] * n
-                alpha = self.mit_inertial_feedforward_alpha
-                for i in range(n):
-                    raw = (velocity[i] - self._prev_ff_vel[i]) / dt
-                    accel[i] = alpha * raw + (1.0 - alpha) * (
-                        prev_accel[i] if i < len(prev_accel) else 0.0
-                    )
+                cutoff = self.mit_command_acceleration_filter_cutoff_hz
+                if cutoff > 0.0:
+                    tau = 1.0 / (2.0 * 3.141592653589793 * cutoff)
+                    a = dt / (dt + tau)
+                    lp1 = self._accel_lp1 or [0.0] * n
+                    lp2 = self._accel_lp2 or [0.0] * n
+                    for i in range(n):
+                        raw = (velocity[i] - self._prev_ff_vel[i]) / dt
+                        s1 = lp1[i] if i < len(lp1) else 0.0
+                        s1 += a * (raw - s1)
+                        s2 = lp2[i] if i < len(lp2) else 0.0
+                        s2 += a * (s1 - s2)
+                        lp1[i], lp2[i] = s1, s2
+                        accel[i] = s2
+                    self._accel_lp1, self._accel_lp2 = lp1, lp2
+                else:
+                    prev_accel = self._prev_cmd_accel or [0.0] * n
+                    alpha = self.mit_command_acceleration_filter_alpha
+                    for i in range(n):
+                        raw = (velocity[i] - self._prev_ff_vel[i]) / dt
+                        accel[i] = alpha * raw + (1.0 - alpha) * (
+                            prev_accel[i] if i < len(prev_accel) else 0.0
+                        )
         self._prev_ff_vel = list(velocity)
         self._prev_ff_vel_time = now
         self._prev_cmd_accel = accel
         return accel
 
     def _measured_joint_velocity(self) -> list[float]:
-        """Measured joint velocity (rad/s) from cached high-speed feedback.
-
-        Friction compensation needs the direction the joint is actually
-        moving, not the commanded velocity, so it reads the arm's own speed
-        feedback. Mirrors the conversion in ``get_arm_state``
-        (motor_speed / 1000). Returns zeros if the feedback is unavailable.
-        """
+        """Read joint velocity from cached high-speed feedback."""
         try:
             spd = self.piper.GetArmHighSpdInfoMsgs()
             return [
@@ -1230,40 +1557,71 @@ class PiperSingleControlNode(Node):
             return [0.0] * 6
 
     def joint_callback(self, joint_data):
-        """Callback function for joint angles."""
+        """Apply the latest joint command."""
         if self._resetting:
             return
 
         if self.is_controlable():
             if self.enable_mit_ctrl:
-                # Inertial feedforward needs the command-velocity estimate
-                # even when v_des is not sent to the firmware.
-                inertial_active = (
-                    self.mit_inertial_feedforward
-                    and self.gravity_compensator.enabled
+                friction_active = (
+                    self.gravity_compensator.enabled
+                    and self.gravity_compensator.friction_enabled
+                )
+                # Friction and phase lead share command derivatives.
+                lead_active = (
+                    self.mit_velocity_feedforward
+                    and self.mit_velocity_feedforward_phase_lead > 0.0
                 )
                 command_velocity = (
                     self._command_velocity(joint_data)
-                    if self.mit_velocity_feedforward or inertial_active
-                    else None
-                )
-                velocity_ref = (
-                    command_velocity
-                    if self.mit_velocity_feedforward
+                    if self.mit_velocity_feedforward or friction_active
                     else None
                 )
                 command_accel = (
                     self._estimate_cmd_accel(command_velocity, joint_data)
-                    if inertial_active and command_velocity is not None
+                    if lead_active and command_velocity is not None
                     else None
                 )
-                # Friction compensation acts on measured motion direction.
+                # Suppress derivative-based compensation during a ring.
+                comp_gain = 1.0
+                if (
+                    self.mit_comp_oscillation_guard
+                    and command_velocity is not None
+                    and (friction_active or lead_active)
+                ):
+                    comp_gain = self._oscillation_guard.update(
+                        command_velocity,
+                        self._command_stamp_seconds(joint_data),
+                    )
+                    tripping = self._oscillation_guard.tripping
+                    if tripping and not self._oscillation_guard_was_tripping:
+                        trip_joint = self._oscillation_guard.trip_joint
+                        self.get_logger().warning(
+                            "Oscillation guard tripped (joint"
+                            f" {'?' if trip_joint is None else trip_joint + 1}"
+                            "): ramping friction/phase-lead"
+                            " compensation to zero."
+                        )
+                    elif not tripping and self._oscillation_guard_was_tripping:
+                        self.get_logger().info(
+                            "Oscillation guard released; compensation"
+                            " ramping back in."
+                        )
+                    self._oscillation_guard_was_tripping = tripping
+                velocity_ref = (
+                    self._scaled_velocity_ref(
+                        self._phase_lead_velocity(
+                            command_velocity, command_accel, comp_gain
+                        )
+                    )
+                    if self.mit_velocity_feedforward
+                    and command_velocity is not None
+                    else None
+                )
+                # Measured velocity gates dither and supports master float.
                 measured_velocity = (
                     self._measured_joint_velocity()
-                    if (
-                        self.gravity_compensator.enabled
-                        and self.gravity_compensator.friction_enabled
-                    )
+                    if friction_active
                     else None
                 )
                 joint_mit_control(
@@ -1278,7 +1636,7 @@ class PiperSingleControlNode(Node):
                     velocity_ref=velocity_ref,
                     measured_velocity=measured_velocity,
                     command_velocity=command_velocity,
-                    command_acceleration=command_accel,
+                    comp_gain=comp_gain,
                 )
             else:
                 joint_control(
@@ -1291,7 +1649,7 @@ class PiperSingleControlNode(Node):
     def _enable_ctrl_service_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ):
-        """Service callback to enable the arm control."""
+        """Handle requests to enable arm control."""
         self.get_logger().info("Received request to enable arm.")
 
         if self.is_controlable():
@@ -1317,7 +1675,7 @@ class PiperSingleControlNode(Node):
     def _reset_ctrl_service_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ):
-        """Service callback to reset the arm control."""
+        """Handle requests to reset arm control."""
         self.get_logger().info("Received request to reset arm.")
         if not self.is_controlable():
             ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
@@ -1383,9 +1741,7 @@ class PiperSingleControlNode(Node):
         traj = []
         try:
             traj = _gen_reset_traj()
-            # Reset always runs through the firmware position planner
-            # (JointCtrl) so the motion never depends on the currently
-            # configured MIT gains (e.g. kp=0 would not move at all).
+            # Reset uses JointCtrl and does not depend on MIT gains.
             if self.enable_mit_ctrl:
                 set_ctrl_method(piper=self.piper, is_mit=False)
             for position in traj:
@@ -1413,8 +1769,7 @@ class PiperSingleControlNode(Node):
                         mit_vel_ref=self.mit_vel_ref,
                         mit_torque_ref=self.mit_torque_ref,
                     )
-                    # Re-seat the MIT setpoint at the reset pose so control
-                    # resumes without a jump.
+                    # Re-seat the MIT setpoint to avoid a jump.
                     if traj:
                         final_position = traj[-1]
                         for _ in range(int(0.5 * control_freq)):

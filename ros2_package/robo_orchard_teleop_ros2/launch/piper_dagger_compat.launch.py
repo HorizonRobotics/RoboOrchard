@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import os
+from pathlib import Path
 from typing import List
 
 from launch import LaunchDescription
@@ -21,6 +23,34 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _default_gravity_urdf_path() -> str:
+    """The dual-arm gravity URDF path.
+
+    Written exactly once, in configs/piper_urdf_path.txt (see
+    calibration/paths.py); resolved via the PIPER_GRAVITY_URDF_PATH env
+    override, then the repo this launch file lives in (source tree or
+    the colcon install space inside it), then the container mount.
+    """
+    env = os.environ.get("PIPER_GRAVITY_URDF_PATH")
+    if env:
+        return env
+    candidates = [
+        parent / "configs" / "piper_urdf_path.txt"
+        for parent in Path(__file__).resolve().parents
+    ]
+    candidates.append(Path("/opt/roboorchard/configs/piper_urdf_path.txt"))
+    for candidate in candidates:
+        try:
+            return candidate.read_text().strip()
+        except OSError:
+            continue
+    raise RuntimeError(
+        "Cannot resolve the default gravity URDF path: set "
+        "PIPER_GRAVITY_URDF_PATH or make configs/piper_urdf_path.txt "
+        "reachable (repo checkout or /opt/roboorchard mount)."
+    )
 
 
 def generate_launch_description():
@@ -90,13 +120,21 @@ def generate_launch_description():
     )
     follower_mit_kp_arg = DeclareLaunchArgument(
         "follower_mit_kp",
-        default_value="10.0",
-        description="MIT kp for the follower arms.",
+        default_value="25.0",
+        description=(
+            "MIT kp for the follower arms. 25 matches the deflection "
+            "calibration store (calibration/CALIBRATION.md); the "
+            "controllers reject gravity compensation at an "
+            "uncalibrated kp."
+        ),
     )
     follower_mit_kd_arg = DeclareLaunchArgument(
         "follower_mit_kd",
         default_value="0.8",
-        description="MIT kd for the follower arms.",
+        description=(
+            "MIT kd for the follower arms. Keep at 0.8: the firmware "
+            "applies the sent kd ~10x, and kd>=3 chatters audibly."
+        ),
     )
     follower_mit_vel_ref_arg = DeclareLaunchArgument(
         "follower_mit_vel_ref",
@@ -110,13 +148,16 @@ def generate_launch_description():
     )
     follower_velocity_feedforward_arg = DeclareLaunchArgument(
         "follower_velocity_feedforward",
-        default_value="false",
+        default_value="true",
         description=(
             "Send estimated command velocity as MIT v_des on the follower "
             "arms so kd damps the tracking error instead of dragging "
-            "against motion. Probe-validated 2026-07-06: halves teleop "
-            "phase lag (48->16 ms on J3) with the default position_delta "
-            "estimator."
+            "against motion. The estimate is delay-compensated to first "
+            "order so v_des stays in phase with the command through "
+            "reversals. Probe-validated 2026-07-06: halves teleop phase "
+            "lag (48->16 ms on J3); hardware-validated 2026-07-08: "
+            "removes the reversal overshoot (max adj EE error "
+            "8.71->7.98 mm at g+v speed 0.5)."
         ),
     )
     follower_gravity_compensation_enabled_arg = DeclareLaunchArgument(
@@ -130,19 +171,22 @@ def generate_launch_description():
     )
     follower_gravity_compensation_urdf_path_arg = DeclareLaunchArgument(
         "follower_gravity_compensation_urdf_path",
-        default_value="/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf",
+        default_value=_default_gravity_urdf_path(),
         description="URDF path used for follower MIT gravity compensation.",
     )
     follower_gravity_calibration_file_arg = DeclareLaunchArgument(
         "follower_gravity_calibration_file",
         default_value=(
-            "/opt/roboorchard/gravity_id/deflection_calibrations.json"
+            "/opt/roboorchard/calibration/deflection_calibrations.json"
         ),
         description=(
-            "kp-indexed deflection calibration store (side -> mit_kp -> "
-            "offset_stiffness/deflection_table). The follower controllers "
-            "load the entry matching their mit_kp and reject uncalibrated "
-            "kp values."
+            "Calibration store. Side -> mit_kp -> offset_stiffness/"
+            "deflection_table entries are kp-indexed: the follower "
+            "controllers load the entry matching their mit_kp and reject "
+            "uncalibrated kp values. The store's per-side 'friction' and "
+            "'gravity' sections also load at startup and win over the "
+            "corresponding launch values; when a section is absent the "
+            "launch/param values stay in effect (with a warning)."
         ),
     )
     follower_gravity_compensation_scale_arg = DeclareLaunchArgument(
@@ -155,7 +199,8 @@ def generate_launch_description():
         default_value="[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]",
         description=(
             "Per-joint multiplier (on top of the global scale) for follower "
-            "gravity compensation."
+            "gravity compensation. Fallback only: the calibration store's "
+            "'gravity' section wins at startup when present."
         ),
     )
     follower_gravity_compensation_max_t_ref_arg = DeclareLaunchArgument(
@@ -293,8 +338,12 @@ def generate_launch_description():
                     "follower_gravity_compensation_urdf_path"
                 ),
                 "mit_gravity_compensation_joint_names": [
-                    "left_joint1", "left_joint2", "left_joint3",
-                    "left_joint4", "left_joint5", "left_joint6",
+                    "left_joint1",
+                    "left_joint2",
+                    "left_joint3",
+                    "left_joint4",
+                    "left_joint5",
+                    "left_joint6",
                 ],
             }
         ],
@@ -348,9 +397,7 @@ def generate_launch_description():
                     "follower_gravity_compensation_urdf_path"
                 ),
                 "mit_gravity_compensation_scale": ParameterValue(
-                    LaunchConfiguration(
-                        "follower_gravity_compensation_scale"
-                    ),
+                    LaunchConfiguration("follower_gravity_compensation_scale"),
                     value_type=float,
                 ),
                 "mit_gravity_compensation_scale_per_joint": ParameterValue(
@@ -376,19 +423,21 @@ def generate_launch_description():
                 # offset_stiffness + deflection_table entry matching its
                 # mit_kp from the kp-indexed calibration file (and rejects
                 # uncalibrated kp values). See
-                # gravity_id/DEFLECTION_CALIBRATION.md.
+                # calibration/CALIBRATION.md.
                 "mit_gravity_compensation_use_kp_offset": True,
                 "mit_gravity_compensation_use_deflection_table": True,
                 "mit_gravity_compensation_calibration_file": (
-                    LaunchConfiguration(
-                        "follower_gravity_calibration_file"
-                    )
+                    LaunchConfiguration("follower_gravity_calibration_file")
                 ),
                 "mit_gravity_compensation_calibration_side": "left",
                 # Dual-arm URDF: the left chain is prefixed "left_*".
                 "mit_gravity_compensation_joint_names": [
-                    "left_joint1", "left_joint2", "left_joint3",
-                    "left_joint4", "left_joint5", "left_joint6",
+                    "left_joint1",
+                    "left_joint2",
+                    "left_joint3",
+                    "left_joint4",
+                    "left_joint5",
+                    "left_joint6",
                 ],
             }
         ],
@@ -434,8 +483,12 @@ def generate_launch_description():
                     "follower_gravity_compensation_urdf_path"
                 ),
                 "mit_gravity_compensation_joint_names": [
-                    "right_joint1", "right_joint2", "right_joint3",
-                    "right_joint4", "right_joint5", "right_joint6",
+                    "right_joint1",
+                    "right_joint2",
+                    "right_joint3",
+                    "right_joint4",
+                    "right_joint5",
+                    "right_joint6",
                 ],
             }
         ],
@@ -489,9 +542,7 @@ def generate_launch_description():
                     "follower_gravity_compensation_urdf_path"
                 ),
                 "mit_gravity_compensation_scale": ParameterValue(
-                    LaunchConfiguration(
-                        "follower_gravity_compensation_scale"
-                    ),
+                    LaunchConfiguration("follower_gravity_compensation_scale"),
                     value_type=float,
                 ),
                 "mit_gravity_compensation_scale_per_joint": ParameterValue(
@@ -517,19 +568,21 @@ def generate_launch_description():
                 # offset_stiffness + deflection_table entry matching its
                 # mit_kp from the kp-indexed calibration file (and rejects
                 # uncalibrated kp values). See
-                # gravity_id/DEFLECTION_CALIBRATION.md.
+                # calibration/CALIBRATION.md.
                 "mit_gravity_compensation_use_kp_offset": True,
                 "mit_gravity_compensation_use_deflection_table": True,
                 "mit_gravity_compensation_calibration_file": (
-                    LaunchConfiguration(
-                        "follower_gravity_calibration_file"
-                    )
+                    LaunchConfiguration("follower_gravity_calibration_file")
                 ),
                 "mit_gravity_compensation_calibration_side": "right",
                 # Dual-arm URDF: the right chain is prefixed "right_*".
                 "mit_gravity_compensation_joint_names": [
-                    "right_joint1", "right_joint2", "right_joint3",
-                    "right_joint4", "right_joint5", "right_joint6",
+                    "right_joint1",
+                    "right_joint2",
+                    "right_joint3",
+                    "right_joint4",
+                    "right_joint5",
+                    "right_joint6",
                 ],
             }
         ],

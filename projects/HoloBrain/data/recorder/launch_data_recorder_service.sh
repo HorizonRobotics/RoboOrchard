@@ -1,5 +1,10 @@
 set -ex
 
+# Kill stale instance so re-running script will restart
+pkill -TERM -f "[m]cap_recorder_service" || true
+sleep 1
+pkill -KILL -f "[m]cap_recorder_service" || true
+
 SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
 

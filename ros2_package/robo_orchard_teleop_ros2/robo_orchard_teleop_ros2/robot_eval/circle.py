@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scripted end-effector circle test for one Piper follower arm.
+"""Plan and analyze the scripted Piper end-effector circle evaluation.
 
 Traces a vertical circle (default 15 cm diameter, 4 s per lap) with the
 gripper base and logs commanded vs measured joints so Cartesian tracking
@@ -7,35 +7,30 @@ can be scored. Gravity/friction compensation and controller gains are
 left at their deployment values -- this is a motion quality test, not a
 parameter probe.
 
-Three stages, because pinocchio and rclpy live in different interpreters
-inside the holobrain container:
+Planning and analysis use Pinocchio, while execution belongs to the common
+`robot_eval` ROS executor:
 
   plan     (needs pinocchio -> /opt/robot-venv/bin/python3)
            FK the seed pose, sweep the circle, IK every waypoint with
            damped least squares, validate limits/velocity/clearance and
            write a joint trajectory JSON.
-  run      (needs rclpy -> ROS python3)
-           Stream the trajectory to /robot/<side>/joint_cmd at the
-           planned rate and record /puppet/joint_<side> to CSV.
+  run      ``robot-eval run circle`` uses the common executor and result
+           schema.
   analyze  (needs pinocchio -> /opt/robot-venv/bin/python3)
            FK the logged joints and report radius / diameter / RMS
            Cartesian tracking error.
 
 Typical session INSIDE the holobrain container:
 
-    /opt/robot-venv/bin/python3 /opt/roboorchard/gravity_id/circle_test.py \
-        plan --side left
-    source /opt/ros/humble/setup.bash
-    python3 /opt/roboorchard/gravity_id/circle_test.py run --side left
-    /opt/robot-venv/bin/python3 /opt/roboorchard/gravity_id/circle_test.py \
-        analyze --side left
+    robot-eval plan circle --side left
+    robot-eval run circle --speed-scale 1.0
+    robot-eval analyze circle --side left
 
-PREREQUISITES for `run`:
-  * single_ctrl controllers running; control mode Stop (no teleop /
-    inference driving the arms). The side's take_over muxer is stopped
-    for the run and respawned on exit, and the script refuses to start
-    if any other publisher remains on /robot/<side>/joint_cmd.
-  * E-stop within reach. A 0.35 rad joint tracking-error guard aborts.
+PREREQUISITES for ``robot-eval run circle``:
+  * follower controllers and takeover muxers running in Auto, with no
+    inference policy or other publisher driving the algorithm command topics;
+  * both left and right circle plans generated and physically reviewed;
+  * E-stop within reach and workspace clear.
 
 The circle starts AT the seed pose's end-effector point and its center
 sits one radius below it (vertical planes), so the arm never goes above
@@ -44,30 +39,40 @@ in/out with a cosine ramp so the trajectory starts and ends at rest.
 """
 
 from __future__ import annotations
-
 import argparse
 import csv
-import datetime
 import json
 import math
 import os
-import sys
-import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-URDF_DEFAULT = "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
+
+def _default_urdf() -> str:
+    configured = os.environ.get("PIPER_GRAVITY_URDF_PATH")
+    if configured:
+        return configured
+    for parent in Path(__file__).resolve().parents:
+        path = parent / "configs" / "piper_urdf_path.txt"
+        if path.exists():
+            return path.read_text().strip()
+    raise RuntimeError(
+        "cannot locate configs/piper_urdf_path.txt; set "
+        "PIPER_GRAVITY_URDF_PATH"
+    )
+
+
+URDF_DEFAULT = _default_urdf()
 OUT_DIR_DEFAULT = "/data/holobrain/circle_test"
 
 # Compact, tip-high pose from the validated measure_deflection grid.
 SEED_POSE = [0.0, 0.6, -1.4, 0.0, 0.0, 0.0]
 
 JOINT_LIMIT_MARGIN = 0.05  # rad kept clear of URDF limits
-MAX_JOINT_SPEED = 1.5      # rad/s planning bound (well under Piper limits)
-IK_TOL = 1e-4              # m convergence per waypoint
+MAX_JOINT_SPEED = 1.5  # rad/s planning bound (well under Piper limits)
+IK_TOL = 1e-4  # m convergence per waypoint
 IK_DAMPING = 1e-3
 IK_NULLSPACE_GAIN = 0.05
-MIN_LAP_PERIOD = 2.0       # s; 15 cm at 2 s/lap is already ~0.24 m/s
+MIN_LAP_PERIOD = 2.0  # s; 15 cm at 2 s/lap is already ~0.24 m/s
 
 
 def _traj_path(out_dir: str, side: str) -> str:
@@ -77,6 +82,7 @@ def _traj_path(out_dir: str, side: str) -> str:
 # --------------------------------------------------------------------------
 # plan
 # --------------------------------------------------------------------------
+
 
 def _load_reduced_model(urdf: str, side: str):
     import numpy as np
@@ -116,9 +122,7 @@ def _theta_profile(laps: int, period: float, ramp: float, rate: float):
         if t < ramp:
             w = omega * 0.5 * (1.0 - math.cos(math.pi * t / ramp))
         elif t > duration - ramp:
-            w = omega * 0.5 * (
-                1.0 - math.cos(math.pi * (duration - t) / ramp)
-            )
+            w = omega * 0.5 * (1.0 - math.cos(math.pi * (duration - t) / ramp))
         else:
             w = omega
         theta += w * dt
@@ -176,11 +180,11 @@ def _plan(args: argparse.Namespace) -> None:
             jac = pin.computeFrameJacobian(
                 model, data, q, fid, pin.LOCAL_WORLD_ALIGNED
             )[:3, :]
-            jjt = jac @ jac.T + (IK_DAMPING ** 2) * np.eye(3)
+            jjt = jac @ jac.T + (IK_DAMPING**2) * np.eye(3)
             dq = jac.T @ np.linalg.solve(jjt, err)
-            dq += (
-                np.eye(6) - np.linalg.pinv(jac) @ jac
-            ) @ (IK_NULLSPACE_GAIN * (q_seed - q))
+            dq += (np.eye(6) - np.linalg.pinv(jac) @ jac) @ (
+                IK_NULLSPACE_GAIN * (q_seed - q)
+            )
             q = np.clip(q + dq, lo, hi)
         resid = float(np.linalg.norm(p_des - fk(q)))
         worst_resid = max(worst_resid, resid)
@@ -251,165 +255,9 @@ def _plan(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------
-# run
-# --------------------------------------------------------------------------
-
-def _run(args: argparse.Namespace) -> None:
-    import rclpy
-
-    sys.path.insert(0, str(HERE))
-    from calibrate_kp import _respawn_muxer, _stop_muxer
-    from probe_kd_vdes import _Prober
-
-    path = _traj_path(args.out_dir, args.side)
-    try:
-        traj = json.loads(Path(path).read_text())
-    except OSError as exc:
-        raise SystemExit(f"no trajectory at {path} (run `plan` first): {exc}")
-    if traj["side"] != args.side:
-        raise SystemExit(
-            f"trajectory was planned for side {traj['side']!r}"
-        )
-
-    ts = traj["t"]
-    qs = traj["q"]
-    qds = traj["qd"]
-    rate = float(traj["rate"])
-    print(
-        f"circle: d={traj['diameter'] * 100:g} cm, {traj['period']:g} s/lap, "
-        f"{traj['laps']} lap(s) + {traj['ramp']:g} s blends, plane "
-        f"{traj['plane']}, {ts[-1]:.1f} s total, ee={traj['ee_frame']}"
-    )
-    if not args.yes:
-        reply = input(
-            f"The {args.side} follower arm will move to "
-            f"{[round(v, 2) for v in traj['seed']]} and trace the circle "
-            "above. take_over muxer is stopped for the run. Control mode "
-            "Stop? E-stop in reach? Workspace clear? [y/N] "
-        )
-        if reply.strip().lower() != "y":
-            raise SystemExit("aborted")
-
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(args.out_dir, exist_ok=True)
-    out_csv = os.path.join(
-        args.out_dir, f"circle_run_{args.side}_{stamp}.csv"
-    )
-
-    muxer_argv = _stop_muxer(args.side)
-    rclpy.init()
-    node = _Prober(args.side)
-    exit_code = 0
-    home = None
-    saved = {}
-    try:
-        node.assert_sole_publisher()
-        home = node.wait_for_state()
-        print(f"start pose: {[round(v, 3) for v in home]}")
-
-        if args.vff:
-            names = [
-                "mit_velocity_feedforward",
-                "mit_velocity_feedforward_source",
-                "mit_velocity_feedforward_deadband",
-            ]
-            saved = node.get_params(names)
-            print(f"saved params: {saved}")
-            node.set_params(
-                {
-                    "mit_velocity_feedforward": True,
-                    "mit_velocity_feedforward_source": "message",
-                    "mit_velocity_feedforward_deadband": 0.0,
-                }
-            )
-
-        node.ramp_to(list(qs[0]), rate, args.max_speed)
-        node.hold_and_sample(
-            list(qs[0]), [0.0] * 6, rate, args.settle, 0.5, args.max_error
-        )
-
-        print("tracing circle...")
-        rows = []
-        idx = 0
-        t0 = time.monotonic()
-        while True:
-            t = time.monotonic() - t0
-            if t >= ts[-1]:
-                break
-            while idx + 1 < len(ts) and ts[idx + 1] <= t:
-                idx += 1
-            # Linear interpolation between planned samples keeps the
-            # command smooth even if the loop misses ticks.
-            if idx + 1 < len(ts):
-                a = (t - ts[idx]) / (ts[idx + 1] - ts[idx])
-                q = [
-                    (1 - a) * qs[idx][j] + a * qs[idx + 1][j]
-                    for j in range(6)
-                ]
-                qd = [
-                    (1 - a) * qds[idx][j] + a * qds[idx + 1][j]
-                    for j in range(6)
-                ]
-            else:
-                q, qd = list(qs[-1]), [0.0] * 6
-            node.publish_cmd(q, qd if args.vff else None)
-            node._check_error(q, args.max_error)
-            if node.latest is not None:
-                rows.append(
-                    [t]
-                    + q
-                    + list(node.latest)
-                    + list(node.latest_effort or [0.0] * 6)
-                )
-            node._spin_sleep(1.0 / rate)
-        # settle back on the closing pose (= opening pose) briefly
-        node.hold_and_sample(
-            list(qs[-1]), [0.0] * 6, rate, 1.0, 0.5, args.max_error
-        )
-        with open(out_csv, "w", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(
-                ["t"]
-                + [f"cmd{j + 1}" for j in range(6)]
-                + [f"meas{j + 1}" for j in range(6)]
-                + [f"eff{j + 1}" for j in range(6)]
-            )
-            writer.writerows(
-                [[f"{v:.6f}" for v in row] for row in rows]
-            )
-        print(f"{len(rows)} samples -> {out_csv}")
-        print(
-            "next: /opt/robot-venv/bin/python3 "
-            f"{HERE / 'circle_test.py'} analyze --side {args.side}"
-        )
-    except (RuntimeError, KeyboardInterrupt, SystemExit) as exc:
-        exit_code = 1
-        print(f"\nstopping: {exc}")
-    finally:
-        if saved:
-            try:
-                print(f"restoring params: {saved}")
-                node.set_params(
-                    {k: v for k, v in saved.items() if v is not None}
-                )
-            except Exception as exc:
-                print(f"WARNING: param restore failed: {exc}")
-        try:
-            if home is not None and node._pub is not None:
-                print("returning to start pose...")
-                node.ramp_to(home, rate, args.max_speed)
-        except Exception as exc:
-            print(f"WARNING: return ramp failed: {exc}")
-        node.destroy_node()
-        rclpy.shutdown()
-        if muxer_argv:
-            _respawn_muxer(muxer_argv)
-    sys.exit(exit_code)
-
-
-# --------------------------------------------------------------------------
 # analyze
 # --------------------------------------------------------------------------
+
 
 def _analyze(args: argparse.Namespace) -> None:
     model, data, np = _load_reduced_model(args.urdf, args.side)
@@ -421,9 +269,9 @@ def _analyze(args: argparse.Namespace) -> None:
     if args.csv:
         run_csv = args.csv
     else:
-        runs = sorted(
-            Path(args.out_dir).glob(f"circle_run_{args.side}_*.csv")
-        )
+        runs = list(Path(args.out_dir).glob(f"circle_run_{args.side}_*.csv"))
+        runs.extend(Path("/data/holobrain/robot_eval").glob("circle_*.csv"))
+        runs = sorted(runs)
         if not runs:
             raise SystemExit(f"no run CSVs in {args.out_dir}")
         run_csv = str(runs[-1])
@@ -438,11 +286,20 @@ def _analyze(args: argparse.Namespace) -> None:
         pin.updateFramePlacements(model, data)
         return data.oMf[fid].translation.copy()
 
+    common_result = f"{args.side}_cmd1" in rows[0]
+    command_prefix = f"{args.side}_cmd" if common_result else "cmd"
+    measured_prefix = f"{args.side}_meas" if common_result else "meas"
     cmd = np.array(
-        [fk([float(r[f"cmd{j + 1}"]) for j in range(6)]) for r in rows]
+        [
+            fk([float(row[f"{command_prefix}{j + 1}"]) for j in range(6)])
+            for row in rows
+        ]
     )
     meas = np.array(
-        [fk([float(r[f"meas{j + 1}"]) for j in range(6)]) for r in rows]
+        [
+            fk([float(row[f"{measured_prefix}{j + 1}"]) for j in range(6)])
+            for row in rows
+        ]
     )
     center = np.array(traj["center"])
     plane_axes = {"xz": (0, 2), "yz": (1, 2), "xy": (0, 1)}
@@ -451,9 +308,12 @@ def _analyze(args: argparse.Namespace) -> None:
 
     # Score only the cruise portion (blends are intentionally not on the
     # circle at speed).
-    ts = np.array([float(r["t"]) for r in rows])
+    time_field = "trajectory_t" if common_result else "t"
+    ts = np.array([float(r[time_field]) for r in rows])
     ramp = float(traj["ramp"])
     sel = (ts > ramp) & (ts < ts[-1] - ramp)
+    if common_result:
+        sel &= np.array([row["phase"] == "playback" for row in rows])
 
     def radius(p):
         return np.hypot(p[sel, i] - center[i], p[sel, k] - center[k])
@@ -474,12 +334,12 @@ def _analyze(args: argparse.Namespace) -> None:
     )
     print(
         f"tracking error      : rms "
-        f"{np.sqrt((err ** 2).mean()) * 1000:.1f} mm, "
+        f"{np.sqrt((err**2).mean()) * 1000:.1f} mm, "
         f"max {err.max() * 1000:.1f} mm"
     )
     print(
         f"out-of-plane wobble : rms "
-        f"{np.sqrt((wobble ** 2).mean()) * 1000:.1f} mm, "
+        f"{np.sqrt((wobble**2).mean()) * 1000:.1f} mm, "
         f"max {np.abs(wobble).max() * 1000:.1f} mm"
     )
 
@@ -500,6 +360,7 @@ def _analyze(args: argparse.Namespace) -> None:
 
 # --------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -514,40 +375,36 @@ def main() -> None:
 
     p = sub.add_parser("plan", parents=[common])
     p.add_argument("--diameter", type=float, default=0.15)
-    p.add_argument(
-        "--period", type=float, default=4.0, help="seconds per lap"
-    )
+    p.add_argument("--period", type=float, default=4.0, help="seconds per lap")
     p.add_argument("--laps", type=int, default=2)
     p.add_argument(
-        "--ramp", type=float, default=1.0,
+        "--ramp",
+        type=float,
+        default=1.0,
         help="cosine speed blend at start/end (s)",
     )
     p.add_argument("--rate", type=float, default=200.0)
     p.add_argument(
-        "--plane", choices=("xz", "yz", "xy"), default="xz",
+        "--plane",
+        choices=("xz", "yz", "xy"),
+        default="xz",
         help="circle plane; xz = sagittal (default)",
     )
     p.add_argument("--reverse", action="store_true")
     p.add_argument(
-        "--seed", type=float, nargs=6, default=SEED_POSE,
+        "--seed",
+        type=float,
+        nargs=6,
+        default=SEED_POSE,
         help="joint pose whose EE point is the top of the circle",
     )
     p.add_argument("--ee-frame", default="")
     p.add_argument(
-        "--min-z", type=float, default=0.10,
+        "--min-z",
+        type=float,
+        default=0.10,
         help="reject plans whose EE goes below this height (m)",
     )
-
-    r = sub.add_parser("run", parents=[common])
-    r.add_argument(
-        "--vff", action="store_true",
-        help="force message-source velocity feedforward for the run "
-        "(restored after); halves tracking lag per the kd probe",
-    )
-    r.add_argument("--max-speed", type=float, default=0.15)
-    r.add_argument("--max-error", type=float, default=0.35)
-    r.add_argument("--settle", type=float, default=2.0)
-    r.add_argument("--yes", action="store_true")
 
     a = sub.add_parser("analyze", parents=[common])
     a.add_argument("--csv", default="", help="run CSV (default: newest)")
@@ -561,8 +418,6 @@ def main() -> None:
         if args.laps < 1:
             raise SystemExit("--laps must be >= 1")
         _plan(args)
-    elif args.cmd == "run":
-        _run(args)
     else:
         _analyze(args)
 

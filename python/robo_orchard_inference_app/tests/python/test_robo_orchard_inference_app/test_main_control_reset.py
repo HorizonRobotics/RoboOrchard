@@ -131,6 +131,7 @@ def _build_component(
         disable_inference_result=disable_inference_result,
         inference_node_active=inference_node_active,
     )
+    component._stop_scripted_motion_and_robot = lambda: None
     collecting_state = CollectingState(
         inference_state=InferenceState(
             control_mode=control_mode,

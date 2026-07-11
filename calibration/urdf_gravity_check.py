@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Independent gravity-torque check for the left Piper chain.
+"""Compute static Piper gravity torque directly from a URDF."""
 
-Parses the dual-arm URDF directly and computes, for a given q, the actuator
-torque each left joint must apply to hold the arm static under gravity:
-
-    tau_k = -axis_k . sum_{links distal to k} (p_com_i - p_k) x (m_i * g)
-
-This is the same quantity pin.rnea(q, 0, 0) returns, computed with nothing
-but FK, so it cross-checks the controller's recorded rnea values.
-"""
+# Matrix symbols follow standard rigid-body notation.
+# ruff: noqa: N806
 
 import math
-import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
 
-URDF = "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
+if __package__:
+    from calibration.paths import DEFAULT_URDF as URDF
+else:
+    from paths import DEFAULT_URDF as URDF
 G = np.array([0.0, 0.0, -9.81])
 
 
@@ -37,11 +33,13 @@ def axis_angle(axis, angle):
         return np.eye(3)
     x, y, z = axis / n
     c, s, C = math.cos(angle), math.sin(angle), 1 - math.cos(angle)
-    return np.array([
-        [x * x * C + c, x * y * C - z * s, x * z * C + y * s],
-        [y * x * C + z * s, y * y * C + c, y * z * C - x * s],
-        [z * x * C - y * s, z * y * C + x * s, z * z * C + c],
-    ])
+    return np.array(
+        [
+            [x * x * C + c, x * y * C - z * s, x * z * C + y * s],
+            [y * x * C + z * s, y * y * C + c, y * z * C - x * s],
+            [z * x * C - y * s, z * y * C + x * s, z * z * C + c],
+        ]
+    )
 
 
 def parse(urdf_path):
@@ -63,24 +61,33 @@ def parse(urdf_path):
     joints = []
     for j in root.findall("joint"):
         o = j.find("origin")
-        xyz = np.array(
-            [float(v) for v in (o.get("xyz") or "0 0 0").split()]
-        ) if o is not None else np.zeros(3)
-        rpy = [float(v) for v in (o.get("rpy") or "0 0 0").split()] \
-            if o is not None else [0, 0, 0]
+        xyz = (
+            np.array([float(v) for v in (o.get("xyz") or "0 0 0").split()])
+            if o is not None
+            else np.zeros(3)
+        )
+        rpy = (
+            [float(v) for v in (o.get("rpy") or "0 0 0").split()]
+            if o is not None
+            else [0, 0, 0]
+        )
         a = j.find("axis")
-        axis = np.array(
-            [float(v) for v in (a.get("xyz") or "1 0 0").split()]
-        ) if a is not None else np.array([1.0, 0, 0])
-        joints.append({
-            "name": j.get("name"),
-            "type": j.get("type"),
-            "parent": j.find("parent").get("link"),
-            "child": j.find("child").get("link"),
-            "xyz": xyz,
-            "R0": rpy_to_mat(*rpy),
-            "axis": axis,
-        })
+        axis = (
+            np.array([float(v) for v in (a.get("xyz") or "1 0 0").split()])
+            if a is not None
+            else np.array([1.0, 0, 0])
+        )
+        joints.append(
+            {
+                "name": j.get("name"),
+                "type": j.get("type"),
+                "parent": j.find("parent").get("link"),
+                "child": j.find("child").get("link"),
+                "xyz": xyz,
+                "R0": rpy_to_mat(*rpy),
+                "axis": axis,
+            }
+        )
     return links, joints
 
 
@@ -92,7 +99,7 @@ def fk(links, joints, qmap):
     roots = [name for name in links if name not in all_children]
     world = {r: (np.eye(3), np.zeros(3)) for r in roots}
     joint_frames = {}  # joint name -> (axis_world, origin_world)
-    subtree = {}       # joint name -> set of link names below it
+    subtree = {}  # joint name -> set of link names below it
     stack = list(roots)
     while stack:
         parent = stack.pop()
@@ -148,7 +155,11 @@ def fk_report(urdf_path, q6, prefix="left_joint"):
     print(f"pose {q6}:")
     for i in range(1, 7):
         axis_w, p_j = joint_frames[f"{prefix}{i}"]
-        print(f"  {prefix}{i}: origin=({p_j[0]:+.3f},{p_j[1]:+.3f},{p_j[2]:+.3f}) axis=({axis_w[0]:+.2f},{axis_w[1]:+.2f},{axis_w[2]:+.2f})")
+        print(
+            f"  {prefix}{i}: origin=({p_j[0]:+.3f},{p_j[1]:+.3f},"
+            f"{p_j[2]:+.3f}) axis=({axis_w[0]:+.2f},"
+            f"{axis_w[1]:+.2f},{axis_w[2]:+.2f})"
+        )
     # subtree COM below joint 3 (forearm + wrist + gripper)
     for jn in (f"{prefix}2", f"{prefix}3"):
         m_tot, moment = 0.0, np.zeros(3)
@@ -162,7 +173,12 @@ def fk_report(urdf_path, q6, prefix="left_joint"):
         com_w = moment / m_tot
         _, p_j = joint_frames[jn]
         d = com_w - p_j
-        print(f"  subtree({jn}): mass={m_tot:.3f} kg  COM-rel=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})  horiz-lever={math.hypot(d[0],d[1]):.3f} m")
+        print(
+            f"  subtree({jn}): mass={m_tot:.3f} kg  "
+            f"COM-rel=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})  "
+            f"horiz-lever={math.hypot(d[0], d[1]):.3f} m"
+        )
+
 
 if __name__ == "__main__":
     poses = {

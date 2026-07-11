@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "name": "stress",
+  "label": "Stress test",
+  "description": "Lockstepped min-jerk traversal of teleop-demonstrated dual-arm waypoints.",
+  "executor": {
+    "mode": "waypoints",
+    "parameters": {
+      "waypoints_left": [
+        [0.0, 0.15, 0.0, 0.3, 0.0, 0.0, 0.0],
+        [0.0, 1.5, -1.4, 0.0, 0.1, 0.0, 0.0],
+        [0.0, 2.4, -2.5, 0.2, 0.0, 0.0, 0.0],
+        [0.0, 1.5, -2.5, 0.7, 0.0, 0.0, 0.0],
+        [0.0, 0.3, -1.2, 0.7, 0.0, 0.0, 0.0],
+        [0.4, 1.4, -1.4, 0.3, 0.0, 0.0, 0.0],
+        [-0.4, 1.4, -1.4, 0.3, 0.0, 0.0, 0.0]
+      ],
+      "waypoints_right": [
+        [0.0, 0.15, 0.0, 0.3, 0.0, 0.0, 0.0],
+        [0.0, 1.5, -1.4, 0.0, 0.1, 0.0, 0.0],
+        [0.0, 2.4, -2.5, 0.2, 0.0, 0.0, 0.0],
+        [0.0, 1.5, -2.5, 0.7, 0.0, 0.0, 0.0],
+        [0.0, 0.3, -1.2, 0.7, 0.0, 0.0, 0.0],
+        [0.4, 1.4, -1.4, 0.3, 0.0, 0.0, 0.0],
+        [-0.4, 1.4, -1.4, 0.3, 0.0, 0.0, 0.0]
+      ],
+      "peak_velocity": 2.0,
+      "max_accel": 8.0,
+      "settle_s": 0.4,
+      "pass_through_indices": [3],
+      "speed_scale": 0.3,
+      "laps": 1,
+      "duration_s": 0.0
+    }
+  },
+  "ui": {
+    "order": 20,
+    "speed_control": "scale",
+    "speed_min": 0.1,
+    "speed_max": 1.5,
+    "speed_step": 0.05,
+    "speed_default": 0.3,
+    "laps_default": 1,
+    "record_default": false
+  },
+  "safety": {
+    "use_current_state": true,
+    "requires_reset_pose": true,
+    "pass_through_reason": {
+      "3": "Full forward extension is near the J2 continuous-current limit; never dwell here."
+    },
+    "bringup_speed_scales": [0.3, 0.6, 1.0],
+    "source_episodes": [
+      "2026_07_08-12_45_05",
+      "2026_07_08-13_14_14"
+    ]
+  },
+  "tools": {}
+}

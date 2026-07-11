@@ -33,6 +33,9 @@ MIT_PARAM_NAMES = (
     "mit_torque_ref",
     "mit_velocity_feedforward",
     "mit_velocity_feedforward_source",
+    "mit_velocity_feedforward_cutoff_hz",
+    "mit_velocity_feedforward_phase_lead",
+    "mit_command_acceleration_filter_cutoff_hz",
     "mit_gravity_compensation_enabled",
     "mit_gravity_compensation_urdf_path",
     "mit_gravity_compensation_scale",
@@ -183,7 +186,9 @@ class RosServiceHelper:
 
         service_name = self.cfg.static_transform_service_name
         if not service_name:
-            self.logger.error("static_transform_service_name is not configured")
+            self.logger.error(
+                "static_transform_service_name is not configured"
+            )
             return False
 
         fingerprint = self._static_transform_fingerprint(directory)
@@ -264,7 +269,7 @@ class RosServiceHelper:
 
     @staticmethod
     def _python_value_to_parameter_value(
-        value: bool | float | str | list
+        value: bool | float | str | list,
     ) -> dict:
         if isinstance(value, bool):
             return {"type": 1, "bool_value": value}
@@ -323,13 +328,12 @@ class RosServiceHelper:
         if not self._check_client_connected():
             return {}, "ROS is not connected"
 
-        available_services: list[str] = self.ros_client.get_services()
         service_type = "rcl_interfaces/srv/GetParameters"
         get_param_service = f"{node_name}/get_parameters"
-        if get_param_service not in available_services:
-            return {}, f"Parameter service {get_param_service} not found"
-
         try:
+            available_services: list[str] = self.ros_client.get_services()
+            if get_param_service not in available_services:
+                return {}, (f"Parameter service {get_param_service} not found")
             service = roslibpy.Service(
                 self.ros_client, get_param_service, service_type
             )
@@ -414,15 +418,6 @@ class RosServiceHelper:
             list[float] | None
         ) = None,
         follower_gravity_compensation_max_t_ref: float | None = None,
-        follower_friction_compensation_enabled: bool | None = None,
-        follower_friction_compensation_scale: list[float] | None = None,
-        follower_friction_compensation_load_scale: float | None = None,
-        follower_friction_compensation_min_velocity: float | None = None,
-        follower_friction_compensation_taper_velocity: float | None = None,
-        follower_friction_compensation_static_scale: (
-            list[float] | None
-        ) = None,
-        follower_friction_compensation_static_velocity: float | None = None,
     ) -> bool:
         mit_cfg = self.cfg.mit_control
         requested_params: list[
@@ -449,8 +444,7 @@ class RosServiceHelper:
             )
         if master_gravity_compensation_scale_per_joint is not None:
             master_params["mit_gravity_compensation_scale_per_joint"] = [
-                float(v)
-                for v in master_gravity_compensation_scale_per_joint
+                float(v) for v in master_gravity_compensation_scale_per_joint
             ]
         if master_gravity_compensation_max_t_ref is not None:
             master_params["mit_gravity_compensation_max_t_ref"] = (
@@ -501,9 +495,9 @@ class RosServiceHelper:
                 follower_gravity_compensation_alpha
             )
         if follower_gravity_compensation_enabled is not None:
-            follower_params[
-                "mit_gravity_compensation_enabled"
-            ] = follower_gravity_compensation_enabled
+            follower_params["mit_gravity_compensation_enabled"] = (
+                follower_gravity_compensation_enabled
+            )
         if follower_gravity_compensation_urdf_path is not None:
             follower_params["mit_gravity_compensation_urdf_path"] = (
                 follower_gravity_compensation_urdf_path
@@ -514,41 +508,11 @@ class RosServiceHelper:
             )
         if follower_gravity_compensation_scale_per_joint is not None:
             follower_params["mit_gravity_compensation_scale_per_joint"] = [
-                float(v)
-                for v in follower_gravity_compensation_scale_per_joint
+                float(v) for v in follower_gravity_compensation_scale_per_joint
             ]
         if follower_gravity_compensation_max_t_ref is not None:
             follower_params["mit_gravity_compensation_max_t_ref"] = (
                 follower_gravity_compensation_max_t_ref
-            )
-        if follower_friction_compensation_enabled is not None:
-            follower_params["mit_friction_compensation_enabled"] = bool(
-                follower_friction_compensation_enabled
-            )
-        if follower_friction_compensation_scale is not None:
-            follower_params["mit_friction_compensation_scale"] = [
-                float(v) for v in follower_friction_compensation_scale
-            ]
-        if follower_friction_compensation_load_scale is not None:
-            follower_params["mit_friction_compensation_load_scale"] = (
-                follower_friction_compensation_load_scale
-            )
-        if follower_friction_compensation_min_velocity is not None:
-            follower_params["mit_friction_compensation_min_velocity"] = (
-                follower_friction_compensation_min_velocity
-            )
-        if follower_friction_compensation_taper_velocity is not None:
-            follower_params["mit_friction_compensation_taper_velocity"] = (
-                follower_friction_compensation_taper_velocity
-            )
-        if follower_friction_compensation_static_scale is not None:
-            follower_params["mit_friction_compensation_static_scale"] = [
-                float(v)
-                for v in follower_friction_compensation_static_scale
-            ]
-        if follower_friction_compensation_static_velocity is not None:
-            follower_params["mit_friction_compensation_static_velocity"] = (
-                follower_friction_compensation_static_velocity
             )
         for node_name in mit_cfg.follower_param_node_names:
             requested_params.append((node_name, dict(follower_params)))
@@ -637,35 +601,6 @@ class RosServiceHelper:
             self._last_requested_mit_params[
                 "follower_gravity_compensation_max_t_ref"
             ] = follower_gravity_compensation_max_t_ref
-        if follower_friction_compensation_enabled is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_enabled"
-            ] = bool(follower_friction_compensation_enabled)
-        if follower_friction_compensation_scale is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_scale"
-            ] = list(follower_friction_compensation_scale)
-        if follower_friction_compensation_load_scale is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_load_scale"
-            ] = follower_friction_compensation_load_scale
-        if follower_friction_compensation_min_velocity is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_min_velocity"
-            ] = follower_friction_compensation_min_velocity
-        if follower_friction_compensation_taper_velocity is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_taper_velocity"
-            ] = follower_friction_compensation_taper_velocity
-        if follower_friction_compensation_static_scale is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_static_scale"
-            ] = list(follower_friction_compensation_static_scale)
-        if follower_friction_compensation_static_velocity is not None:
-            self._last_requested_mit_params[
-                "follower_friction_compensation_static_velocity"
-            ] = follower_friction_compensation_static_velocity
-
         self.logger.info(
             "MIT params set: "
             f"master enabled={master_enabled}, "
@@ -705,9 +640,7 @@ class RosServiceHelper:
         )
         return True
 
-    def set_follower_gravity_compensation_alpha(
-        self, alpha: float
-    ) -> bool:
+    def set_follower_gravity_compensation_alpha(self, alpha: float) -> bool:
         alpha = float(alpha)
         # Gravity compensation stays enabled; alpha == 0 yields zero torque.
         enabled = True
@@ -741,9 +674,7 @@ class RosServiceHelper:
             1.0 if enabled else 0.0
         )
 
-    def set_follower_gravity_record_dir(
-        self, directory: str | None
-    ) -> bool:
+    def set_follower_gravity_record_dir(self, directory: str | None) -> bool:
         """Point per-timestep gravity recording at an episode ``directory``.
 
         Writes one ``gravity_<node>.csv`` per follower node into

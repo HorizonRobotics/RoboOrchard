@@ -77,14 +77,12 @@ def main():
                 default_master_kd=0.8,
                 default_master_vel_ref=45.0,
                 default_master_torque_ref=0.0,
-                default_follower_kp=10.0,
+                default_follower_kp=25.0,
                 default_follower_kd=0.8,
                 default_follower_vel_ref=45.0,
                 default_follower_torque_ref=0.0,
                 default_follower_gravity_compensation_alpha=0.0,
-                default_follower_gravity_compensation_urdf_path=(
-                    "/data/holobrain/urdf/piper_x_description_dualarm_v2.urdf"
-                ),
+                default_follower_velocity_feedforward=True,
             ),
             enable_arm_service_name=[
                 "/robot/left_master/enable_ctrl",
@@ -109,10 +107,7 @@ def main():
                 "/opt/roboorchard/ros2_package/robo_orchard_teleop_ros2/"
                 "robo_orchard_teleop_ros2/scripted/joint_master.py",
             ],
-            duration_s=10.0,
             start_delay_s=3.0,
-            amplitude_scale=1.0,
-            frequency_scale=1.0,
             rate_hz=100.0,
             reset_position=[0.0, 0.10, -0.70, 0.0, 0.0, 0.0, 0.0],
         ),

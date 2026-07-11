@@ -194,11 +194,33 @@ class CollectingState(pydantic.BaseModel):
         if ui_params is not None:
             self.episode_meta.ui_params = ui_params
 
-        if os.path.exists(self.current_data_uri):
-            with open(
-                os.path.join(self.current_data_uri, "episode_meta.json"), "w"
-            ) as fh:
-                fh.write(self.episode_meta.model_dump_json(indent=4))
+        self.write_episode_meta()
+
+    def write_episode_meta(self) -> str:
+        """Write episode_meta.json for the current episode.
+
+        Never skips silently: the episode directory is created if the
+        recorder has not made it yet (an episode with meta but no data
+        is diagnosable; one with data but no meta looked like the app
+        "lost" the run — 2026-07-09 11:17 episode). The param dicts are
+        arbitrary snapshot content, so a value pydantic cannot
+        serialize falls back to repr() instead of aborting finalize.
+        """
+        import json
+
+        os.makedirs(self.current_data_uri, exist_ok=True)
+        path = os.path.join(self.current_data_uri, "episode_meta.json")
+        try:
+            payload = self.episode_meta.model_dump_json(indent=4)
+        except Exception:
+            payload = json.dumps(
+                self.episode_meta.model_dump(mode="python"),
+                indent=4,
+                default=repr,
+            )
+        with open(path, "w") as fh:
+            fh.write(payload)
+        return path
 
 
 class LogMessage(pydantic.BaseModel):
