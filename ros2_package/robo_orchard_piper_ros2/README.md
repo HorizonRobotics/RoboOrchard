@@ -51,8 +51,10 @@ Controllers load `calibration/deflection_calibrations.json` (launch default
 `/opt/roboorchard/calibration/deflection_calibrations.json`) at startup and on
 `mit_kp` / enable / file / side changes. Deflection entries are kp-indexed:
 setting an uncalibrated `mit_kp` with gravity compensation enabled is rejected
-at runtime. Calibrate a new kp with `calibration/calibrate_kp.py`. Resolved
-values are synced back to the parameter server. See
+at runtime. Calibrate a new kp with `calibration/calibrate_kp.py`. The
+committed store was measured on our rig (kp 25 / 30 / 40) — treat it as a
+starting point and recalibrate for your own hardware; we recommend kp > 10.
+Resolved values are synced back to the parameter server. See
 `calibration/CALIBRATION.md` (schema) and `calibration/README.md` (tools).
 
 ### Parameters

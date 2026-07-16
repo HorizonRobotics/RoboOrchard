@@ -25,6 +25,15 @@ torque→deflection behavior of each joint:
   episode metadata, launch defaults, and running controllers from drifting
   apart.
 
+## Shipped calibration values
+
+The committed `deflection_calibrations.json` was measured on our dual-arm rig
+(kp 25 / 30 / 40, both sides). It is kept in the repo as a schema example and
+a reasonable starting point, but deflection behavior varies per unit — before
+trusting gravity compensation on your own hardware, re-measure with
+`calibrate_kp.py --side <side> --kp <kp>`. We recommend running
+gravity-compensated MIT at kp > 10.
+
 ## Prerequisites (hardware tools)
 
 Run inside the holobrain container with ROS sourced, the teleop stack up, and
