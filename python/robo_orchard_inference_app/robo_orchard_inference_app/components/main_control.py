@@ -14,31 +14,41 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import os
-from dataclasses import dataclass, field
 
-import polling2
 import streamlit as st
 
+from robo_orchard_inference_app.components.calibration import (
+    CalibrationMixin,
+)
+from robo_orchard_inference_app.components.control_state import (
+    ControlStateMixin,
+    _ui_prefs,
+)
 from robo_orchard_inference_app.components.edit_episode_meta import (
     EditEpisodeMetaComponent,
 )
+from robo_orchard_inference_app.components.mit_control import MitControlMixin
 from robo_orchard_inference_app.components.mixin import ComponentBase
-from robo_orchard_inference_app.ros_bridge import RosServiceHelper
-from robo_orchard_inference_app.ui import (
-    StatusConfig,
-    multi_status_indicator,
+from robo_orchard_inference_app.components.recording import RecordingMixin
+from robo_orchard_inference_app.components.robot_control import (
+    RobotControlMixin,
 )
+from robo_orchard_inference_app.components.scripted_motion import (
+    ScriptedMotionMixin,
+)
+from robo_orchard_inference_app.ros_bridge import RosServiceHelper
+from robo_orchard_inference_app.ui import StatusConfig, multi_status_indicator
 
 
-@dataclass
-class MetaRow:
-    unique_id: str
-    meta_key: str | None = None
-    meta_vals: list[str] = field(default_factory=list)
-
-
-class MainControlComponent(ComponentBase):
+class MainControlComponent(
+    ControlStateMixin,
+    RecordingMixin,
+    CalibrationMixin,
+    MitControlMixin,
+    ScriptedMotionMixin,
+    RobotControlMixin,
+    ComponentBase,
+):
     """The main orchestrator component for the control UI.
 
     This component integrates configuration, recording, and robot control panels,
@@ -113,202 +123,43 @@ class MainControlComponent(ComponentBase):
             self.collecting_state.episode_meta
         )
 
-    # --- Data Recording Panel ---
-    def _render_recorder_panel(self):
-        """Renders the data recording controls."""
-        if not self.collecting_state.is_configured:
-            return
+    def _pref(self, suffix: str, default):
+        """Seed value for a persisted widget (see _ui_prefs)."""
+        return _ui_prefs().get(suffix, default)
 
-        self.collecting_state.prepare(self.launch_cfg.workspace)
+    def _remember_pref(self, suffix: str) -> None:
+        """on_change callback: mirror a widget's new value into _ui_prefs."""
+        _ui_prefs()[suffix] = st.session_state[f"{self.key_prefix}_{suffix}"]
 
-        def _get_start_btn_help() -> str | None:
-            if self.launch_cfg.ui_control.start_keyboard is not None:
-                start_btn_help = f"Press {self.launch_cfg.ui_control.start_keyboard} to start"  # noqa: E501
-            else:
-                start_btn_help = None
-
-            return start_btn_help
-
-        def _get_stop_btn_help() -> str | None:
-            if self.launch_cfg.ui_control.stop_keyboard is not None:
-                stop_btn_help = (
-                    f"Press {self.launch_cfg.ui_control.stop_keyboard} to stop"
-                )
-            else:
-                stop_btn_help = None
-
-            return stop_btn_help
-
-        with st.expander("🔴 Data Recorder", expanded=True):
-            start_col, stop_col = st.columns(2)
-
-            with start_col:
-                if st.button(
-                    "▶️ Start",
-                    disabled=self.collecting_state.is_recording,
-                    key=f"{self.key_prefix}_start_record_btn",
-                    on_click=self._start_recording_callback,
-                    use_container_width=True,
-                    help=_get_start_btn_help(),
-                    shortcut=self.launch_cfg.ui_control.start_keyboard,
-                ):
-                    self._handle_start_recording_event()
-
-            with stop_col:
-                st.button(
-                    "⏹️ Stop",
-                    disabled=not self.collecting_state.is_recording,
-                    key=f"{self.key_prefix}_stop_record_btn",
-                    on_click=self._stop_recording_callback,
-                    use_container_width=True,
-                    help=_get_stop_btn_help(),
-                    shortcut=self.launch_cfg.ui_control.stop_keyboard,
-                )
-
-    def _start_recording_callback(self):
-        if self.collecting_state.is_recording:
-            self.logger.error(
-                "An episode is recorded, please decide to save or not first!"  # noqa: E501
-            )
-            return
-
-        data_uri = self.collecting_state.prepare_recording_path()
-
-        if self.ros_helper.start_recording(uri=data_uri):
-            self.logger.info(f"Starting recording for episode: {data_uri}")
-            self.collecting_state.at_start_recording()
-        else:
-            self.logger.error(
-                "Failed to start recording! Please check the log panel."
-            )
-
-    def _handle_start_recording_event(self):
-        """Handles the logic for starting a recording session."""
-
-        if not self.collecting_state.is_recording:
-            return
-
-        with st.spinner("Waiting...", show_time=True):
-            try:
-                # Poll for the __RECORDING__ flag file
-                recording_flag = os.path.join(
-                    self.collecting_state.current_data_uri, "__RECORDING__"
-                )
-                polling2.poll(
-                    lambda: os.path.exists(recording_flag),
-                    timeout=10.0,
-                    step=0.1,
-                )
-                self.logger.info(
-                    "Recording started to: "
-                    f"{self.collecting_state.current_data_uri}"
-                )
-            except polling2.TimeoutException:
-                self.logger.error(
-                    "Failed to start recorder because of timeout"
-                )  # noqa: E501
-            except Exception as e:
-                self.logger.error(
-                    "Get unexpected error when handle start "
-                    f"recording event: {e}"
-                )
-            finally:
-                st.rerun()
-
-    def _stop_recording_callback(self):
-        """Handles the logic for stopping a recording session."""
-        if not self.collecting_state.is_recording:
-            self.logger.error("Please start recording first!")
-            return
-
-        if self.ros_helper.stop_recording():
-            self.collecting_state.at_stop_recording()
-            self.logger.info(
-                "Episode {} saved to: {}".format(
-                    self.collecting_state.episode_counter.current(),
-                    self.collecting_state.current_data_uri,
-                )
-            )
-
-        else:
-            self.logger.error(
-                "Stop recording failed! Please check the log panel."
-            )
-
-    # --- Robot Control Panel ---
-    def _render_robot_control_panel(self):
-        """Renders manual control buttons for the robot."""
-        if not self.ros_helper:
-            return
-
-        with st.expander("🤖 Robot Control", expanded=True):
-            # --- Control Mode ---
-            st.subheader("Control Mode")
-            mode_cols = st.columns([1, 1, 1])
-            modes = [
-                ("takeover", "takeover"),
-                ("auto", "auto"),
-                ("stop", "stop"),
-            ]
-            for (
-                col,
-                (show_name, value),
-            ) in zip(mode_cols, modes, strict=False):
-                with col:
-                    st.button(
-                        show_name.capitalize(),
-                        on_click=self.ros_helper.set_control_mode,
-                        args=(value,),
-                        use_container_width=True,
-                        key=f"{self.key_prefix}_set_control_mode_{value}",
-                    )
-
-            # --- Inference service ---
-            st.subheader("Inference Control")
-            inference_cols = st.columns([1, 1, 1])
-            with inference_cols[0]:
-                st.button(
-                    "Start",
-                    key=f"{self.key_prefix}_enable_inference_service",
-                    on_click=self.ros_helper.enable_inference,
-                    use_container_width=True,
-                    args=(self.collecting_state.episode_meta,),
-                )
-
-            with inference_cols[1]:
-                st.button(
-                    "Stop",
-                    key=f"{self.key_prefix}_disable_inference_service",
-                    on_click=self.ros_helper.disable_inference,
-                    use_container_width=True,
-                )
-
-            with inference_cols[2]:
-                st.button(
-                    "Reset",
-                    key=f"{self.key_prefix}_reset_arm_ctrl",
-                    disabled=self._is_reset_disabled(),
-                    on_click=self.reset_arm_ctrl_callback,
-                    use_container_width=True,
-                )
-
-    def _is_reset_disabled(self) -> bool:
-        state = self.collecting_state.inference_state
-        return self.collecting_state.is_recording or (
-            state.control_mode in {"takeover", "stop"}
+    @st.dialog("Confirm Arm State Change", dismissible=False)
+    def change_arm_ctrl_dialog(self, enable: bool):
+        """Confirmation dialog for enabling/disabling the arm."""
+        st.warning(
+            "Ensure the robot arm is in a safe position before proceeding.",
+            icon="⚠️",
         )
+        col1, col2 = st.columns(2)
+        if col1.button("Continue", use_container_width=True, type="primary"):
+            if enable:
+                self.ros_helper.enable_arm()
+            else:
+                self._stop_scripted_motion_and_robot()
+                self.ros_helper.disable_arm()
+            st.rerun()
+        if col2.button("Cancel", use_container_width=True):
+            st.rerun()
 
     def reset_arm_ctrl_callback(self):
-        """Resets the robot arm controllers."""
-        # Disabling inference gates the reset only when an inference node
-        # is running; with none launched nothing can contend with the
-        # reset, so skip the gate instead of blocking on a missing service.
-        if self.ros_helper.is_inference_node_active():
-            if not self.ros_helper.disable_inference():
-                self.logger.warning(
-                    "Reset is blocked: failed to disable inference service."
-                )
-                return
+        """Stop command sources, then reset the robot controllers."""
+        self._stop_scripted_motion_and_robot()
+        if (
+            self.ros_helper.is_inference_node_active()
+            and not self.ros_helper.disable_inference()
+        ):
+            self.logger.warning(
+                "Reset is blocked: failed to disable inference service."
+            )
+            return
         self.ros_helper.reset_arm()
 
     def _render_handeye_calib_panel(self):
@@ -337,6 +188,7 @@ class MainControlComponent(ComponentBase):
     # --- Entry ---
     def __call__(self):
         """Renders the entire main control UI."""
+        self._render_scripted_recording_refresh()
         self._render_state_panel()
         self._render_configure_panel()
         self._render_recorder_panel()

@@ -15,7 +15,8 @@
 # permissions and limitations under the License.
 
 import atexit
-from pathlib import Path
+import hashlib
+import os
 from typing import Callable, Literal
 
 import roslibpy
@@ -23,6 +24,32 @@ import roslibpy
 from robo_orchard_inference_app.config import ROSBridgeCfg
 from robo_orchard_inference_app.logger import Logger
 from robo_orchard_inference_app.state import InferenceState
+
+MIT_PARAM_NAMES = (
+    "enable_mit_ctrl",
+    "mit_kp",
+    "mit_kd",
+    "mit_vel_ref",
+    "mit_torque_ref",
+    "mit_velocity_feedforward",
+    "mit_velocity_feedforward_source",
+    "mit_velocity_feedforward_cutoff_hz",
+    "mit_velocity_feedforward_phase_lead",
+    "mit_command_acceleration_filter_cutoff_hz",
+    "mit_gravity_compensation_enabled",
+    "mit_gravity_compensation_urdf_path",
+    "mit_gravity_compensation_scale",
+    "mit_gravity_compensation_scale_per_joint",
+    "mit_gravity_compensation_max_t_ref",
+    "mit_gravity_compensation_use_kp_offset",
+    "mit_friction_compensation_enabled",
+    "mit_friction_compensation_scale",
+    "mit_friction_compensation_load_scale",
+    "mit_friction_compensation_min_velocity",
+    "mit_friction_compensation_taper_velocity",
+    "mit_friction_compensation_static_scale",
+    "mit_friction_compensation_static_velocity",
+)
 
 
 class RosServiceHelper:
@@ -48,7 +75,10 @@ class RosServiceHelper:
         self.state = inference_state
         self.logger = logger
         self._is_recording = False
-        self._synced_tf_fingerprint: tuple[str, frozenset] | None = None
+        self._last_requested_mit_params: (
+            dict[str, bool | float | str] | None
+        ) = None
+        self._last_static_transform_fingerprint = None
         atexit.register(self.cleanup)
 
     def _check_client_connected(self) -> bool:
@@ -118,6 +148,73 @@ class RosServiceHelper:
             success_callback()
         return True
 
+    def get_node_names(self) -> list[str]:
+        if not self._check_client_connected():
+            return []
+        try:
+            return list(self.ros_client.get_nodes())
+        except Exception as e:
+            self.logger.error(f"Error getting ROS node names: {e}")
+            return []
+
+    @staticmethod
+    def _static_transform_fingerprint(directory: str):
+        abs_directory = os.path.abspath(directory)
+        entries = []
+        try:
+            for name in sorted(os.listdir(abs_directory)):
+                if not name.endswith(".json"):
+                    continue
+                path = os.path.join(abs_directory, name)
+                if not os.path.isfile(path):
+                    continue
+                stat = os.stat(path)
+                with open(path, "rb") as f:
+                    digest = hashlib.sha256(f.read()).hexdigest()
+                entries.append((name, stat.st_size, stat.st_mtime_ns, digest))
+        except OSError:
+            return (abs_directory, None)
+        return (abs_directory, tuple(entries))
+
+    def invalidate_static_transform_cache(self) -> None:
+        self._last_static_transform_fingerprint = None
+
+    def sync_static_transforms(self, episode_meta) -> bool:
+        directory = getattr(episode_meta, "tf_directory", "")
+        if not directory:
+            return True
+
+        service_name = self.cfg.static_transform_service_name
+        if not service_name:
+            self.logger.error(
+                "static_transform_service_name is not configured"
+            )
+            return False
+
+        fingerprint = self._static_transform_fingerprint(directory)
+        if fingerprint == self._last_static_transform_fingerprint:
+            return True
+
+        ok = self._call_services(
+            service_names=service_name,
+            success_msg="Static transforms updated successfully!",
+            timeout=5.0,
+            service_type="robo_orchard_data_msg_ros2/srv/SetStaticTransforms",
+            request_data={"directory": directory},
+        )
+        if ok:
+            self._last_static_transform_fingerprint = fingerprint
+        return ok
+
+    def get_tf_publisher_startup_id(self) -> str | None:
+        params, error = self._get_params(
+            "/static_tf_publisher", param_names=("startup_id",)
+        )
+        if error:
+            return None
+        startup_id = params.get("startup_id")
+        return startup_id if isinstance(startup_id, str) else None
+
     def _set_param(
         self,
         node_name: str,
@@ -151,11 +248,16 @@ class RosServiceHelper:
             )
             request = roslibpy.ServiceRequest(request_data)
             result = service.call(request, timeout=timeout)
-            if "results" in result and result["results"][0]["successful"]:
+            results = result.get("results", [])
+            if results and all(
+                item.get("successful", False) for item in results
+            ):
                 return True
-            else:
-                self.logger.error("Failed to set parameter.")
-                return False
+
+            reasons = [item.get("reason", "") for item in results]
+            reason = "; ".join(reason for reason in reasons if reason)
+            self.logger.error(f"Failed to set parameter. {reason}".strip())
+            return False
         except roslibpy.core.RosTimeoutError:
             self.logger.error(
                 f"Timeout calling set parameter service: {set_param_service}"
@@ -165,100 +267,439 @@ class RosServiceHelper:
             self.logger.error(f"Error calling {set_param_service}: {e}")
             return False
 
-    def get_node_names(self) -> list[str]:
-        if not self._check_client_connected():
-            return []
+    @staticmethod
+    def _python_value_to_parameter_value(
+        value: bool | float | str | list,
+    ) -> dict:
+        if isinstance(value, bool):
+            return {"type": 1, "bool_value": value}
+        if isinstance(value, str):
+            return {"type": 4, "string_value": value}
+        if isinstance(value, (list, tuple)):
+            return {
+                "type": 8,
+                "double_array_value": [float(v) for v in value],
+            }
+        return {"type": 3, "double_value": float(value)}
 
-        try:
-            service = roslibpy.Service(
-                self.ros_client, "/rosapi/nodes", "rosapi_msgs/srv/Nodes"
-            )
-            request = roslibpy.ServiceRequest({})
-            result = service.call(request, timeout=5.0)
-            return [
-                node
-                for node in result.get("nodes", [])
-                if isinstance(node, str)
+    def _set_params(
+        self, node_name: str, params: dict[str, bool | float | str | list]
+    ) -> bool:
+        request_data = {
+            "parameters": [
+                {
+                    "name": name,
+                    "value": self._python_value_to_parameter_value(value),
+                }
+                for name, value in params.items()
             ]
-        except Exception as e:
-            self.logger.error(f"Error calling /rosapi/nodes: {e}")
-            return []
+        }
+        return self._set_param(node_name=node_name, request_data=request_data)
 
-    def get_tf_publisher_startup_id(
-        self, node_name: str = "/static_tf_publisher"
-    ) -> str | None:
+    @staticmethod
+    def _parameter_value_to_python(value: dict) -> object:
+        value_type = value.get("type")
+        if value_type == 1:
+            return value.get("bool_value", False)
+        if value_type == 2:
+            return value.get("integer_value", 0)
+        if value_type == 3:
+            return value.get("double_value", 0.0)
+        if value_type == 4:
+            return value.get("string_value", "")
+        if value_type == 5:
+            return value.get("byte_array_value", [])
+        if value_type == 6:
+            return value.get("bool_array_value", [])
+        if value_type == 7:
+            return value.get("integer_array_value", [])
+        if value_type == 8:
+            return value.get("double_array_value", [])
+        if value_type == 9:
+            return value.get("string_array_value", [])
+        return None
+
+    def _get_params(
+        self,
+        node_name: str,
+        param_names: tuple[str, ...] = MIT_PARAM_NAMES,
+        timeout: float = 5.0,
+    ) -> tuple[dict[str, object], str | None]:
         if not self._check_client_connected():
-            return None
+            return {}, "ROS is not connected"
 
+        service_type = "rcl_interfaces/srv/GetParameters"
         get_param_service = f"{node_name}/get_parameters"
         try:
+            available_services: list[str] = self.ros_client.get_services()
+            if get_param_service not in available_services:
+                return {}, (f"Parameter service {get_param_service} not found")
             service = roslibpy.Service(
-                self.ros_client,
-                get_param_service,
-                "rcl_interfaces/srv/GetParameters",
+                self.ros_client, get_param_service, service_type
             )
-            request = roslibpy.ServiceRequest({"names": ["startup_id"]})
-            result = service.call(request, timeout=3.0)
-            values = result.get("values", [])
-            if not values:
-                return None
-            value = values[0]
-            string_value = value.get("string_value", "")
-            if not string_value:
-                return None
-            return string_value
+            request = roslibpy.ServiceRequest({"names": list(param_names)})
+            result = service.call(request, timeout=timeout)
         except roslibpy.core.RosTimeoutError:
-            return None
+            return {}, f"Timeout calling parameter service {get_param_service}"
         except Exception as e:
-            self.logger.error(
-                f"Error calling {get_param_service} for startup_id: {e}"
+            return {}, f"Error calling {get_param_service}: {e}"
+
+        values = result.get("values", [])
+        if len(values) != len(param_names):
+            return {}, (
+                f"Expected {len(param_names)} parameter values from "
+                f"{get_param_service}, got {len(values)}"
             )
-            return None
 
-    def invalidate_static_transform_cache(self) -> None:
-        self._synced_tf_fingerprint = None
+        params = {
+            name: self._parameter_value_to_python(value)
+            for name, value in zip(param_names, values, strict=True)
+        }
+        return params, None
 
-    def _get_tf_directory_fingerprint(
-        self, directory: str
-    ) -> tuple[str, frozenset] | None:
-        try:
-            files = frozenset(
-                (f.name, f.stat().st_mtime_ns, f.stat().st_size)
-                for f in Path(directory).glob("*.json")
+    def get_mit_params_snapshot(self) -> dict[str, object]:
+        mit_cfg = self.cfg.mit_control
+        snapshot: dict[str, object] = {
+            "param_names": list(MIT_PARAM_NAMES),
+            "requested": self._last_requested_mit_params,
+            "master": [],
+            "follower": [],
+        }
+
+        for role, node_names in (
+            ("master", mit_cfg.master_param_node_names),
+            ("follower", mit_cfg.follower_param_node_names),
+        ):
+            entries = snapshot[role]
+            assert isinstance(entries, list)
+            for node_name in node_names:
+                params, error = self._get_params(node_name)
+                entry = {
+                    "node_name": node_name,
+                    "status": "error" if error else "confirmed",
+                    "params": params,
+                }
+                if error:
+                    entry["error"] = error
+                entries.append(entry)
+
+        return snapshot
+
+    def set_mit_params(
+        self,
+        master_enabled: bool,
+        master_kp: float,
+        master_kd: float,
+        master_vel_ref: float,
+        master_torque_ref: float,
+        follower_enabled: bool,
+        follower_kp: float,
+        follower_kd: float,
+        follower_vel_ref: float,
+        follower_torque_ref: float,
+        master_gravity_compensation_enabled: bool | None = None,
+        master_gravity_compensation_urdf_path: str | None = None,
+        master_gravity_compensation_scale: float | None = None,
+        master_gravity_compensation_scale_per_joint: (
+            list[float] | None
+        ) = None,
+        master_gravity_compensation_max_t_ref: float | None = None,
+        master_friction_compensation_enabled: bool | None = None,
+        master_friction_compensation_scale: list[float] | None = None,
+        master_friction_compensation_load_scale: float | None = None,
+        master_friction_compensation_min_velocity: float | None = None,
+        master_friction_compensation_taper_velocity: float | None = None,
+        follower_velocity_feedforward: bool | None = None,
+        follower_gravity_compensation_alpha: float | None = None,
+        follower_gravity_compensation_enabled: bool | None = None,
+        follower_gravity_compensation_urdf_path: str | None = None,
+        follower_gravity_compensation_scale: float | None = None,
+        follower_gravity_compensation_scale_per_joint: (
+            list[float] | None
+        ) = None,
+        follower_gravity_compensation_max_t_ref: float | None = None,
+    ) -> bool:
+        mit_cfg = self.cfg.mit_control
+        requested_params: list[
+            tuple[str, dict[str, bool | float | str | list]]
+        ] = []
+        master_params: dict[str, bool | float | str | list] = {
+            "enable_mit_ctrl": master_enabled,
+            "mit_kp": master_kp,
+            "mit_kd": master_kd,
+            "mit_vel_ref": master_vel_ref,
+            "mit_torque_ref": master_torque_ref,
+        }
+        if master_gravity_compensation_enabled is not None:
+            master_params["mit_gravity_compensation_enabled"] = bool(
+                master_gravity_compensation_enabled
             )
-        except OSError:
-            return None
-        return (directory, files)
+        if master_gravity_compensation_urdf_path is not None:
+            master_params["mit_gravity_compensation_urdf_path"] = (
+                master_gravity_compensation_urdf_path
+            )
+        if master_gravity_compensation_scale is not None:
+            master_params["mit_gravity_compensation_scale"] = (
+                master_gravity_compensation_scale
+            )
+        if master_gravity_compensation_scale_per_joint is not None:
+            master_params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v) for v in master_gravity_compensation_scale_per_joint
+            ]
+        if master_gravity_compensation_max_t_ref is not None:
+            master_params["mit_gravity_compensation_max_t_ref"] = (
+                master_gravity_compensation_max_t_ref
+            )
+        if master_friction_compensation_enabled is not None:
+            master_params["mit_friction_compensation_enabled"] = bool(
+                master_friction_compensation_enabled
+            )
+        if master_friction_compensation_scale is not None:
+            master_params["mit_friction_compensation_scale"] = [
+                float(v) for v in master_friction_compensation_scale
+            ]
+        if master_friction_compensation_load_scale is not None:
+            master_params["mit_friction_compensation_load_scale"] = (
+                master_friction_compensation_load_scale
+            )
+        if master_friction_compensation_min_velocity is not None:
+            master_params["mit_friction_compensation_min_velocity"] = (
+                master_friction_compensation_min_velocity
+            )
+        if master_friction_compensation_taper_velocity is not None:
+            master_params["mit_friction_compensation_taper_velocity"] = (
+                master_friction_compensation_taper_velocity
+            )
+        for node_name in mit_cfg.master_param_node_names:
+            requested_params.append((node_name, dict(master_params)))
+        follower_params: dict[str, bool | float | str | list] = {
+            "enable_mit_ctrl": follower_enabled,
+            "mit_kp": follower_kp,
+            "mit_kd": follower_kd,
+            "mit_vel_ref": follower_vel_ref,
+            "mit_torque_ref": follower_torque_ref,
+        }
+        if follower_velocity_feedforward is not None:
+            follower_params["mit_velocity_feedforward"] = bool(
+                follower_velocity_feedforward
+            )
+        if follower_gravity_compensation_alpha is not None:
+            follower_gravity_compensation_alpha = float(
+                follower_gravity_compensation_alpha
+            )
+            # Gravity compensation is always enabled; alpha == 0 is the
+            # no-op (the scale multiplies the computed torque to zero), so
+            # there is no separate enable/scale state to keep in sync.
+            follower_gravity_compensation_enabled = True
+            follower_gravity_compensation_scale = (
+                follower_gravity_compensation_alpha
+            )
+        if follower_gravity_compensation_enabled is not None:
+            follower_params["mit_gravity_compensation_enabled"] = (
+                follower_gravity_compensation_enabled
+            )
+        if follower_gravity_compensation_urdf_path is not None:
+            follower_params["mit_gravity_compensation_urdf_path"] = (
+                follower_gravity_compensation_urdf_path
+            )
+        if follower_gravity_compensation_scale is not None:
+            follower_params["mit_gravity_compensation_scale"] = (
+                follower_gravity_compensation_scale
+            )
+        if follower_gravity_compensation_scale_per_joint is not None:
+            follower_params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v) for v in follower_gravity_compensation_scale_per_joint
+            ]
+        if follower_gravity_compensation_max_t_ref is not None:
+            follower_params["mit_gravity_compensation_max_t_ref"] = (
+                follower_gravity_compensation_max_t_ref
+            )
+        for node_name in mit_cfg.follower_param_node_names:
+            requested_params.append((node_name, dict(follower_params)))
 
-    def sync_static_transforms(self, episode_meta) -> bool:
-        directory = episode_meta.tf_directory
-        if not directory:
+        if not requested_params:
+            self.logger.warning("No MIT parameter nodes are configured.")
             return True
 
-        if not self.cfg.static_transform_service_name:
-            self.logger.error(
-                "static_transform_service_name is not configured; "
-                "cannot sync static transforms."
-            )
-            return False
+        for node_name, params in requested_params:
+            if not self._set_params(node_name, params):
+                return False
 
-        fingerprint = self._get_tf_directory_fingerprint(directory)
-        if fingerprint is None:
-            return False
-        if fingerprint == self._synced_tf_fingerprint:
-            return True
-
-        success = self._call_services(
-            service_names=self.cfg.static_transform_service_name,
-            success_msg="Static transforms loaded successfully!",
-            service_type=(
-                "robo_orchard_data_msg_ros2/srv/SetStaticTransforms"
-            ),
-            request_data={"directory": directory},
+        self._last_requested_mit_params = {
+            "master_enabled": master_enabled,
+            "master_kp": master_kp,
+            "master_kd": master_kd,
+            "master_vel_ref": master_vel_ref,
+            "master_torque_ref": master_torque_ref,
+            "follower_enabled": follower_enabled,
+            "follower_kp": follower_kp,
+            "follower_kd": follower_kd,
+            "follower_vel_ref": follower_vel_ref,
+            "follower_torque_ref": follower_torque_ref,
+        }
+        if master_gravity_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_enabled"
+            ] = bool(master_gravity_compensation_enabled)
+        if master_gravity_compensation_urdf_path is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_urdf_path"
+            ] = master_gravity_compensation_urdf_path
+        if master_gravity_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_scale"
+            ] = master_gravity_compensation_scale
+        if master_gravity_compensation_scale_per_joint is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_scale_per_joint"
+            ] = list(master_gravity_compensation_scale_per_joint)
+        if master_gravity_compensation_max_t_ref is not None:
+            self._last_requested_mit_params[
+                "master_gravity_compensation_max_t_ref"
+            ] = master_gravity_compensation_max_t_ref
+        if master_friction_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_enabled"
+            ] = bool(master_friction_compensation_enabled)
+        if master_friction_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_scale"
+            ] = list(master_friction_compensation_scale)
+        if master_friction_compensation_load_scale is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_load_scale"
+            ] = master_friction_compensation_load_scale
+        if master_friction_compensation_min_velocity is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_min_velocity"
+            ] = master_friction_compensation_min_velocity
+        if master_friction_compensation_taper_velocity is not None:
+            self._last_requested_mit_params[
+                "master_friction_compensation_taper_velocity"
+            ] = master_friction_compensation_taper_velocity
+        if follower_gravity_compensation_alpha is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_alpha"
+            ] = follower_gravity_compensation_alpha
+        if follower_gravity_compensation_enabled is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_enabled"
+            ] = follower_gravity_compensation_enabled
+        if follower_gravity_compensation_urdf_path is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_urdf_path"
+            ] = follower_gravity_compensation_urdf_path
+        if follower_gravity_compensation_scale is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_scale"
+            ] = follower_gravity_compensation_scale
+        if follower_gravity_compensation_scale_per_joint is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_scale_per_joint"
+            ] = list(follower_gravity_compensation_scale_per_joint)
+        if follower_gravity_compensation_max_t_ref is not None:
+            self._last_requested_mit_params[
+                "follower_gravity_compensation_max_t_ref"
+            ] = follower_gravity_compensation_max_t_ref
+        self.logger.info(
+            "MIT params set: "
+            f"master enabled={master_enabled}, "
+            f"master kp={master_kp}, master kd={master_kd}, "
+            f"master vel_ref={master_vel_ref}, "
+            f"master torque_ref={master_torque_ref}, "
+            "master gravity_compensation_enabled="
+            f"{master_gravity_compensation_enabled}, "
+            "master gravity_compensation_scale="
+            f"{master_gravity_compensation_scale}, "
+            "master gravity_compensation_scale_per_joint="
+            f"{master_gravity_compensation_scale_per_joint}, "
+            "master gravity_compensation_max_t_ref="
+            f"{master_gravity_compensation_max_t_ref}, "
+            "master friction_compensation_enabled="
+            f"{master_friction_compensation_enabled}, "
+            "master friction_compensation_scale="
+            f"{master_friction_compensation_scale}, "
+            "master friction_compensation_load_scale="
+            f"{master_friction_compensation_load_scale}, "
+            f"follower enabled={follower_enabled}, "
+            f"follower kp={follower_kp}, follower kd={follower_kd}, "
+            f"follower vel_ref={follower_vel_ref}, "
+            f"follower torque_ref={follower_torque_ref}, "
+            "follower gravity_compensation_alpha="
+            f"{follower_gravity_compensation_alpha}, "
+            "follower gravity_compensation_enabled="
+            f"{follower_gravity_compensation_enabled}, "
+            "follower gravity_compensation_urdf_path="
+            f"{follower_gravity_compensation_urdf_path}, "
+            "follower gravity_compensation_scale="
+            f"{follower_gravity_compensation_scale}, "
+            "follower gravity_compensation_scale_per_joint="
+            f"{follower_gravity_compensation_scale_per_joint}, "
+            "follower gravity_compensation_max_t_ref="
+            f"{follower_gravity_compensation_max_t_ref}"
         )
-        if success:
-            self._synced_tf_fingerprint = fingerprint
-        return success
+        return True
+
+    def set_follower_gravity_compensation_alpha(self, alpha: float) -> bool:
+        alpha = float(alpha)
+        # Gravity compensation stays enabled; alpha == 0 yields zero torque.
+        enabled = True
+        mit_cfg = self.cfg.mit_control
+        if not mit_cfg.follower_param_node_names:
+            return True
+        params: dict[str, bool | float | str | list] = {
+            "mit_gravity_compensation_enabled": enabled,
+            "mit_gravity_compensation_scale": alpha,
+        }
+        # Keep the configured per-joint scale in sync when alpha changes.
+        per_joint = list(
+            mit_cfg.default_follower_gravity_compensation_scale_per_joint
+        )
+        if per_joint:
+            params["mit_gravity_compensation_scale_per_joint"] = [
+                float(v) for v in per_joint
+            ]
+        for node_name in mit_cfg.follower_param_node_names:
+            if not self._set_params(node_name, params):
+                return False
+        self.logger.info(
+            "Follower gravity compensation "
+            f"alpha={alpha}, enabled={enabled}, "
+            f"scale_per_joint={per_joint}"
+        )
+        return True
+
+    def set_follower_gravity_compensation(self, enabled: bool) -> bool:
+        return self.set_follower_gravity_compensation_alpha(
+            1.0 if enabled else 0.0
+        )
+
+    def set_follower_gravity_record_dir(self, directory: str | None) -> bool:
+        """Point per-timestep gravity recording at an episode ``directory``.
+
+        Writes one ``gravity_<node>.csv`` per follower node into
+        ``directory``. Passing ``None``/empty disables recording on the
+        follower nodes.
+        """
+        mit_cfg = self.cfg.mit_control
+        if not mit_cfg.follower_param_node_names:
+            return True
+        ok = True
+        for node_name in mit_cfg.follower_param_node_names:
+            if directory:
+                label = node_name.strip("/").split("/")[-1] or "follower"
+                path = os.path.join(directory, f"gravity_{label}.csv")
+            else:
+                path = ""
+            if not self._set_params(
+                node_name,
+                {"mit_gravity_compensation_record_path": path},
+            ):
+                ok = False
+        self.logger.info(
+            f"Follower gravity recording dir set to {directory!r}"
+        )
+        return ok
 
     def enable_arm(self) -> bool:
         """Sends a request to enable the robot arm."""
@@ -271,8 +712,63 @@ class RosServiceHelper:
             timeout=25.0,
         )
 
-    def reset_arm(self) -> bool:
-        """Sends a request to reset the robot arm controllers to zero."""
+    def disable_arm(self) -> bool:
+        """Sends a request to disable the robot arm."""
+        return self._call_services(
+            service_names=self.cfg.disable_arm_service_name,
+            success_msg="/DisableArm command sent successfully!",
+            success_callback=lambda: setattr(
+                self.state, "arm_ctrl_status", "disabled"
+            ),
+            timeout=25.0,
+        )
+
+    def _push_reset_position(self, reset_position: list[float]) -> bool:
+        """Pushes the given reset pose to the follower controllers."""
+        if len(reset_position) != 7:
+            self.logger.error(
+                "reset_position must have 7 joint values, got "
+                f"{len(reset_position)}."
+            )
+            return False
+        request_data = {
+            "parameters": [
+                {
+                    "name": "reset_joint_position",
+                    "value": {
+                        "type": 8,
+                        "double_array_value": [
+                            float(v) for v in reset_position
+                        ],
+                    },
+                }
+            ]
+        }
+        ok = True
+        for node_name in self.cfg.mit_control.follower_param_node_names:
+            if not self._set_param(
+                node_name=node_name, request_data=request_data
+            ):
+                ok = False
+        return ok
+
+    def reset_arm(self, position: list[float] | None = None) -> bool:
+        """Sends a request to reset the robot arm controllers.
+
+        Args:
+            position: Optional reset pose (7 joint values) overriding the
+                configured standard reset pose for this call only. The pose
+                is pushed to the controllers on every reset, so one caller's
+                override never leaks into the next reset.
+        """
+        if position:
+            reset_position = list(position)
+        elif self.cfg.reset_position:
+            reset_position = list(self.cfg.reset_position)
+        else:
+            reset_position = [0.0] * 7
+        if not self._push_reset_position(reset_position):
+            return False
         return self._call_services(
             service_names=self.cfg.reset_arm_service_name,
             success_msg="Robot arm controllers reset successfully!",
@@ -353,9 +849,15 @@ class RosServiceHelper:
         )
 
     def set_control_mode(
-        self, mode: Literal["auto", "takeover", "stop"]
+        self,
+        mode: Literal["auto", "takeover", "stop"],
+        mit_params: dict[str, bool | float] | None = None,
     ) -> bool:
         """Sets the robot's control mode."""
+        if mode == "takeover" and mit_params is not None:
+            if not self.set_mit_params(**mit_params):
+                return False
+
         service_map = {
             "auto": self.cfg.release_service_name,
             "takeover": self.cfg.takeover_service_name,

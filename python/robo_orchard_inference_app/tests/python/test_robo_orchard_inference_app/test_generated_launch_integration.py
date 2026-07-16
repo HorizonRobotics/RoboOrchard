@@ -217,6 +217,9 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
 
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = helper
+    monkeypatch.setattr(
+        component, "_stop_scripted_motion_and_robot", lambda: None
+    )
     collecting_state = CollectingState(
         inference_state=InferenceState(
             control_mode="auto",
@@ -269,6 +272,9 @@ def test_generated_launch_cfg_reset_proceeds_without_inference_node(
 
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = helper
+    monkeypatch.setattr(
+        component, "_stop_scripted_motion_and_robot", lambda: None
+    )
     collecting_state = CollectingState(
         inference_state=InferenceState(
             control_mode="auto",

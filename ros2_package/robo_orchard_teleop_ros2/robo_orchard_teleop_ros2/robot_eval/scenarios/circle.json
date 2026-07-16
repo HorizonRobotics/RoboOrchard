@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "circle",
+  "label": "Circle",
+  "description": "Time-scaled replay of speed-validated, IK-planned end-effector circle trajectories.",
+  "executor": {
+    "mode": "circle",
+    "parameters": {
+      "circle_trajectory_left": "/data/holobrain/circle_test/circle_traj_left.json",
+      "circle_trajectory_right": "/data/holobrain/circle_test/circle_traj_right.json",
+      "speed_scale": 1.0,
+      "settle_s": 0.4,
+      "duration_s": 0.0
+    }
+  },
+  "ui": {
+    "order": 30,
+    "speed_control": "scale",
+    "speed_min": 0.1,
+    "speed_max": 1.0,
+    "speed_step": 0.05,
+    "speed_default": 1.0,
+    "record_default": false
+  },
+  "safety": {
+    "use_current_state": true,
+    "requires_reset_pose": true,
+    "allow_speedup": false,
+    "plan_validates_joint_speed": true
+  },
+  "tools": {
+    "plan": "circle",
+    "analyze": "circle"
+  }
+}

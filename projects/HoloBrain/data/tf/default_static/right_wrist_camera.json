@@ -1,0 +1,17 @@
+{
+    "parent_frame": "right_end_effector",
+    "child_frame": "right_camera_color_optical_frame",
+    "result": {
+        "position": [
+            -0.07333788908459828,
+            0.00991803705544634,
+            0.03390080995535155
+        ],
+        "orientation": [
+            0.1296176811682453,
+            -0.12171535345636147,
+            0.717362436615576,
+            -0.673628802824318
+        ]
+    }
+}

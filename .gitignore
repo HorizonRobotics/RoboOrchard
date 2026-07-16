@@ -8,6 +8,7 @@ VERSION_POSTFIX
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.venv/
 .mypy_cache/
 version.py
 

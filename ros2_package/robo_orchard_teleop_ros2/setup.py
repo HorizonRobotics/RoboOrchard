@@ -59,6 +59,7 @@ def set_manifest():
     manifest_file.write(
         f"""
 recursive-include {package_name} *.py
+recursive-include {package_name} *.json
 recursive-exclude {package_name} *.pyc
 recursive-include resource *.json
 exclude resource/{package_name}
@@ -115,6 +116,9 @@ setup(
     packages=find_packages(exclude=["test"]),
     data_files=data_files_generator(),
     install_requires=["ikpy", "numpy", "scipy", "sshkeyboard"],
+    package_data={
+        "robo_orchard_teleop_ros2.robot_eval": ["scenarios/*.json"],
+    },
     zip_safe=True,
     maintainer="hongyu.xie",
     maintainer_email="hongyu.xie@horizon.auto",
@@ -130,6 +134,9 @@ setup(
             "aloha_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.aloha:main",  # noqa: E501
             "vr_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.vr:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
+            "scripted_joint_master = robo_orchard_teleop_ros2.scripted.joint_master:main",  # noqa: E501
+            "robot-eval = robo_orchard_teleop_ros2.robot_eval.cli:main",
+            "recorded_replay_master = robo_orchard_teleop_ros2.scripted.recorded_replay_master:main",  # noqa: E501
         ],
     },
 )

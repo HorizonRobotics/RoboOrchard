@@ -1,5 +1,10 @@
 set -ex
 
+# Kill stale instance so re-running script will restart
+pkill -TERM -f "[i]mage_encoder.*image_encoding" || true
+sleep 1
+pkill -KILL -f "[i]mage_encoder.*image_encoding" || true
+
 SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
 

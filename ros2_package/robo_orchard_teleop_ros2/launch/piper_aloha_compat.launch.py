@@ -18,6 +18,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -53,6 +54,41 @@ def generate_launch_description():
         default_value="false",
         description="Whether enable mit control mode or not.",
     )
+    mit_kp_arg = DeclareLaunchArgument(
+        "mit_kp",
+        default_value="10.0",
+        description="MIT kp for the slave arms.",
+    )
+    mit_kd_arg = DeclareLaunchArgument(
+        "mit_kd",
+        default_value="0.8",
+        description="MIT kd for the slave arms.",
+    )
+    master_mit_kp_arg = DeclareLaunchArgument(
+        "master_mit_kp",
+        default_value="10.0",
+        description="MIT kp for the master arms.",
+    )
+    master_mit_kd_arg = DeclareLaunchArgument(
+        "master_mit_kd",
+        default_value="0.8",
+        description="MIT kd for the master arms.",
+    )
+
+    mit_param_overrides = {
+        "mit_kp": ParameterValue(
+            LaunchConfiguration("mit_kp"), value_type=float
+        ),
+        "mit_kd": ParameterValue(
+            LaunchConfiguration("mit_kd"), value_type=float
+        ),
+        "master_mit_kp": ParameterValue(
+            LaunchConfiguration("master_mit_kp"), value_type=float
+        ),
+        "master_mit_kd": ParameterValue(
+            LaunchConfiguration("master_mit_kd"), value_type=float
+        ),
+    }
 
     # --- Node Definitions ---
     left_aloha_controller_node = Node(
@@ -73,6 +109,7 @@ def generate_launch_description():
                 "enable_master_mit_ctrl": LaunchConfiguration(
                     "enable_master_mit_ctrl"
                 ),
+                **mit_param_overrides,
             }
         ],
         remappings=[
@@ -104,6 +141,7 @@ def generate_launch_description():
                 "enable_master_mit_ctrl": LaunchConfiguration(
                     "enable_master_mit_ctrl"
                 ),
+                **mit_param_overrides,
             }
         ],
         remappings=[
@@ -127,6 +165,10 @@ def generate_launch_description():
             right_slave_can_port_arg,
             enable_mit_ctrl_arg,
             enable_master_mit_ctrl_arg,
+            mit_kp_arg,
+            mit_kd_arg,
+            master_mit_kp_arg,
+            master_mit_kd_arg,
             # Add the nodes to be launched
             left_aloha_controller_node,
             right_aloha_controller_node,

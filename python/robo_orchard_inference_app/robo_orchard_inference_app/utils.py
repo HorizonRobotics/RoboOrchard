@@ -80,7 +80,7 @@ def check_process(process: subprocess.Popen, min_live_time: float = 5):
             process.terminate()
             raise subprocess.CalledProcessError(
                 returncode=r_code,
-                cmd=[],
+                cmd=process.args,
                 output=out_msgs,
                 stderr=err_msgs,
             )
