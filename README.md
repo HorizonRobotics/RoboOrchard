@@ -15,6 +15,22 @@ specifically designed for:
 - **[Model Deploy](./ros2_package/robo_orchard_deploy_ros2/)**: Efficiently deploy the manipulation model in real robot
 - **ROS2 Integration**: Full ROS2 Humble support for distributed robotic systems
 
+### Piper MIT compensation & evaluation (this branch)
+
+This branch adds a hardware-calibrated compensation stack that minimizes tracking error for the dual-arm Piper teleop rig. 
+Contributions:
+- Gravity compensation via calibrated offset-stiffness / deflection tables
+- Velocity estimation and feedforward
+- Deterministic evaluation runs and tracking-error analysis tooling
+- Operator console additions in the inference app
+
+Start here:
+
+- [robo_orchard_piper_ros2/README.md](./ros2_package/robo_orchard_piper_ros2/README.md) — why and how the MIT compensation stack works (gravity via calibrated position offsets, velocity feedforward + phase lead, oscillation guard), full parameter reference
+- [calibration/README.md](./calibration/README.md) — calibration tool usage and motivation; [calibration/CALIBRATION.md](./calibration/CALIBRATION.md) — store schema and value flow
+- [robo_orchard_teleop_ros2/README.md](./ros2_package/robo_orchard_teleop_ros2/README.md) — teleop stack (muxer, orchestrator, launch files); [scripted/README.md](./ros2_package/robo_orchard_teleop_ros2/robo_orchard_teleop_ros2/scripted/README.md) and [robot_eval/README.md](./ros2_package/robo_orchard_teleop_ros2/robo_orchard_teleop_ros2/robot_eval/README.md) — deterministic evaluation runs
+- [robo_orchard_inference_app/README.md](./python/robo_orchard_inference_app/README.md) — operator console (control modes, MIT tuning, kp calibration, scripted motion, recording)
+
 ## Project Structure
 
 ```
