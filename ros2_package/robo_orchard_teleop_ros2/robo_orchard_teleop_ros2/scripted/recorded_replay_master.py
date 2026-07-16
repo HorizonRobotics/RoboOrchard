@@ -558,7 +558,7 @@ class RecordedReplayMasterNode(Node):
             type=ParameterType.PARAMETER_DOUBLE_ARRAY,
             double_array_value=[float(v) for v in self.reset_pose],
         )
-        parameter = Parameter(name="reset_position", value=value)
+        parameter = Parameter(name="reset_joint_position", value=value)
         request = SetParameters.Request()
         request.parameters = [parameter]
         return request
@@ -574,7 +574,7 @@ class RecordedReplayMasterNode(Node):
         for node_name, future in self._reset_pending:
             if future.exception() is not None:
                 self._stop_with_error(
-                    "Failed to set reset_position on "
+                    "Failed to set reset_joint_position on "
                     f"{node_name}: {future.exception()}"
                 )
                 return False
@@ -582,7 +582,7 @@ class RecordedReplayMasterNode(Node):
             for result in response.results:
                 if not result.successful:
                     self._stop_with_error(
-                        "Failed to set reset_position on "
+                        "Failed to set reset_joint_position on "
                         f"{node_name}: {result.reason}"
                     )
                     return False
@@ -634,7 +634,7 @@ class RecordedReplayMasterNode(Node):
             return False
 
         if self._reset_state == "set_reset_params":
-            if not self._reset_pending_done("setting reset_position"):
+            if not self._reset_pending_done("setting reset_joint_position"):
                 return False
             if not self._check_reset_param_results():
                 return False

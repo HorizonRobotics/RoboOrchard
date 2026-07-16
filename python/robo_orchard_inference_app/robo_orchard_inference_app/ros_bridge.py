@@ -734,7 +734,7 @@ class RosServiceHelper:
         request_data = {
             "parameters": [
                 {
-                    "name": "reset_position",
+                    "name": "reset_joint_position",
                     "value": {
                         "type": 8,
                         "double_array_value": [
