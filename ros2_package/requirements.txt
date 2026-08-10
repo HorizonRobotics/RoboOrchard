@@ -27,6 +27,7 @@ colcon-argcomplete==0.3.3
 colcon-common-extensions==0.3.0
 colcon-override-check==0.0.1
 colcon-ros==0.5.0
+pytest>=7,<8
 
 # ros bridge
 pymongo
@@ -36,6 +37,8 @@ cbor2
 piper_sdk>=0.4.1
 scipy
 numpy
+# robo_orchard_wuji_glove_ros2
+wuji-sdk==2026.7.21
 # robo_orchard_teleop_ros2
 ikpy
 sshkeyboard

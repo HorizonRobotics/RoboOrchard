@@ -24,14 +24,14 @@ build:
 #	https://docs.ros.org/en/humble/Tutorials/Intermediate/Testing/CLI.html
 
 test:
-	@bash -c "source install/local_setup.bash && \
+	@bash -c "source install/setup.bash && \
 	export ORCHARD_CI=1 && \
 	colcon test --merge-install --return-code-on-test-failure --abort-on-error \
 	--event-handlers console_cohesion+ --python-testing pytest \
 	--pytest-with-coverage --pytest-args --cov-report=term $(extra_args)"
 
 test-result:
-	@bash -c "source install/local_setup.bash && \
+	@bash -c "source install/setup.bash && \
 	colcon test-result --all --verbose $(extra_args)"
 
 clean:

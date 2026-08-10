@@ -1,0 +1,33 @@
+/**/wuji_glove_driver:
+  ros__parameters:
+    serial_number: ""
+    hand_side: "right"
+    device_name: "wuji_glove_right"
+    frame_prefix: ""
+    sdk_user: "default"
+    hand_model_path: ""
+    sdk_log_level: "warn"
+    emf_poses_rate_divider: 1
+    reconnect_interval_s: 2.0
+    critical_stream_timeout_s: 1.0
+    time_sync_max_age_s: 5.0
+    time_sync_max_rtt_ms: 100.0
+    stream_profile: "configured"
+    publish_tactile: true
+    publish_tactile_zones: true
+    publish_tactile_binary: false
+    publish_tactile_residual: false
+    publish_emf_poses: true
+    publish_tip_poses: true
+    publish_hand_joint_angles: true
+    publish_hand_skeleton: true
+    publish_tactile_point_cloud: true
+    publish_imu_palm: true
+    publish_transforms: true
+
+/**/wuji_glove_retarget:
+  ros__parameters:
+    hand_side: "right"
+    hand_model: "wuji_hand"
+    min_joint_confidence: 0.5
+    tracking_reset_gap_s: 0.5
