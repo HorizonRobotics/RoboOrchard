@@ -43,7 +43,7 @@ windows:
         - history -s "$CMD"
         - eval "$CMD"
       - shell_command:  # ros bridge server
-        - CMD="ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+        - CMD="ros2 launch rosbridge_server rosbridge_websocket_launch.xml call_services_in_new_thread:=true"
         - history -s "$CMD"
         - eval "$CMD"
 

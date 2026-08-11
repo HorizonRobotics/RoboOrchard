@@ -15,6 +15,7 @@
 # permissions and limitations under the License.
 
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -96,27 +97,108 @@ class RosServiceHelper:
             if service_name not in available_services:
                 self.logger.error(f"Service {service_name} not found!")
                 return False
-            try:
-                service = roslibpy.Service(
-                    self.ros_client, service_name, service_type
-                )
-                request = roslibpy.ServiceRequest(request_data)
-                result = service.call(request, timeout=timeout)
-                if not result.get("success", False):
-                    msg = result.get("message", "No message provided.")
-                    self.logger.error(f"Service {service_name} failed: {msg}")
-                    return False
-            except roslibpy.core.RosTimeoutError:
-                self.logger.error(f"Timeout calling service: {service_name}")
-                return False
-            except Exception as e:
-                self.logger.error(f"Error calling {service_name}: {e}")
+            if not self._call_service(
+                service_name=service_name,
+                timeout=timeout,
+                service_type=service_type,
+                request_data=request_data,
+            ):
                 return False
 
         self.logger.info(success_msg)
         if success_callback:
             success_callback()
         return True
+
+    def _call_services_parallel(
+        self,
+        service_names: str | list[str],
+        success_msg: str,
+        success_callback: Callable[[], None] | None = None,
+        timeout: float = 5.0,
+        service_type: str = "std_srvs/srv/Trigger",
+        request_data: dict | None = None,
+    ) -> bool:
+        """Call independent ROS services concurrently and await all results."""
+        if not self._check_client_connected():
+            return False
+
+        if isinstance(service_names, str):
+            service_names = [service_names]
+
+        available_services = set(self.ros_client.get_services())
+        missing_services = [
+            name for name in service_names if name not in available_services
+        ]
+        if missing_services:
+            for service_name in missing_services:
+                self.logger.error(f"Service {service_name} not found!")
+            return False
+
+        if service_names:
+            with ThreadPoolExecutor(
+                max_workers=len(service_names)
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._call_service_result,
+                        service_name=service_name,
+                        timeout=timeout,
+                        service_type=service_type,
+                        request_data=request_data,
+                    )
+                    for service_name in service_names
+                ]
+                results = [future.result() for future in futures]
+            for _success, error_msg in results:
+                if error_msg:
+                    self.logger.error(error_msg)
+            if not all(success for success, _ in results):
+                return False
+
+        self.logger.info(success_msg)
+        if success_callback:
+            success_callback()
+        return True
+
+    def _call_service(
+        self,
+        service_name: str,
+        timeout: float,
+        service_type: str,
+        request_data: dict | None,
+    ) -> bool:
+        success, error_msg = self._call_service_result(
+            service_name=service_name,
+            timeout=timeout,
+            service_type=service_type,
+            request_data=request_data,
+        )
+        if error_msg:
+            self.logger.error(error_msg)
+        return success
+
+    def _call_service_result(
+        self,
+        service_name: str,
+        timeout: float,
+        service_type: str,
+        request_data: dict | None,
+    ) -> tuple[bool, str | None]:
+        try:
+            service = roslibpy.Service(
+                self.ros_client, service_name, service_type
+            )
+            request = roslibpy.ServiceRequest(request_data)
+            result = service.call(request, timeout=timeout)
+            if not result.get("success", False):
+                msg = result.get("message", "No message provided.")
+                return False, f"Service {service_name} failed: {msg}"
+        except roslibpy.core.RosTimeoutError:
+            return False, f"Timeout calling service: {service_name}"
+        except Exception as e:
+            return False, f"Error calling {service_name}: {e}"
+        return True, None
 
     def _set_param(
         self,
@@ -273,7 +355,7 @@ class RosServiceHelper:
 
     def reset_arm(self) -> bool:
         """Sends a request to reset the robot arm controllers to zero."""
-        return self._call_services(
+        return self._call_services_parallel(
             service_names=self.cfg.reset_arm_service_name,
             success_msg="Robot arm controllers reset successfully!",
         )
