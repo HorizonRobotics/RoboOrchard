@@ -275,9 +275,7 @@ class ServiceMcapRecorder(Node):
         fmt = "<iI" if serialized_msg[1] == 1 else ">iI"
         sec, nanosec = struct.unpack_from(fmt, serialized_msg, 4)
         if nanosec >= 1_000_000_000:
-            raise ValueError(
-                f"invalid Header nanosecond field: {nanosec}"
-            )
+            raise ValueError(f"invalid Header nanosecond field: {nanosec}")
         return int(sec * 1_000_000_000 + nanosec)
 
     def _flush_latched_msgs(self):
@@ -562,12 +560,9 @@ class ServiceMcapRecorder(Node):
             )
 
             has_header = self._message_type_has_header(msg_type_class)
-            use_raw_subscription = (
-                topic not in self.config.static_topics
-                and (
-                    spec.stamp_type == "recorder_clock"
-                    or (spec.stamp_type == "msg_header_stamp" and has_header)
-                )
+            use_raw_subscription = topic not in self.config.static_topics and (
+                spec.stamp_type == "recorder_clock"
+                or (spec.stamp_type == "msg_header_stamp" and has_header)
             )
             if use_raw_subscription:
                 callback = functools.partial(

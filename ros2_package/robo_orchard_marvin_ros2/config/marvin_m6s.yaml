@@ -1,0 +1,32 @@
+marvin_driver_node:
+  ros__parameters:
+    auto_enable_side: none
+    auto_enable_mode: ""
+    control_frequency_hz: 200.0
+    feedback_stale_timeout_s: 0.1
+    mode_switch_timeout_s: 2.0
+    sdk_log_enabled: false
+    velocity_ratio: 80
+    acceleration_ratio: 80
+    joint_stiffness: [5.0, 5.0, 5.0, 4.0, 3.0, 3.0, 2.0]
+    joint_damping: [0.3, 0.3, 0.3, 0.2, 0.2, 0.2, 0.2]
+    apply_tool_dynamics_on_startup: false
+    left_tool_dynamics:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    right_tool_dynamics:
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    left_reset_joint_position:
+      [-1.040426397546044, 1.2204749291001127, 1.3772794572389973,
+       -2.1170258463883616, 1.6675827913433194, -0.11657486664641793,
+       0.04081839070213138]
+    right_reset_joint_position:
+      [1.040426397546044, 1.2204749291001127, -1.3772794572389973,
+       -2.1170258463883616, -1.6675827913433194, -0.11657486664641793,
+       -0.04081839070213138]
+    reset_duration_s: 5.0
+    reset_goal_tolerance_rad: 0.01745329252
+    reset_timeout_s: 15.0
+    left_joint_names:
+      [Joint1_L, Joint2_L, Joint3_L, Joint4_L, Joint5_L, Joint6_L, Joint7_L]
+    right_joint_names:
+      [Joint1_R, Joint2_R, Joint3_R, Joint4_R, Joint5_R, Joint6_R, Joint7_R]

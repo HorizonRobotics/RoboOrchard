@@ -29,7 +29,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 _saved_numpy_module = sys.modules.pop("numpy", None)
-import numpy as np
+import numpy as np  # noqa: E402
 
 if _saved_numpy_module is not None:
     sys.modules["numpy"] = _saved_numpy_module
@@ -112,8 +112,10 @@ class _Chain:
     last_inverse_kwargs = None
     last_forward_input = None
 
-    def __init__(self):
-        self.links = [
+    def __init__(
+        self, links=None, active_links_mask=None, name=None, urdf_metadata=None
+    ):
+        self.links = links or [
             _Link("base_link", joint_type="fixed"),
             _Link("joint1", bounds=(-1.0, 1.0)),
             _Link("joint2", bounds=(-2.0, 2.0)),
@@ -123,11 +125,16 @@ class _Chain:
             _Link("joint6", bounds=(-6.0, 6.0)),
         ]
         self.active_links_mask = None
+        self.name = name
+        self.urdf_metadata = urdf_metadata
 
     @classmethod
     def from_urdf_file(cls, *args, **kwargs):
         cls.last_init_kwargs = {"args": args, "kwargs": kwargs}
-        return cls()
+        return cls(
+            name=kwargs.get("name"),
+            urdf_metadata={"base_elements": kwargs.get("base_elements")},
+        )
 
     def inverse_kinematics_frame(self, target_matrix, **kwargs):
         type(self).last_inverse_target = np.array(
@@ -191,7 +198,24 @@ def ik_module(tmp_path):
     module = importlib.import_module(module_name)
 
     urdf_path = tmp_path / "robot.urdf"
-    urdf_path.write_text("<robot/>", encoding="utf-8")
+    links = ["base_link"] + [f"link{index}" for index in range(1, 7)]
+    joints = []
+    for index in range(1, 7):
+        joints.append(
+            f'<joint name="joint{index}" type="revolute">'
+            f'<parent link="{links[index - 1]}"/>'
+            f'<child link="{links[index]}"/>'
+            '<axis xyz="0 0 1"/>'
+            '<limit lower="-1" upper="1"/>'
+            "</joint>"
+        )
+    urdf_path.write_text(
+        "<robot>"
+        + "".join(f'<link name="{name}"/>' for name in links)
+        + "".join(joints)
+        + "</robot>",
+        encoding="utf-8",
+    )
     module._TEST_URDF_PATH = str(urdf_path)
 
     _Chain.next_result = None
@@ -216,6 +240,7 @@ def ik_module(tmp_path):
 
 
 def test_ik_optimizer_builds_chain_and_uses_seeded_initial_position(ik_module):
+    """Build the requested linear chain and preserve seeded IK behavior."""
     _Chain.next_result = [0.0, 0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
     fk = np.eye(4, dtype=np.float64)
     fk[:3, 3] = [0.1, 0.2, 0.3]
@@ -237,6 +262,7 @@ def test_ik_optimizer_builds_chain_and_uses_seeded_initial_position(ik_module):
     assert solution == [0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
     assert _Chain.last_init_kwargs is not None
     assert _Chain.last_init_kwargs["kwargs"]["name"] == "link6"
+    assert _Chain.last_init_kwargs["kwargs"]["base_elements"][-1] == "link6"
     assert _Chain.last_inverse_kwargs["orientation_mode"] == "all"
     assert _Chain.last_inverse_kwargs["regularization_parameter"] == 0.02
     assert _Chain.last_inverse_kwargs["initial_position"] == [
@@ -313,7 +339,79 @@ def test_ik_optimizer_returns_none_on_large_fk_error(ik_module):
     assert optimizer.solve(pose, seed_state=[0.0] * 6) is None
 
 
+def test_ik_optimizer_position_tolerance_is_configurable(ik_module):
+    """The same 4 cm miss is accepted or rejected purely by tolerance.
+
+    On hardware every rejected solve sat 3.1-4.4 cm out with near-exact
+    orientation, and rejecting them left the arm with no command at all --
+    a 426 ms freeze mid-motion. The default is loose enough to ride those
+    out, but callers with tighter fidelity needs can still dial it down.
+    """
+    fk = np.eye(4, dtype=np.float64)
+    fk[0, 3] = 0.04
+    pose = _Pose(
+        position=_Point(0.0, 0.0, 0.0),
+        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
+    )
+
+    _Chain.next_result = [0.0] * 7
+    _Chain.next_fk_matrix = fk
+    loose = ik_module.IkOptimizer(
+        urdf_path=ik_module._TEST_URDF_PATH,
+        base_link="base_link",
+        ee_link="link6",
+    )
+    assert loose.position_tolerance == 0.05
+    assert loose.solve(pose, seed_state=[0.0] * 6) is not None
+
+    _Chain.next_result = [0.0] * 7
+    _Chain.next_fk_matrix = fk
+    strict = ik_module.IkOptimizer(
+        urdf_path=ik_module._TEST_URDF_PATH,
+        base_link="base_link",
+        ee_link="link6",
+        position_tolerance=0.03,
+    )
+    assert strict.solve(pose, seed_state=[0.0] * 6) is None
+
+
+def test_ik_optimizer_skips_orientation_gate_when_unconstrained(ik_module):
+    """orientation_mode=None must not be scored on orientation.
+
+    Grading a position-only solve against the orientation it was told to
+    ignore rejects it every time, which is how the old position-only
+    fallback managed to burn 22.6 ms per call and never return a solution.
+    """
+    fk = np.eye(4, dtype=np.float64)
+    # 90 deg out -- far past the 0.3 rad gate, but nobody asked for it.
+    fk[:3, :3] = np.array(
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    pose = _Pose(
+        position=_Point(0.0, 0.0, 0.0),
+        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
+    )
+
+    _Chain.next_result = [0.0] * 7
+    _Chain.next_fk_matrix = fk
+    optimizer = ik_module.IkOptimizer(
+        urdf_path=ik_module._TEST_URDF_PATH,
+        base_link="base_link",
+        ee_link="link6",
+    )
+    assert optimizer.solve(pose, seed_state=[0.0] * 6) is None
+
+    _Chain.next_result = [0.0] * 7
+    _Chain.next_fk_matrix = fk
+    assert (
+        optimizer.solve(pose, seed_state=[0.0] * 6, orientation_mode=None)
+        is not None
+    )
+
+
 def test_ik_optimizer_validates_seed_length(ik_module):
+
     optimizer = ik_module.IkOptimizer(
         urdf_path=ik_module._TEST_URDF_PATH,
         base_link="base_link",
@@ -345,3 +443,56 @@ def test_ik_optimizer_skips_regularization_without_seed(ik_module):
 
     assert solution == [0.0] * 6
     assert "regularization_parameter" not in _Chain.last_inverse_kwargs
+
+
+def test_resolve_urdf_chain_selects_requested_branch(ik_module, tmp_path):
+    """Resolve each end-effector through its own branch in a dual-arm URDF."""
+    urdf_path = tmp_path / "dual_arm.urdf"
+    urdf_path.write_text(
+        """
+<robot name="dual">
+  <link name="robot_stand"/>
+  <link name="left_base"/>
+  <link name="left_flange"/>
+  <link name="right_base"/>
+  <link name="right_flange"/>
+  <joint name="left_mount" type="fixed">
+    <parent link="robot_stand"/><child link="left_base"/>
+  </joint>
+  <joint name="left_joint" type="revolute">
+    <parent link="left_base"/><child link="left_flange"/>
+  </joint>
+  <joint name="right_mount" type="fixed">
+    <parent link="robot_stand"/><child link="right_base"/>
+  </joint>
+  <joint name="right_joint" type="revolute">
+    <parent link="right_base"/><child link="right_flange"/>
+  </joint>
+</robot>
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    left_elements, left_terminal = ik_module._resolve_urdf_chain(
+        str(urdf_path), "robot_stand", "left_flange"
+    )
+    right_elements, right_terminal = ik_module._resolve_urdf_chain(
+        str(urdf_path), "robot_stand", "right_flange"
+    )
+
+    assert left_elements == [
+        "robot_stand",
+        "left_mount",
+        "left_base",
+        "left_joint",
+        "left_flange",
+    ]
+    assert left_terminal == "left_joint"
+    assert right_elements == [
+        "robot_stand",
+        "right_mount",
+        "right_base",
+        "right_joint",
+        "right_flange",
+    ]
+    assert right_terminal == "right_joint"

@@ -315,6 +315,9 @@ class _VRTeleOp:
     def update_robot_joint_state(self, msg):
         self.current_joint_state = msg
 
+    def finish_reset(self):
+        self.finish_reset_count = getattr(self, "finish_reset_count", 0) + 1
+
     def __call__(self):
         return self.next_result
 

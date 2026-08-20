@@ -7,3 +7,6 @@
 [submodule "python/robo_orchard_schemas"]
 	path = python/robo_orchard_schemas
 	url = ../robo_orchard_schemas.git
+[submodule "marvin_sdk"]
+	path = ros2_package/robo_orchard_marvin_ros2/third_party/marvin_sdk
+	url = https://github.com/cynthia-you/TJ_FX_ROBOT_CONTRL_SDK.git

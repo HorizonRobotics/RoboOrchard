@@ -72,7 +72,8 @@ class ArmEngageState(Enum):
     ACTIVE = "ACTIVE"
     ARM_RESETTING = "ARM_RESETTING"
     """The reset_ctrl chain is in-flight. VR output is suppressed and new
-    VRState events are ignored until the chain resolves to DEACTIVE."""
+    VRState events are ignored until the chain resolves to DEACTIVE. The
+    shared teleop state then requires a gripper release before re-engaging."""
 
 
 class PiperPicoVRTeleOpNode(Node):
@@ -445,9 +446,8 @@ class PiperPicoVRTeleOpNode(Node):
 
           ACTIVE --[release]--> DEACTIVE
 
-          {WAITING_FOR_MATCH, ACTIVE} --[RESET]--> ARM_RESETTING
+          {DEACTIVE, WAITING_FOR_MATCH, ACTIVE} --[RESET]--> ARM_RESETTING
             ARM_RESETTING runs reset_ctrl -> DEACTIVE. See _handle_reset.
-          DEACTIVE --[RESET]--> refused (no engage intent yet).
         """
         state = self._arm_state[side]
 
@@ -577,11 +577,11 @@ class PiperPicoVRTeleOpNode(Node):
         """Validate and kick off the RESET chain for one side.
 
         Refuse-cases (log + no-op):
-          DEACTIVE                  : "engage first" -- nothing to reset
           ARM_RESETTING             : already in progress (idempotent)
           reset_service unconfigured: RESET wiring missing for this side
 
         Accept-cases (transition to ARM_RESETTING and dispatch chain):
+          DEACTIVE         : reset_ctrl
           WAITING_FOR_MATCH: reset_ctrl
           ACTIVE           : reset_ctrl
 
@@ -591,20 +591,16 @@ class PiperPicoVRTeleOpNode(Node):
         if state == ArmEngageState.ARM_RESETTING:
             return  # idempotent
 
-        if state == ArmEngageState.DEACTIVE:
-            self.get_logger().info(
-                f"[{side}] RESET ignored: engage gripper first."
-            )
-            return
-
         reset_service, _ = self._reset_service_pair(side)
         if not reset_service:
             self.get_logger().error(
                 f"[{side}] RESET refused: no reset_service configured."
             )
+            self._arm_state[side] = ArmEngageState.DEACTIVE
+            teleop = self.left_teleop if side == "left" else self.right_teleop
+            teleop.finish_reset()
             return
 
-        # WAITING_FOR_MATCH or ACTIVE: dispatch the reset chain.
         self._arm_state[side] = ArmEngageState.ARM_RESETTING
 
         self.get_logger().info(
@@ -646,7 +642,12 @@ class PiperPicoVRTeleOpNode(Node):
             else:
                 self.get_logger().info(f"[{_side}] RESET: arm at home.")
             self._arm_state[_side] = ArmEngageState.DEACTIVE
-            self.get_logger().info(f"[{_side}] RESET complete -- DEACTIVE.")
+            teleop = self.left_teleop if _side == "left" else self.right_teleop
+            teleop.finish_reset()
+            self.get_logger().info(
+                f"[{_side}] RESET complete -- DEACTIVE; release gripper "
+                "before re-engaging."
+            )
 
         self._call_service_async(reset_client, reset_service, _on_done)
 

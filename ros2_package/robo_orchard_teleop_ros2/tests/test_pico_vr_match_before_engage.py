@@ -270,24 +270,18 @@ def test_left_and_right_state_are_independent():
 # ---------------------------------------------------------------------------
 
 
-def test_reset_ignored_in_deactive():
-    # RESET only makes sense once the operator has expressed engage intent
-    # (gripper held). In DEACTIVE we log and do nothing -- no service calls.
+def test_reset_from_deactive_calls_reset_ctrl():
     node = _build_node()
     node._left_reset_client.response = _trigger_response(success=True)
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
-    assert node._left_reset_client.calls == []
-    assert any(
-        "engage gripper first" in msg.lower()
-        for msg in _messages(node, "info")
-    )
+    assert len(node._left_reset_client.calls) == 1
+    assert VRTeleOp.instances[0].finish_reset_count == 1
 
 
 def test_reset_refused_when_no_reset_service_configured():
-    # If reset_service is empty, RESET is inert; engage path is unaffected.
     node = _build_node()
     node._left_reset_service = ""
     node._left_reset_client = None
@@ -295,8 +289,8 @@ def test_reset_refused_when_no_reset_service_configured():
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
-    # State unchanged -- ACTIVE, no chain kicked off.
-    assert node._arm_state["left"] == ArmEngageState.ACTIVE
+    assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].finish_reset_count == 1
     assert any(
         "no reset_service configured" in msg.lower()
         for msg in _messages(node, "error")
@@ -325,6 +319,7 @@ def test_reset_from_active_calls_reset_ctrl_only():
 
     assert len(node._left_reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].finish_reset_count == 1
     assert any(
         "DAgger mode unchanged" in msg for msg in _messages(node, "info")
     )
@@ -340,6 +335,7 @@ def test_reset_from_waiting_calls_reset_ctrl_only():
 
     assert len(node._left_reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].finish_reset_count == 1
 
 
 def test_reset_failure_returns_deactive_without_mode_switch():
@@ -353,6 +349,24 @@ def test_reset_failure_returns_deactive_without_mode_switch():
 
     assert len(node._left_reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].finish_reset_count == 1
+
+
+def test_reset_stays_blocked_until_async_service_completes():
+    node = _build_node()
+    node._arm_state["left"] = ArmEngageState.ACTIVE
+
+    node._on_vr_state_side("left", Action.RESET, _vr_state())
+
+    assert node._arm_state["left"] == ArmEngageState.ARM_RESETTING
+    assert not hasattr(VRTeleOp.instances[0], "finish_reset_count")
+
+    node._left_reset_client.futures[0].set_result(
+        _trigger_response(success=True)
+    )
+
+    assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].finish_reset_count == 1
 
 
 def test_timer_suppresses_publish_during_arm_resetting():

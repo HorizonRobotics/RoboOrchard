@@ -52,18 +52,24 @@ class ControlState:
     current_ee_pose: Pose | PoseStamped | None = None
     current_joint_state: list[float] | None = None
     filtered_target_ee_pose: Pose | PoseStamped | None = None
+    reset_in_progress: bool = False
+    rearm_required: bool = False
 
     def reset(self):
         self.is_active = False
-        self.trigger_intent = type(self.trigger_intent)(
-            source_type=self.trigger_intent.source_type,
-            value_thresh=self.trigger_intent.value_thresh,
-            thresh=self.trigger_intent.thresh,
-        )
+        self.trigger_intent.reset()
         self.initial_vr_pose = None
         self.initial_ee_pose = None
         self.current_joint_state = None
         self.filtered_target_ee_pose = None
+
+    def begin_reset(self) -> None:
+        self.reset()
+        self.reset_in_progress = True
+        self.rearm_required = True
+
+    def finish_reset(self) -> None:
+        self.reset_in_progress = False
 
 
 @dataclass
@@ -113,6 +119,7 @@ class VRTeleOp:
             base_link=base_link_name,
             ee_link=ee_link_name,
             clip_to_limit=True,
+            logger=self.logger,
         )
 
         self.reset_callback = reset_callback
@@ -137,11 +144,25 @@ class VRTeleOp:
             return Action.INVALID_VR_MSG
 
         if control_state.reset_intent.should_reset(msg):
+            if control_state.reset_in_progress:
+                return Action.DEACTIVE
+            control_state.begin_reset()
             if self.reset_callback is not None:
                 self.reset_callback()
-            control_state.reset()
-
             return Action.RESET
+
+        if control_state.reset_in_progress:
+            return Action.DEACTIVE
+
+        if control_state.rearm_required:
+            if control_state.trigger_intent.is_pressed(msg):
+                return Action.DEACTIVE
+            control_state.rearm_required = False
+            control_state.trigger_intent.reset()
+            self.logger.info(
+                f"{self.source_type} Teleoperation re-armed after reset."
+            )
+            return Action.DEACTIVE
 
         is_intent_active = control_state.trigger_intent.is_active(msg)
 
@@ -179,6 +200,26 @@ class VRTeleOp:
 
     def update_robot_ee_pose(self, msg: Pose | PoseStamped):
         self.control_state.current_ee_pose = msg
+
+    def finish_reset(self) -> None:
+        """Allow re-engagement after reset and a subsequent control release."""
+        control_state = self.control_state
+        control_state.finish_reset()
+        if self.latest_vr_state is None:
+            return
+        controller_msg = (
+            self.latest_vr_state.left_controller
+            if self.source_type == "left"
+            else self.latest_vr_state.right_controller
+        )
+        if (
+            controller_msg.status != 0
+            and not control_state.trigger_intent.is_pressed(
+                self.latest_vr_state
+            )
+        ):
+            control_state.rearm_required = False
+            control_state.trigger_intent.reset()
 
     def recapture_baseline(self) -> bool:
         """Recapture the engage baseline poses to the most recent inputs.
@@ -320,18 +361,6 @@ class VRTeleOp:
         solution = self.ik_solver.solve(
             target_pose, self.control_state.current_joint_state
         )
-
-        if solution is None:
-            fallback_solution = self.ik_solver.solve(
-                target_pose,
-                self.control_state.current_joint_state,
-                orientation_mode=None,
-            )
-            if fallback_solution is not None:
-                self.logger.info(
-                    "IK fallback succeeded in position-only mode."
-                )
-                solution = fallback_solution
 
         return TeleOpResult(
             target_ee_pose=target_pose,

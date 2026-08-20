@@ -57,6 +57,7 @@ class _PoseStamped:
 class _Controller:
     status: int
     pose: _Pose
+    gripper: float = 0.0
 
 
 @dataclass
@@ -71,8 +72,19 @@ class _LongPressIntent:
         self.value_thresh = value_thresh
         self.thresh = thresh
 
-    def is_active(self, _msg):
-        return False
+    def is_active(self, msg):
+        return self.is_pressed(msg)
+
+    def is_pressed(self, msg):
+        controller = (
+            msg.left_controller
+            if self.source_type == "left"
+            else msg.right_controller
+        )
+        return controller.status != 0 and controller.gripper >= 0.5
+
+    def reset(self):
+        pass
 
 
 class _ResetIntent:
@@ -329,7 +341,7 @@ _saved_numpy_module = sys.modules.get("numpy")
 sys.modules["numpy"] = numpy_module
 
 try:
-    from robo_orchard_teleop_ros2.bridge.pico.teleop import VRTeleOp
+    from robo_orchard_teleop_ros2.bridge.pico.teleop import Action, VRTeleOp
 finally:
     if _saved_numpy_module is None:
         sys.modules.pop("numpy", None)
@@ -485,6 +497,7 @@ def test_target_pose_filter_state_clears_on_reset_deactivate_and_invalid_vr():
     assert teleop.control_state.filtered_target_ee_pose is None
 
     teleop.control_state.reset_intent = _ResetIntent("X")
+    teleop.finish_reset()
     teleop.control_state.is_active = True
     teleop.control_state.filtered_target_ee_pose = _make_pose(x=2.0)
     deactivate_action = teleop.update_vr_state(
@@ -510,7 +523,53 @@ def test_target_pose_filter_state_clears_on_reset_deactivate_and_invalid_vr():
     assert teleop.control_state.filtered_target_ee_pose is None
 
 
-def test_ik_failure_falls_back_to_position_only():
+def test_reset_blocks_reengage_until_service_finishes_and_gripper_releases():
+    teleop = VRTeleOp(
+        source_type="left",
+        urdf_path="robot.urdf",
+        base_link_name="base_link",
+        ee_link_name="link6",
+        trigger_intent=_LongPressIntent("left"),
+        reset_intent=_ResetNowIntent("X"),
+    )
+    teleop.control_state.current_ee_pose = _make_pose()
+
+    held = _VRState(
+        left_controller=_Controller(status=1, pose=_make_pose(), gripper=1.0),
+        right_controller=_Controller(status=0, pose=_make_pose()),
+    )
+    released = _VRState(
+        left_controller=_Controller(status=1, pose=_make_pose()),
+        right_controller=_Controller(status=0, pose=_make_pose()),
+    )
+
+    assert teleop.update_vr_state(held) == Action.RESET
+    teleop.control_state.reset_intent = _ResetIntent("X")
+
+    assert teleop.update_vr_state(released) == Action.DEACTIVE
+    assert teleop.update_vr_state(held) == Action.DEACTIVE
+    assert teleop.control_state.reset_in_progress
+
+    teleop.finish_reset()
+
+    assert teleop.update_vr_state(held) == Action.DEACTIVE
+    assert teleop.control_state.rearm_required
+    assert teleop.update_vr_state(released) == Action.DEACTIVE
+    assert not teleop.control_state.rearm_required
+    assert teleop.update_vr_state(held) == Action.ACTIVE
+
+
+def test_ik_failure_yields_no_command_and_no_second_solve():
+    """A rejected solve must not trigger a position-only retry.
+
+    The retry used to run here, and on hardware it never once produced a
+    usable command: ikpy spends the freed orientation budget however it likes,
+    so the result came back with up to 119 deg of wrist error and, in 10 of 13
+    real cases, a WORSE position than the 6-DOF solve it was replacing. It
+    also cost 22.6 ms -- two thirds of the 33.3 ms control period -- for a
+    result that was then discarded. Returning None keeps the arm holding its
+    last pose instead of snapping the wrist.
+    """
     _IkOptimizer.last_solve_pose = None
     _IkOptimizer.last_solve_poses = []
     _IkOptimizer.last_solve_orientation_modes = []
@@ -552,10 +611,11 @@ def test_ik_failure_falls_back_to_position_only():
 
     result = teleop()
 
+    # The target pose still goes out -- only the joint command is withheld.
     assert result is not None
-    assert result.solution == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-    assert len(_IkOptimizer.last_solve_poses) == 2
-    assert _IkOptimizer.last_solve_orientation_modes == ["all", None]
+    assert result.solution is None
+    assert len(_IkOptimizer.last_solve_poses) == 1
+    assert _IkOptimizer.last_solve_orientation_modes == ["all"]
 
 
 if __name__ == "__main__":

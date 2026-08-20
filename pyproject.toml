@@ -29,7 +29,8 @@ exclude = [
     "site-packages",
     "venv",
     # project
-    "3rdparty/*",
+    "3rdparty",
+    "third_party",
     "dummy/*",
     "*.pyi",
     "*_pb2.py",

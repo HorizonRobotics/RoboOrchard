@@ -47,6 +47,37 @@ class LongPressIntent:
         self.thresh_ns = int(thresh * 1e9)
         self._state = ActivationState()
 
+    def _get_button_values(self, msg: VRState) -> tuple[float, float]:
+        if self.button == "trigger":
+            left_value = (
+                msg.left_controller.trigger * msg.left_controller.status
+            )
+            right_value = (
+                msg.right_controller.trigger * msg.right_controller.status
+            )
+        elif self.button == "gripper":
+            left_value = (
+                msg.left_controller.gripper * msg.left_controller.status
+            )
+            right_value = (
+                msg.right_controller.gripper * msg.right_controller.status
+            )
+        else:
+            raise NotImplementedError
+        return left_value, right_value
+
+    def _is_pressed(self, left_value: float, right_value: float) -> bool:
+        if self.source_type == "all":
+            return (
+                left_value >= self.value_thresh
+                and right_value >= self.value_thresh
+            )
+        if self.source_type == "left":
+            return left_value >= self.value_thresh
+        if self.source_type == "right":
+            return right_value >= self.value_thresh
+        raise ValueError(f"Invalid source type: {self.source_type}")
+
     def _get_active_state(
         self,
         left_trigger: float,
@@ -54,17 +85,7 @@ class LongPressIntent:
         current_vr_time_ns: int,
     ) -> bool:
         """Determines the activation state based on the hold-to-run logic."""
-        if self.source_type == "all":
-            is_triggered = (
-                left_trigger >= self.value_thresh
-                and right_trigger >= self.value_thresh
-            )
-        elif self.source_type == "left":
-            is_triggered = left_trigger >= self.value_thresh
-        elif self.source_type == "right":
-            is_triggered = right_trigger >= self.value_thresh
-        else:
-            raise ValueError(f"Invalid source type: {self.source_type}")
+        is_triggered = self._is_pressed(left_trigger, right_trigger)
 
         if is_triggered:
             # Trigger is currently being held down.
@@ -97,28 +118,22 @@ class LongPressIntent:
             True if the trigger is being held down past the threshold,
             False otherwise.
         """
-        if self.button == "trigger":
-            left_trigger = (
-                msg.left_controller.trigger * msg.left_controller.status
-            )
-            right_trigger = (
-                msg.right_controller.trigger * msg.right_controller.status
-            )
-        elif self.button == "gripper":
-            left_trigger = (
-                msg.left_controller.gripper * msg.left_controller.status
-            )
-            right_trigger = (
-                msg.right_controller.gripper * msg.right_controller.status
-            )
-        else:
-            raise NotImplementedError
+        left_trigger, right_trigger = self._get_button_values(msg)
 
         return self._get_active_state(
             left_trigger,
             right_trigger,
             int(msg.header.stamp.sec) * 10**9 + int(msg.header.stamp.nanosec),
         )
+
+    def is_pressed(self, msg: VRState) -> bool:
+        """Return whether the configured hold-to-run control is held now."""
+        left_value, right_value = self._get_button_values(msg)
+        return self._is_pressed(left_value, right_value)
+
+    def reset(self) -> None:
+        """Discard any accumulated long-press duration."""
+        self._state = ActivationState()
 
 
 class TriggerIntent(LongPressIntent):
