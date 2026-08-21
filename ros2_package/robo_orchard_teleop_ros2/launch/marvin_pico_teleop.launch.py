@@ -30,6 +30,15 @@ def generate_launch_description():
     control_frequency_hz = LaunchConfiguration("control_frequency_hz")
     translation_scale_factor = LaunchConfiguration("translation_scale_factor")
     pose_low_pass_alpha = LaunchConfiguration("pose_low_pass_alpha")
+    operator_input_source = LaunchConfiguration("operator_input_source")
+    keyboard_control_side = LaunchConfiguration("keyboard_control_side")
+    keyboard_activation_topic = LaunchConfiguration(
+        "keyboard_activation_topic"
+    )
+    keyboard_reset_topic = LaunchConfiguration("keyboard_reset_topic")
+    keyboard_activation_timeout_s = LaunchConfiguration(
+        "keyboard_activation_timeout_s"
+    )
 
     return LaunchDescription(
         [
@@ -69,6 +78,28 @@ def generate_launch_description():
                 "translation_scale_factor", default_value="1.0"
             ),
             DeclareLaunchArgument("pose_low_pass_alpha", default_value="0.25"),
+            DeclareLaunchArgument(
+                "operator_input_source",
+                default_value="pico",
+                description="Operator input source: pico or keyboard.",
+            ),
+            DeclareLaunchArgument(
+                "keyboard_control_side",
+                default_value="both",
+                description="Keyboard-controlled arm: left, right, or both.",
+            ),
+            DeclareLaunchArgument(
+                "keyboard_activation_topic",
+                default_value="/teleop/activation/state",
+            ),
+            DeclareLaunchArgument(
+                "keyboard_reset_topic",
+                default_value="/teleop/reset",
+            ),
+            DeclareLaunchArgument(
+                "keyboard_activation_timeout_s",
+                default_value="0.2",
+            ),
             Node(
                 package="robo_orchard_marvin_ros2",
                 executable="marvin_driver_node",
@@ -111,6 +142,16 @@ def generate_launch_description():
                         ),
                         "pose_low_pass_alpha": ParameterValue(
                             pose_low_pass_alpha, value_type=float
+                        ),
+                        "operator_input_source": operator_input_source,
+                        "keyboard_control_side": keyboard_control_side,
+                        "keyboard_activation_topic": (
+                            keyboard_activation_topic
+                        ),
+                        "keyboard_reset_topic": keyboard_reset_topic,
+                        "keyboard_activation_timeout_s": ParameterValue(
+                            keyboard_activation_timeout_s,
+                            value_type=float,
                         ),
                     }
                 ],

@@ -24,13 +24,17 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Header
+from std_msgs.msg import Empty, Header
 from std_srvs.srv import Trigger
 
 from robo_orchard_pico_msg_ros2.msg import VRState
+from robo_orchard_teleop_msg_ros2.msg import TeleopActivationState
 from robo_orchard_teleop_ros2.bridge.pico.intent import (
-    GripperIntent,
+    DisabledResetIntent,
+    InactiveActivationIntent,
+    PicoActivationIntent,
     ResetIntent,
+    TopicActivationIntent,
 )
 from robo_orchard_teleop_ros2.bridge.pico.teleop import Action, VRTeleOp
 
@@ -80,6 +84,13 @@ class MarvinPicoVRTeleOpNode(Node):
         self.declare_parameter("control_frequency_hz", 30.0)
         self.declare_parameter("translation_scale_factor", 1.0)
         self.declare_parameter("pose_low_pass_alpha", 0.25)
+        self.declare_parameter("operator_input_source", "pico")
+        self.declare_parameter("keyboard_control_side", "both")
+        self.declare_parameter(
+            "keyboard_activation_topic", "/teleop/activation/state"
+        )
+        self.declare_parameter("keyboard_reset_topic", "/teleop/reset")
+        self.declare_parameter("keyboard_activation_timeout_s", 0.2)
 
         self.urdf_path = str(self.get_parameter("urdf_path").value)
         if not os.path.isfile(self.urdf_path):
@@ -101,6 +112,21 @@ class MarvinPicoVRTeleOpNode(Node):
         pose_low_pass_alpha = float(
             self.get_parameter("pose_low_pass_alpha").value
         )
+        self._operator_input_source = str(
+            self.get_parameter("operator_input_source").value
+        )
+        self._keyboard_control_side = str(
+            self.get_parameter("keyboard_control_side").value
+        )
+        self._keyboard_activation_topic = str(
+            self.get_parameter("keyboard_activation_topic").value
+        )
+        self._keyboard_reset_topic = str(
+            self.get_parameter("keyboard_reset_topic").value
+        )
+        self._keyboard_activation_timeout_s = float(
+            self.get_parameter("keyboard_activation_timeout_s").value
+        )
         if (
             not math.isfinite(control_frequency_hz)
             or control_frequency_hz <= 0
@@ -120,6 +146,31 @@ class MarvinPicoVRTeleOpNode(Node):
             or not 0 < pose_low_pass_alpha <= 1
         ):
             raise ValueError("pose_low_pass_alpha must be in (0, 1]")
+        if self._operator_input_source not in {"pico", "keyboard"}:
+            raise ValueError(
+                "operator_input_source must be 'pico' or 'keyboard'"
+            )
+        if self._keyboard_control_side not in {"left", "right", "both"}:
+            raise ValueError(
+                "keyboard_control_side must be 'left', 'right', or 'both'"
+            )
+        if not self._keyboard_activation_topic:
+            raise ValueError("keyboard_activation_topic must not be empty")
+        if not self._keyboard_reset_topic:
+            raise ValueError("keyboard_reset_topic must not be empty")
+        if (
+            not math.isfinite(self._keyboard_activation_timeout_s)
+            or self._keyboard_activation_timeout_s <= 0.0
+        ):
+            raise ValueError(
+                "keyboard_activation_timeout_s must be positive and finite"
+            )
+
+        self._topic_activation_intent = (
+            TopicActivationIntent(self._keyboard_activation_timeout_s)
+            if self._operator_input_source == "keyboard"
+            else None
+        )
 
         self.teleops: dict[ArmSide, VRTeleOp] = {}
         for side in ("left", "right"):
@@ -130,15 +181,8 @@ class MarvinPicoVRTeleOpNode(Node):
                 ee_link_name=ee_link_names[side],
                 scale_factor=translation_scale_factor,
                 pose_low_pass_alpha=pose_low_pass_alpha,
-                trigger_intent=GripperIntent(
-                    source_type=side,
-                    value_thresh=0.5,
-                    thresh=1.0,
-                ),
-                reset_intent=ResetIntent(
-                    source_type=MARVIN_RESET_BUTTONS[side],
-                    thresh=1.0,
-                ),
+                trigger_intent=self._activation_intent_for_side(side),
+                reset_intent=self._reset_intent_for_side(side),
                 reset_callback=None,
                 logger=self.get_logger(),
             )
@@ -179,6 +223,21 @@ class MarvinPicoVRTeleOpNode(Node):
             self._vr_state_callback,
             1,
         )
+        self.keyboard_activation_sub = None
+        self.keyboard_reset_sub = None
+        if self._operator_input_source == "keyboard":
+            self.keyboard_activation_sub = self.create_subscription(
+                TeleopActivationState,
+                self._keyboard_activation_topic,
+                self._on_keyboard_activation,
+                1,
+            )
+            self.keyboard_reset_sub = self.create_subscription(
+                Empty,
+                self._keyboard_reset_topic,
+                self._on_keyboard_reset,
+                1,
+            )
         for side in ("left", "right"):
             self.create_subscription(
                 JointState,
@@ -198,9 +257,52 @@ class MarvinPicoVRTeleOpNode(Node):
             self._control_callback,
         )
         self.get_logger().info(
-            "Marvin Pico teleop ready: rate=%.1f Hz, base=%s, urdf=%s"
-            % (control_frequency_hz, self.base_link_name, self.urdf_path)
+            "Marvin teleop ready: rate=%.1f Hz, base=%s, input=%s, "
+            "keyboard_side=%s, urdf=%s"
+            % (
+                control_frequency_hz,
+                self.base_link_name,
+                self._operator_input_source,
+                self._keyboard_control_side,
+                self.urdf_path,
+            )
         )
+
+    def _keyboard_sides(self) -> tuple[ArmSide, ...]:
+        if self._keyboard_control_side == "both":
+            return ("left", "right")
+        return (self._keyboard_control_side,)
+
+    def _activation_intent_for_side(self, side: ArmSide):
+        if self._operator_input_source == "pico":
+            return PicoActivationIntent(
+                source_type=side,
+                value_thresh=0.5,
+                thresh=1.0,
+            )
+        if side in self._keyboard_sides():
+            return self._topic_activation_intent
+        return InactiveActivationIntent()
+
+    def _reset_intent_for_side(self, side: ArmSide):
+        if self._operator_input_source == "keyboard":
+            return DisabledResetIntent()
+        return ResetIntent(
+            source_type=MARVIN_RESET_BUTTONS[side],
+            thresh=1.0,
+        )
+
+    def _on_keyboard_activation(self, message: TeleopActivationState) -> None:
+        if self._topic_activation_intent is not None:
+            self._topic_activation_intent.update(message)
+
+    def _on_keyboard_reset(self, _message: Empty) -> None:
+        if self._topic_activation_intent is None:
+            return
+        self._topic_activation_intent.require_rearm()
+        for side in self._keyboard_sides():
+            if self.teleops[side].begin_reset():
+                self._request_reset(side)
 
     def _vr_state_callback(self, message: VRState):
         for side in ("left", "right"):
@@ -282,11 +384,18 @@ class MarvinPicoVRTeleOpNode(Node):
             self.get_logger().warning(
                 f"Marvin {side} reset service is unavailable."
             )
-            self.teleops[side].finish_reset()
+            self._finish_reset_state(side)
             return
 
         self.get_logger().info(f"Requesting Marvin {side} reset.")
-        future = client.call_async(Trigger.Request())
+        try:
+            future = client.call_async(Trigger.Request())
+        except Exception as error:
+            self.get_logger().error(
+                f"Marvin {side} reset request failed: {error}"
+            )
+            self._finish_reset_state(side)
+            return
         self.reset_futures[side] = future
         future.add_done_callback(partial(self._reset_result, side))
 
@@ -306,11 +415,14 @@ class MarvinPicoVRTeleOpNode(Node):
                 f"Marvin {side} reset service failed: {error}"
             )
         finally:
-            positions = self.current_joint_positions[side]
-            if positions is not None:
-                self.teleops[side].update_robot_joint_state(positions)
-            self.teleops[side].finish_reset()
+            self._finish_reset_state(side)
             self.reset_futures[side] = None
+
+    def _finish_reset_state(self, side: ArmSide) -> None:
+        positions = self.current_joint_positions[side]
+        if positions is not None:
+            self.teleops[side].update_robot_joint_state(positions)
+        self.teleops[side].finish_reset()
 
 
 def main(args=None):

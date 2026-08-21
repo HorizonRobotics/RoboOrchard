@@ -22,15 +22,19 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node, ParameterDescriptor
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Header
+from std_msgs.msg import Empty, Header
 from std_srvs.srv import Trigger
 
 from robo_orchard_pico_msg_ros2.msg import (
     VRState,
 )
+from robo_orchard_teleop_msg_ros2.msg import TeleopActivationState
 from robo_orchard_teleop_ros2.bridge.pico.intent import (
-    GripperIntent,
+    DisabledResetIntent,
+    InactiveActivationIntent,
+    PicoActivationIntent,
     ResetIntent,
+    TopicActivationIntent,
 )
 from robo_orchard_teleop_ros2.bridge.pico.teleop import (
     Action,
@@ -132,6 +136,43 @@ class PiperPicoVRTeleOpNode(Node):
             .string_value
         )
 
+        self.declare_parameter("operator_input_source", "pico")
+        self.declare_parameter("keyboard_control_side", "both")
+        self.declare_parameter(
+            "keyboard_activation_topic", "/teleop/activation/state"
+        )
+        self.declare_parameter("keyboard_reset_topic", "/teleop/reset")
+        self.declare_parameter("keyboard_activation_timeout_s", 0.2)
+        self._operator_input_source = str(
+            self.get_parameter("operator_input_source").value
+        )
+        self._keyboard_control_side = str(
+            self.get_parameter("keyboard_control_side").value
+        )
+        self._keyboard_activation_topic = str(
+            self.get_parameter("keyboard_activation_topic").value
+        )
+        self._keyboard_reset_topic = str(
+            self.get_parameter("keyboard_reset_topic").value
+        )
+        self._keyboard_activation_timeout_s = float(
+            self.get_parameter("keyboard_activation_timeout_s").value
+        )
+        if self._operator_input_source not in {"pico", "keyboard"}:
+            raise ValueError(
+                "operator_input_source must be 'pico' or 'keyboard'"
+            )
+        if self._keyboard_control_side not in {"left", "right", "both"}:
+            raise ValueError(
+                "keyboard_control_side must be 'left', 'right', or 'both'"
+            )
+        if not self._keyboard_activation_topic:
+            raise ValueError("keyboard_activation_topic must not be empty")
+        if not self._keyboard_reset_topic:
+            raise ValueError("keyboard_reset_topic must not be empty")
+        if self._keyboard_activation_timeout_s <= 0.0:
+            raise ValueError("keyboard_activation_timeout_s must be positive")
+
         # --- Reset service parameters ---
         # DAgger takeover/auto mode is controlled by the HoloBrain app via
         # vr_orchestrator services. This node only gates local VR command
@@ -232,6 +273,12 @@ class PiperPicoVRTeleOpNode(Node):
             .double_value
         )
 
+        self._topic_activation_intent = (
+            TopicActivationIntent(self._keyboard_activation_timeout_s)
+            if self._operator_input_source == "keyboard"
+            else None
+        )
+
         self.left_teleop = VRTeleOp(
             source_type="left",
             urdf_path=self.urdf_path,
@@ -239,12 +286,8 @@ class PiperPicoVRTeleOpNode(Node):
             ee_link_name=self.ee_link_name,
             scale_factor=TRANSLATION_SCALE_FACTOR,
             pose_low_pass_alpha=POSE_LOW_PASS_ALPHA,
-            trigger_intent=GripperIntent(
-                source_type="left",
-                value_thresh=0.5,
-                thresh=1.0,
-            ),
-            reset_intent=ResetIntent(source_type="X", thresh=1.0),
+            trigger_intent=self._activation_intent_for_side("left"),
+            reset_intent=self._reset_intent_for_side("left"),
             reset_callback=None,
             logger=self.get_logger(),
         )
@@ -255,12 +298,8 @@ class PiperPicoVRTeleOpNode(Node):
             ee_link_name=self.ee_link_name,
             scale_factor=TRANSLATION_SCALE_FACTOR,
             pose_low_pass_alpha=POSE_LOW_PASS_ALPHA,
-            trigger_intent=GripperIntent(
-                source_type="right",
-                value_thresh=0.5,
-                thresh=1.0,
-            ),
-            reset_intent=ResetIntent(source_type="A", thresh=1.0),
+            trigger_intent=self._activation_intent_for_side("right"),
+            reset_intent=self._reset_intent_for_side("right"),
             reset_callback=None,
             logger=self.get_logger(),
         )
@@ -271,6 +310,21 @@ class PiperPicoVRTeleOpNode(Node):
         self.vr_state_sub = self.create_subscription(
             VRState, "vr_state", self.sub_vr_state_callback, 1
         )
+        self.keyboard_activation_sub = None
+        self.keyboard_reset_sub = None
+        if self._operator_input_source == "keyboard":
+            self.keyboard_activation_sub = self.create_subscription(
+                TeleopActivationState,
+                self._keyboard_activation_topic,
+                self._on_keyboard_activation,
+                1,
+            )
+            self.keyboard_reset_sub = self.create_subscription(
+                Empty,
+                self._keyboard_reset_topic,
+                self._on_keyboard_reset,
+                1,
+            )
         self.left_ee_pose_sub = self.create_subscription(
             PoseStamped,
             "/robot/left/ee_pose",
@@ -319,6 +373,50 @@ class PiperPicoVRTeleOpNode(Node):
         self.timer = self.create_timer(
             1.0 / TELEOP_CONTROL_FREQ_HZ, self.timer_callback
         )
+
+        self.get_logger().info(
+            "Piper teleop operator input: "
+            f"source={self._operator_input_source}, "
+            f"keyboard_side={self._keyboard_control_side}"
+        )
+
+    def _keyboard_sides(self) -> tuple[Literal["left", "right"], ...]:
+        if self._keyboard_control_side == "both":
+            return ("left", "right")
+        return (self._keyboard_control_side,)
+
+    def _activation_intent_for_side(self, side: Literal["left", "right"]):
+        if self._operator_input_source == "pico":
+            return PicoActivationIntent(
+                source_type=side,
+                value_thresh=0.5,
+                thresh=1.0,
+            )
+        if side in self._keyboard_sides():
+            return self._topic_activation_intent
+        return InactiveActivationIntent()
+
+    def _reset_intent_for_side(self, side: Literal["left", "right"]):
+        if self._operator_input_source == "keyboard":
+            return DisabledResetIntent()
+        return ResetIntent(
+            source_type="X" if side == "left" else "A",
+            thresh=1.0,
+        )
+
+    def _on_keyboard_activation(self, message: TeleopActivationState) -> None:
+        if self._topic_activation_intent is not None:
+            self._topic_activation_intent.update(message)
+
+    def _on_keyboard_reset(self, _message: Empty) -> None:
+        if self._topic_activation_intent is None:
+            return
+        self._topic_activation_intent.require_rearm()
+        for side in self._keyboard_sides():
+            teleop = self.left_teleop if side == "left" else self.right_teleop
+            state = self._arm_state[side]
+            teleop.reset_session()
+            self._handle_reset(side, state)
 
     def sub_vr_state_callback(self, msg: VRState):
         # The state machine itself gates VR processing during ARM_RESETTING
@@ -463,7 +561,10 @@ class PiperPicoVRTeleOpNode(Node):
         if state == ArmEngageState.ARM_RESETTING:
             return
 
-        # DEACTIVE: watch for the ACTIVE edge from GripperIntent.
+        # DEACTIVE: watch for the selected operator input's ACTIVE edge.
+        # Both operator input sources take this path: keyboard activation
+        # replaces only the engage signal, so the gripper still follows the
+        # Pico trigger and must match before the arm engages.
         if state == ArmEngageState.DEACTIVE:
             if action == Action.ACTIVE:
                 gripper_val = self._get_robot_gripper_value(side)
@@ -472,15 +573,15 @@ class PiperPicoVRTeleOpNode(Node):
                         f"[{side}] Engage requested but joint_state not "
                         "yet received -- waiting for robot state."
                     )
-                    # Stay DEACTIVE; GripperIntent keeps returning ACTIVE
-                    # until the user releases, so we'll retry on the next
-                    # VRState.
+                    # Stay DEACTIVE; the operator input keeps returning
+                    # ACTIVE until the user releases, so we'll retry on the
+                    # next VRState.
                     return
                 self._arm_state[side] = ArmEngageState.WAITING_FOR_MATCH
                 self.get_logger().info(
-                    f"[{side}] Gripper intent active -- waiting for "
-                    f"trigger to match robot gripper "
-                    f"({gripper_val:.4f} m)."
+                    f"[{side}] {self._operator_input_source.capitalize()} "
+                    f"activation active -- waiting for trigger to match "
+                    f"robot gripper ({gripper_val:.4f} m)."
                 )
             # All other actions while DEACTIVE are ignored.
             return
@@ -488,7 +589,7 @@ class PiperPicoVRTeleOpNode(Node):
         # WAITING_FOR_MATCH: check match; cancel on release.
         if state == ArmEngageState.WAITING_FOR_MATCH:
             if action == Action.DEACTIVE:
-                # User released gripper -- cancel engage.
+                # Operator released the selected activation input.
                 self._arm_state[side] = ArmEngageState.DEACTIVE
                 self.get_logger().info(
                     f"[{side}] Engage cancelled before match (released)."
@@ -541,7 +642,7 @@ class PiperPicoVRTeleOpNode(Node):
         if state == ArmEngageState.ACTIVE:
             if action == Action.DEACTIVE:
                 self.get_logger().info(
-                    f"[{side}] Gripper released -- VR output paused. "
+                    f"[{side}] Operator input released -- VR output paused. "
                     "DAgger mode is unchanged."
                 )
                 self._arm_state[side] = ArmEngageState.DEACTIVE
@@ -564,7 +665,7 @@ class PiperPicoVRTeleOpNode(Node):
         if not teleop.recapture_baseline():
             self.get_logger().warning(
                 f"[{side}] Could not refresh engage baseline at engage; "
-                "first VR frame may carry drift since gripper hold began."
+                "first VR frame may carry drift since activation began."
             )
         self._arm_state[side] = ArmEngageState.ACTIVE
         self.get_logger().info(f"[{side}] {source} -- VR teleop is ACTIVE.")
@@ -645,8 +746,8 @@ class PiperPicoVRTeleOpNode(Node):
             teleop = self.left_teleop if _side == "left" else self.right_teleop
             teleop.finish_reset()
             self.get_logger().info(
-                f"[{_side}] RESET complete -- DEACTIVE; release gripper "
-                "before re-engaging."
+                f"[{_side}] RESET complete -- DEACTIVE; release the "
+                "activation input before re-engaging."
             )
 
         self._call_service_async(reset_client, reset_service, _on_done)

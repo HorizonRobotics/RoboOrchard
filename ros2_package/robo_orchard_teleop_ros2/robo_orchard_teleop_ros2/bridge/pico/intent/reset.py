@@ -111,3 +111,10 @@ class ResetIntent:
         )
 
         return self._check_reset_trigger(is_pressed, current_time_ns)
+
+
+class DisabledResetIntent:
+    """Ignore Pico reset buttons when keyboard input owns reset actions."""
+
+    def should_reset(self, _msg: VRState) -> bool:
+        return False

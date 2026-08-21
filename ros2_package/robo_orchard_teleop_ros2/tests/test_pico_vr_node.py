@@ -193,8 +193,13 @@ if "std_msgs" not in sys.modules:
         frame_id: str = ""
         stamp: object | None = None
 
+    @dataclass
+    class _Empty:
+        pass
+
     std_msgs = types.ModuleType("std_msgs")
     std_msgs_msg = types.ModuleType("std_msgs.msg")
+    std_msgs_msg.Empty = _Empty
     std_msgs_msg.Header = _Header
     std_msgs.msg = std_msgs_msg
     sys.modules["std_msgs"] = std_msgs
@@ -253,6 +258,28 @@ if "robo_orchard_pico_msg_ros2" not in sys.modules:
     sys.modules["robo_orchard_pico_msg_ros2.msg"] = pico_msgs_msg
 
 
+if "robo_orchard_teleop_msg_ros2" not in sys.modules:
+
+    @dataclass
+    class _TeleopActivationState:
+        UNAVAILABLE = 0
+        INACTIVE = 1
+        ACTIVE = 2
+
+        header: object = field(
+            default_factory=lambda: sys.modules["std_msgs.msg"].Header()
+        )
+        state: int = UNAVAILABLE
+        transition_id: int = 0
+
+    teleop_msgs = types.ModuleType("robo_orchard_teleop_msg_ros2")
+    teleop_msgs_msg = types.ModuleType("robo_orchard_teleop_msg_ros2.msg")
+    teleop_msgs_msg.TeleopActivationState = _TeleopActivationState
+    teleop_msgs.msg = teleop_msgs_msg
+    sys.modules["robo_orchard_teleop_msg_ros2"] = teleop_msgs
+    sys.modules["robo_orchard_teleop_msg_ros2.msg"] = teleop_msgs_msg
+
+
 rclpy = types.ModuleType("rclpy")
 rclpy.init = lambda *args, **kwargs: None
 rclpy.shutdown = lambda *args, **kwargs: None
@@ -271,8 +298,33 @@ intent_module = sys.modules.get(
     "robo_orchard_teleop_ros2.bridge.pico.intent",
     types.ModuleType("robo_orchard_teleop_ros2.bridge.pico.intent"),
 )
-intent_module.GripperIntent = lambda *args, **kwargs: object()
-intent_module.ResetIntent = lambda *args, **kwargs: object()
+
+
+class _Intent:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+
+class _TopicActivationIntent(_Intent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.messages = []
+        self.require_rearm_count = 0
+
+    def update(self, message):
+        self.messages.append(message)
+
+    def require_rearm(self):
+        self.require_rearm_count += 1
+
+
+intent_module.DisabledResetIntent = _Intent
+intent_module.GripperIntent = _Intent
+intent_module.InactiveActivationIntent = _Intent
+intent_module.PicoActivationIntent = _Intent
+intent_module.ResetIntent = _Intent
+intent_module.TopicActivationIntent = _TopicActivationIntent
 sys.modules["robo_orchard_teleop_ros2.bridge.pico.intent"] = intent_module
 
 
@@ -304,6 +356,8 @@ class _VRTeleOp:
         )
         self.next_action = _Action.ACTIVE
         self.next_result = None
+        self.reset_session_count = 0
+        self.recapture_count = 0
 
     def update_vr_state(self, msg):
         self.latest_vr_state = msg
@@ -317,6 +371,13 @@ class _VRTeleOp:
 
     def finish_reset(self):
         self.finish_reset_count = getattr(self, "finish_reset_count", 0) + 1
+
+    def recapture_baseline(self):
+        self.recapture_count += 1
+        return True
+
+    def reset_session(self):
+        self.reset_session_count += 1
 
     def __call__(self):
         return self.next_result
@@ -435,3 +496,62 @@ def test_pico_node_does_not_publish_when_teleop_returns_none():
     node.timer_callback()
 
     assert node.left_cmd_pub.messages == []
+
+
+def test_pico_is_the_default_operator_input_source():
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    VRTeleOp.instances.clear()
+
+    node = PiperPicoVRTeleOpNode()
+
+    assert node._operator_input_source == "pico"
+    assert node.keyboard_activation_sub is None
+    assert node.keyboard_reset_sub is None
+    assert isinstance(
+        VRTeleOp.instances[0].init_kwargs["trigger_intent"], _Intent
+    )
+
+
+def test_keyboard_mode_selects_only_the_configured_side():
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    VRTeleOp.instances.clear()
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[
+            _Parameter("operator_input_source", "keyboard"),
+            _Parameter("keyboard_control_side", "left"),
+        ]
+    )
+
+    assert node.keyboard_activation_sub is not None
+    assert node.keyboard_reset_sub is not None
+    assert (
+        VRTeleOp.instances[0].init_kwargs["trigger_intent"]
+        is node._topic_activation_intent
+    )
+    assert isinstance(
+        VRTeleOp.instances[1].init_kwargs["trigger_intent"],
+        _Intent,
+    )
+
+
+def test_keyboard_activation_message_updates_topic_intent():
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    VRTeleOp.instances.clear()
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[
+            _Parameter("operator_input_source", "keyboard"),
+        ]
+    )
+    message = sys.modules[
+        "robo_orchard_teleop_msg_ros2.msg"
+    ].TeleopActivationState(state=2)
+
+    node._on_keyboard_activation(message)
+
+    assert node._topic_activation_intent.messages == [message]

@@ -41,6 +41,10 @@ def data_files_generator():
             os.path.join("share", package_name, "launch"),
             glob(os.path.join("launch", "*.launch.py")),
         ),
+        (
+            os.path.join("share", package_name, "config"),
+            glob(os.path.join("config", "*.yaml")),
+        ),
     ]
 
     for root, _, files in os.walk("resource"):
@@ -131,6 +135,7 @@ setup(
             "vr_orchestrator = robo_orchard_teleop_ros2.take_over.orchestrator.vr:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
             "marvin_pico_vr_teleop = robo_orchard_teleop_ros2.robot.marvin.pico_vr:main",  # noqa: E501
+            "teleop_keyboard_node = robo_orchard_teleop_ros2.activation.keyboard:main",  # noqa: E501
         ],
     },
 )

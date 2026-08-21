@@ -120,6 +120,19 @@ def test_launch_starts_bridge_teleop_and_both_arm_controllers():
     assert "robot_right_single_controller" in names
     assert "robot_left_single_controller" in names
 
+    arguments = {
+        entity.name: entity
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+    }
+    assert arguments["operator_input_source"].default_value == "pico"
+    assert arguments["keyboard_control_side"].default_value == "both"
+    assert arguments["keyboard_activation_topic"].default_value == (
+        "/teleop/activation/state"
+    )
+    assert arguments["keyboard_reset_topic"].default_value == "/teleop/reset"
+    assert arguments["keyboard_activation_timeout_s"].default_value == "0.2"
+
 
 def test_launch_wires_reset_joint_position_to_controllers():
     module = _load_module()
@@ -189,6 +202,21 @@ def test_launch_routes_pico_joint_outputs_to_algo_topics():
     assert parameters[0]["ee_link_name"] == "link6"
     assert parameters[0]["left_reset_service"] == "/robot/left/reset_ctrl"
     assert parameters[0]["right_reset_service"] == "/robot/right/reset_ctrl"
+    assert parameters[0]["operator_input_source"].name == (
+        "operator_input_source"
+    )
+    assert parameters[0]["keyboard_control_side"].name == (
+        "keyboard_control_side"
+    )
+    assert parameters[0]["keyboard_activation_topic"].name == (
+        "keyboard_activation_topic"
+    )
+    assert parameters[0]["keyboard_reset_topic"].name == (
+        "keyboard_reset_topic"
+    )
+    keyboard_timeout = parameters[0]["keyboard_activation_timeout_s"]
+    assert keyboard_timeout.value.name == "keyboard_activation_timeout_s"
+    assert keyboard_timeout.value_type is float
 
 
 def test_launch_routes_arm_feedback_to_puppet_topics():

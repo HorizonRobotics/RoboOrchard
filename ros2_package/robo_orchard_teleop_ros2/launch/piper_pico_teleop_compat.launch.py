@@ -45,6 +45,28 @@ def generate_launch_description():
         default_value="",
         description="URDF path used by the Pico VR teleop solver.",
     )
+    operator_input_source_arg = DeclareLaunchArgument(
+        "operator_input_source",
+        default_value="pico",
+        description="Operator input source: pico or keyboard.",
+    )
+    keyboard_control_side_arg = DeclareLaunchArgument(
+        "keyboard_control_side",
+        default_value="both",
+        description="Keyboard-controlled arm side: left, right, or both.",
+    )
+    keyboard_activation_topic_arg = DeclareLaunchArgument(
+        "keyboard_activation_topic",
+        default_value="/teleop/activation/state",
+    )
+    keyboard_reset_topic_arg = DeclareLaunchArgument(
+        "keyboard_reset_topic",
+        default_value="/teleop/reset",
+    )
+    keyboard_activation_timeout_arg = DeclareLaunchArgument(
+        "keyboard_activation_timeout_s",
+        default_value="0.2",
+    )
     left_reset_joint_position_arg = DeclareLaunchArgument(
         "left_reset_joint_position",
         default_value="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]",
@@ -85,6 +107,22 @@ def generate_launch_description():
                 "base_link_name": "base_link",
                 "left_reset_service": "/robot/left/reset_ctrl",
                 "right_reset_service": "/robot/right/reset_ctrl",
+                "operator_input_source": LaunchConfiguration(
+                    "operator_input_source"
+                ),
+                "keyboard_control_side": LaunchConfiguration(
+                    "keyboard_control_side"
+                ),
+                "keyboard_activation_topic": LaunchConfiguration(
+                    "keyboard_activation_topic"
+                ),
+                "keyboard_reset_topic": LaunchConfiguration(
+                    "keyboard_reset_topic"
+                ),
+                "keyboard_activation_timeout_s": ParameterValue(
+                    LaunchConfiguration("keyboard_activation_timeout_s"),
+                    value_type=float,
+                ),
             }
         ],
         remappings=[
@@ -161,6 +199,11 @@ def generate_launch_description():
             right_can_port_arg,
             enable_mit_control_mode_arg,
             urdf_path_arg,
+            operator_input_source_arg,
+            keyboard_control_side_arg,
+            keyboard_activation_topic_arg,
+            keyboard_reset_topic_arg,
+            keyboard_activation_timeout_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
             pico_bridge_node,

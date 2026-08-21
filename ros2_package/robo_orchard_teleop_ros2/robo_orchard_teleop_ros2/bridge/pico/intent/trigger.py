@@ -141,6 +141,10 @@ class TriggerIntent(LongPressIntent):
         super().__init__("trigger", *args, **kwargs)
 
 
-class GripperIntent(LongPressIntent):
+class PicoActivationIntent(LongPressIntent):
     def __init__(self, *args, **kwargs):
         super().__init__("gripper", *args, **kwargs)
+
+
+class GripperIntent(PicoActivationIntent):
+    """Backward-compatible name for the Pico activation control."""

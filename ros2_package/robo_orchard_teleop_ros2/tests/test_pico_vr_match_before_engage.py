@@ -138,7 +138,12 @@ def _vr_state(*, left_trigger: float = 0.0, right_trigger: float = 0.0):
     return msg
 
 
-def _build_node(*, match_tolerance: float = 0.1):
+def _build_node(
+    *,
+    match_tolerance: float = 0.1,
+    operator_input_source: str = "pico",
+    keyboard_control_side: str = "left",
+):
     pico_vr_module.os.path.exists = lambda _path: True
     VRTeleOp.instances.clear()
 
@@ -146,6 +151,12 @@ def _build_node(*, match_tolerance: float = 0.1):
         parameter_overrides=[
             pico_stubs._Parameter("urdf_path", "/tmp/robot.urdf"),
             pico_stubs._Parameter("match_tolerance", match_tolerance),
+            pico_stubs._Parameter(
+                "operator_input_source", operator_input_source
+            ),
+            pico_stubs._Parameter(
+                "keyboard_control_side", keyboard_control_side
+            ),
         ]
     )
     node._left_reset_service = "/robot/left/reset_ctrl"
@@ -263,6 +274,72 @@ def test_left_and_right_state_are_independent():
 
     assert node._arm_state["left"] == ArmEngageState.WAITING_FOR_MATCH
     assert node._arm_state["right"] == ArmEngageState.DEACTIVE
+
+
+def test_keyboard_activation_waits_for_gripper_match():
+    # Keyboard activation replaces only the engage signal; the gripper
+    # still follows the Pico trigger, so the match gate must still apply.
+    node = _build_node(operator_input_source="keyboard")
+    node.left_joint_state_msg = _joint_state(0.025)
+
+    node._on_vr_state_side("left", Action.ACTIVE, _vr_state())
+
+    assert node._arm_state["left"] == ArmEngageState.WAITING_FOR_MATCH
+    assert VRTeleOp.instances[0].recapture_count == 0
+    assert any(
+        "Keyboard activation active" in msg for msg in _messages(node, "info")
+    )
+
+
+def test_keyboard_activation_engages_once_match_satisfied():
+    node = _build_node(operator_input_source="keyboard")
+    node._arm_state["left"] = ArmEngageState.WAITING_FOR_MATCH
+    node.left_joint_state_msg = _joint_state(0.025)
+
+    node._on_vr_state_side(
+        "left",
+        Action.ACTIVE,
+        _vr_state(left_trigger=0.75),
+    )
+
+    assert node._arm_state["left"] == ArmEngageState.ACTIVE
+    assert VRTeleOp.instances[0].recapture_count == 1
+
+
+def test_keyboard_activation_refuses_without_joint_state():
+    # Engaging with no joint_state would seed the IK from all-zeros
+    # instead of the arm's actual configuration.
+    node = _build_node(operator_input_source="keyboard")
+
+    node._on_vr_state_side("left", Action.ACTIVE, _vr_state())
+
+    assert node._arm_state["left"] == ArmEngageState.DEACTIVE
+    assert VRTeleOp.instances[0].recapture_count == 0
+
+
+def test_keyboard_unselected_side_stays_inactive():
+    node = _build_node(
+        operator_input_source="keyboard",
+        keyboard_control_side="left",
+    )
+
+    node._on_vr_state_side("right", Action.DEACTIVE, _vr_state())
+
+    assert node._arm_state["right"] == ArmEngageState.DEACTIVE
+
+
+def test_keyboard_reset_rearms_and_uses_existing_reset_chain():
+    node = _build_node(operator_input_source="keyboard")
+    node._arm_state["left"] = ArmEngageState.ACTIVE
+    node._left_reset_client.response = _trigger_response(success=True)
+    empty = sys.modules["std_msgs.msg"].Empty()
+
+    node._on_keyboard_reset(empty)
+
+    assert node._topic_activation_intent.require_rearm_count == 1
+    assert VRTeleOp.instances[0].reset_session_count == 1
+    assert len(node._left_reset_client.calls) == 1
+    assert node._arm_state["left"] == ArmEngageState.DEACTIVE
 
 
 # ---------------------------------------------------------------------------

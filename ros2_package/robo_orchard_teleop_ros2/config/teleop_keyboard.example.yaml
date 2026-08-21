@@ -1,0 +1,26 @@
+teleop_keyboard_node:
+  ros__parameters:
+    activation_topic: /teleop/activation/state
+    reset_topic: /teleop/reset
+
+    # Identify one Linux keyboard event interface. Name and serial are
+    # optional, but name is useful when one USB interface exposes multiple
+    # event devices.
+    device.bus_type: "0003"
+    device.name: ""
+    device.vendor_id: ""
+    device.product_id: ""
+    device.serial: ""
+    device.interface_number: -1
+
+    # Linux input key codes: KEY_T=20, KEY_R=19.
+    activation_key_name: KEY_T
+    activation_key_code: 20
+    reset_key_name: KEY_R
+    reset_key_code: 19
+    activation_hold_ms: 1000.0
+    reset_hold_ms: 1000.0
+
+    poll_interval_ms: 5.0
+    heartbeat_hz: 30.0
+    reconnect_interval_s: 1.0

@@ -18,7 +18,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import Callable, Literal
+from typing import Callable, Literal, Protocol
 
 import numpy as np
 from geometry_msgs.msg import Pose, PoseStamped
@@ -26,10 +26,7 @@ from geometry_msgs.msg import Pose, PoseStamped
 from robo_orchard_pico_msg_ros2.msg import (
     VRState,
 )
-from robo_orchard_teleop_ros2.bridge.pico.intent import (
-    LongPressIntent,
-    ResetIntent,
-)
+from robo_orchard_teleop_ros2.bridge.pico.intent import ResetIntent
 from robo_orchard_teleop_ros2.ik import IkOptimizer
 from robo_orchard_teleop_ros2.msg_adaptor import (
     matrix_to_pose_msg,
@@ -42,9 +39,19 @@ __all__ = ["Action", "TeleOpResult", "VRTeleOp"]
 global_logger = logging.getLogger(__name__)
 
 
+class ActivationIntent(Protocol):
+    """Activation contract shared by Pico and topic-backed inputs."""
+
+    def is_active(self, msg: VRState) -> bool: ...
+
+    def is_pressed(self, msg: VRState) -> bool: ...
+
+    def reset(self) -> None: ...
+
+
 @dataclass
 class ControlState:
-    trigger_intent: LongPressIntent
+    trigger_intent: ActivationIntent
     reset_intent: ResetIntent
     is_active: bool = False
     initial_vr_pose: Pose | PoseStamped | None = None
@@ -94,7 +101,7 @@ class VRTeleOp:
         urdf_path: str,
         base_link_name: str,
         ee_link_name: str,
-        trigger_intent: LongPressIntent,
+        trigger_intent: ActivationIntent,
         reset_intent: ResetIntent,
         scale_factor: float = 1.0,
         pose_low_pass_alpha: float = 0.25,
@@ -221,14 +228,25 @@ class VRTeleOp:
             control_state.rearm_required = False
             control_state.trigger_intent.reset()
 
+    def begin_reset(self) -> bool:
+        """Enter reset state once and require activation release afterward."""
+        if self.control_state.reset_in_progress:
+            return False
+        self.control_state.begin_reset()
+        return True
+
+    def reset_session(self) -> None:
+        """Stop output and discard the current controller/robot baseline."""
+        self.control_state.reset()
+
     def recapture_baseline(self) -> bool:
         """Recapture the engage baseline poses to the most recent inputs.
 
         Sets control_state.initial_vr_pose / initial_ee_pose to the
         current VR controller pose and robot ee_pose. Useful when an
         external state machine wants to align the baseline to the
-        actual moment of engage rather than the moment GripperIntent
-        first fired (e.g. after a match-before-engage hand-off, or
+        actual moment of engage rather than the moment activation first
+        fired (e.g. after a match-before-engage hand-off, or
         any future re-centering gesture).
 
         Returns False -- with the existing baseline left intact -- when

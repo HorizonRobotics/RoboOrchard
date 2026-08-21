@@ -152,12 +152,29 @@ def test_launch_declares_arguments_and_eight_nodes():
         "replay_time_s",
         "urdf_path",
         "match_tolerance",
+        "operator_input_source",
+        "keyboard_control_side",
+        "keyboard_activation_topic",
+        "keyboard_reset_topic",
+        "keyboard_activation_timeout_s",
         "left_reset_joint_position",
         "right_reset_joint_position",
     ]
     assert (
         _launch_argument_by_name(description, "match_tolerance").default_value
         == "0.1"
+    )
+    assert (
+        _launch_argument_by_name(
+            description, "operator_input_source"
+        ).default_value
+        == "pico"
+    )
+    assert (
+        _launch_argument_by_name(
+            description, "keyboard_control_side"
+        ).default_value
+        == "both"
     )
     assert (
         _launch_argument_by_name(
@@ -301,6 +318,27 @@ def test_launch_routes_vr_teleop_outputs_and_feedback_topics():
         teleop.kwargs["parameters"][0]["match_tolerance"].name
         == "match_tolerance"
     )
+    assert (
+        teleop.kwargs["parameters"][0]["operator_input_source"].name
+        == "operator_input_source"
+    )
+    assert (
+        teleop.kwargs["parameters"][0]["keyboard_control_side"].name
+        == "keyboard_control_side"
+    )
+    assert (
+        teleop.kwargs["parameters"][0]["keyboard_activation_topic"].name
+        == "keyboard_activation_topic"
+    )
+    assert (
+        teleop.kwargs["parameters"][0]["keyboard_reset_topic"].name
+        == "keyboard_reset_topic"
+    )
+    keyboard_timeout = teleop.kwargs["parameters"][0][
+        "keyboard_activation_timeout_s"
+    ]
+    assert keyboard_timeout.value.name == "keyboard_activation_timeout_s"
+    assert keyboard_timeout.value_type is float
     assert (
         "/robot/left/joint_cmd",
         "/pico_teleop/joint_left",
