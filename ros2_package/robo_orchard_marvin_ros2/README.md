@@ -113,7 +113,10 @@ the response reports both results.
 Reset is accepted only in position or joint impedance mode. It is rejected in
 idle or joint drag mode, while the requested arm is moving, or while that arm
 already has a reset in progress. The reset trajectory uses smooth joint-space
-interpolation and does not perform collision planning.
+interpolation and does not perform collision planning. A transient busy SDK
+send buffer pauses the trajectory and is retried on the next control cycle. A
+continuously busy buffer aborts the reset after
+`reset_send_buffer_busy_timeout_s`.
 
 Motion parameters are configured in `config/marvin_m6s.yaml`. In particular,
 `velocity_ratio` and `acceleration_ratio` use the SDK percentage range
@@ -130,7 +133,8 @@ Higher values generally improve teleoperation responsiveness, but also produce
 faster and more aggressive motion. Reset positions and
 `reset_goal_tolerance_rad` are expressed in radians. Reset speed is controlled
 separately by `reset_duration_s`: a smaller duration produces a faster reset,
-while `reset_timeout_s` only bounds the blocking request.
+while `reset_timeout_s` bounds the full blocking request and
+`reset_send_buffer_busy_timeout_s` bounds continuous SDK send backpressure.
 
 The Driver logs the ToolDyn values reported by both arms whenever it connects.
 When `apply_tool_dynamics_on_startup` is enabled, it preserves each arm's

@@ -26,6 +26,7 @@ marvin_driver_node:
     reset_duration_s: 5.0
     reset_goal_tolerance_rad: 0.01745329252
     reset_timeout_s: 15.0
+    reset_send_buffer_busy_timeout_s: 0.1
     left_joint_names:
       [Joint1_L, Joint2_L, Joint3_L, Joint4_L, Joint5_L, Joint6_L, Joint7_L]
     right_joint_names:

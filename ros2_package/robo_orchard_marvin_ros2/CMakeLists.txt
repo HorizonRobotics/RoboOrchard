@@ -167,6 +167,14 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   ament_pep257(launch)
   ament_add_gtest(
+    marvin_reset_timing_test
+    tests/marvin_reset_timing_test.cpp)
+  if(TARGET marvin_reset_timing_test)
+    target_compile_features(marvin_reset_timing_test PUBLIC cxx_std_17)
+    target_include_directories(marvin_reset_timing_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
+  ament_add_gtest(
     marvin_forward_kinematics_test
     tests/marvin_forward_kinematics_test.cpp
     src/marvin_forward_kinematics.cpp)

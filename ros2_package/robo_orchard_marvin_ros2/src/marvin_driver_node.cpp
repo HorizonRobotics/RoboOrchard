@@ -15,6 +15,7 @@
 // permissions and limitations under the License.
 
 #include "marvin_forward_kinematics.hpp"
+#include "marvin_reset_timing.hpp"
 
 #include "MarvinSDK.h"
 
@@ -69,6 +70,7 @@ using ToolDynamicsArray = std::array<double, kToolDynamicsCount>;
 using SetControlMode =
   robo_orchard_marvin_msg_ros2::srv::SetControlMode;
 using Trigger = std_srvs::srv::Trigger;
+using robo_orchard_marvin_ros2::ResetTrajectoryTiming;
 
 enum class ControlMode : std::uint8_t
 {
@@ -289,6 +291,8 @@ public:
     reset_goal_tolerance_rad_ =
       declare_parameter<double>("reset_goal_tolerance_rad", degrees_to_radians(1.0));
     reset_timeout_s_ = declare_parameter<double>("reset_timeout_s", 15.0);
+    reset_send_buffer_busy_timeout_s_ =
+      declare_parameter<double>("reset_send_buffer_busy_timeout_s", 0.1);
 
     validate_parameters();
     configure_arms();
@@ -370,10 +374,16 @@ private:
 
   struct ResetExecution
   {
+    explicit ResetExecution(const std::chrono::steady_clock::time_point & started_at)
+    : started_at(started_at), trajectory_timing(started_at)
+    {
+    }
+
     std::size_t arm_index{0};
     JointArray start{};
     JointArray target{};
     std::chrono::steady_clock::time_point started_at{};
+    ResetTrajectoryTiming trajectory_timing;
     bool final_target_sent{false};
     bool finished{false};
     bool success{false};
@@ -408,6 +418,13 @@ private:
       !std::isfinite(reset_timeout_s_))
     {
       throw std::invalid_argument("reset_timeout_s must exceed reset_duration_s");
+    }
+    if (
+      reset_send_buffer_busy_timeout_s_ <= 0.0 ||
+      !std::isfinite(reset_send_buffer_busy_timeout_s_))
+    {
+      throw std::invalid_argument(
+              "reset_send_buffer_busy_timeout_s must be positive");
     }
     if (velocity_ratio_ < 0 || velocity_ratio_ > 100) {
       throw std::invalid_argument("velocity_ratio must be in [0, 100]");
@@ -631,11 +648,10 @@ private:
     const std::chrono::steady_clock::time_point & started_at)
   {
     auto & arm = arms_[arm_index];
-    auto reset = std::make_shared<ResetExecution>();
+    auto reset = std::make_shared<ResetExecution>(started_at);
     reset->arm_index = arm_index;
     reset->start = arm.position;
     reset->target = reset_targets_[arm_index];
-    reset->started_at = started_at;
     active_resets_[arm_index] = reset;
     reset_reserved_[arm_index] = true;
     arm.latest_command_valid = false;
@@ -841,6 +857,7 @@ private:
     std::array<JointArray, kArmCount> commands{};
     std::array<bool, kArmCount> final_reset_target_command{};
     auto resets = active_resets_;
+    const auto control_now = std::chrono::steady_clock::now();
     for (std::size_t index = 0; index < resets.size(); ++index) {
       auto & reset = resets[index];
       if (!reset) {
@@ -849,7 +866,7 @@ private:
       auto & arm = arms_[index];
       const ControlMode mode = inferred_mode(arm);
       const auto elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - reset->started_at).count();
+        control_now - reset->started_at).count();
       if (!arm.feedback_valid) {
         finish_reset_unlocked(
           reset, false, arm.side + " reset aborted: feedback became stale");
@@ -882,7 +899,10 @@ private:
         reset.reset();
         continue;
       }
-      const double progress = std::clamp(elapsed / reset_duration_s_, 0.0, 1.0);
+      const double reset_trajectory_elapsed_s =
+        reset->trajectory_timing.candidate_elapsed_s(control_now);
+      const double progress = std::clamp(
+        reset_trajectory_elapsed_s / reset_duration_s_, 0.0, 1.0);
       const double interpolation = smoothstep(progress);
       for (std::size_t joint = 0; joint < kJointCount; ++joint) {
         commands[index][joint] =
@@ -915,11 +935,28 @@ private:
       return;
     }
     if (!OnClearSet()) {
+      const bool reset_deferred = std::any_of(
+        reset_command.begin(), reset_command.end(), [](bool value) {return value;});
+      if (reset_deferred) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Marvin SDK send buffer is busy; deferring active reset commands");
+      }
       for (std::size_t index = 0; index < resets.size(); ++index) {
         if (reset_command[index] && resets[index]) {
-          finish_reset_unlocked(
-            resets[index], false,
-            arms_[index].side + " reset aborted: SDK send buffer is busy");
+          auto & reset = resets[index];
+          reset->trajectory_timing.defer_send(control_now);
+          const double busy_duration_s =
+            reset->trajectory_timing.send_buffer_busy_duration_s(control_now);
+          if (reset->trajectory_timing.send_buffer_busy_timed_out(
+              control_now, reset_send_buffer_busy_timeout_s_))
+          {
+            std::ostringstream message;
+            message << arms_[index].side
+                    << " reset aborted: SDK send buffer remained busy for "
+                    << busy_duration_s << " seconds";
+            finish_reset_unlocked(reset, false, message.str());
+          }
         }
       }
       return;
@@ -947,6 +984,7 @@ private:
     }
     for (std::size_t index = 0; index < arms_.size(); ++index) {
       if (reset_command[index] && resets[index]) {
+        resets[index]->trajectory_timing.commit_send(control_now);
         if (final_reset_target_command[index]) {
           resets[index]->final_target_sent = true;
         }
@@ -1669,6 +1707,7 @@ private:
   double reset_duration_s_{10.0};
   double reset_goal_tolerance_rad_{degrees_to_radians(1.0)};
   double reset_timeout_s_{15.0};
+  double reset_send_buffer_busy_timeout_s_{0.1};
   std::array<std::shared_ptr<ResetExecution>, kArmCount> active_resets_{};
   std::array<bool, kArmCount> reset_reserved_{};
   std::condition_variable reset_condition_;
