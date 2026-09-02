@@ -17,57 +17,78 @@
 import os
 
 from robo_orchard_deploy_ros2.config import (
+    CameraInfoChannel,
     ControlConfig,
     DeployConfig,
+    ImageChannel,
+    JointCommandChannel,
+    JointStateChannel,
     ObservationConfig,
-    RobotConfig,
 )
+
+CAMERA_PREFIX = "/agilex"
+CAMERA_SIDES = ("left", "right", "middle")
+ARM_SIDES = ("left", "right")
+PIPER_JOINT_NAMES = [f"joint{index}" for index in range(1, 8)]
+
+
+def build_obs_channels():
+    """Declare the Piper observation channels sent to the model server."""
+    channels = []
+    for side in CAMERA_SIDES:
+        camera = f"{CAMERA_PREFIX}/{side}_camera"
+        channels.append(
+            ImageChannel(
+                server_input_key=f"{side}_color",
+                topic=f"{camera}/color/image_raw",
+                encoding="bgr8",
+            )
+        )
+        channels.append(
+            ImageChannel(
+                server_input_key=f"{side}_depth",
+                topic=f"{camera}/aligned_depth_to_color/image_raw",
+                encoding="passthrough",
+            )
+        )
+        channels.append(
+            CameraInfoChannel(
+                server_input_key=f"{side}_intrinsic",
+                topic=f"{camera}/color/camera_info",
+            )
+        )
+    for side in ARM_SIDES:
+        channels.append(
+            JointStateChannel(
+                server_input_key=f"{side}_arm_state",
+                topic=f"/puppet/joint_{side}",
+            )
+        )
+    return channels
+
+
+def build_action_channels():
+    """Declare the Piper action channels driven by the model response."""
+    return [
+        JointCommandChannel(
+            server_output_key=f"{side}_arm_actions",
+            topic=f"/{side}_algo_cmd",
+            joint_names=PIPER_JOINT_NAMES,
+            velocities=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0],
+            efforts=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+        )
+        for side in ARM_SIDES
+    ]
 
 
 def main():
-    camera_prefix = "/agilex"
     config = DeployConfig(
-        robot_config=RobotConfig(
-            num_joints=7,
-            joint_names=[
-                "joint1",
-                "joint2",
-                "joint3",
-                "joint4",
-                "joint5",
-                "joint6",
-                "joint7",
-            ],
-            joint_velocities=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0],
-            joint_efforts=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
-        ),
-        observation_config=ObservationConfig(
-            color_topics={
-                "left_color": f"{camera_prefix}/left_camera/color/image_raw",
-                "right_color": f"{camera_prefix}/right_camera/color/image_raw",
-                "middle_color": f"{camera_prefix}/middle_camera/color/image_raw",  # noqa E501
-            },
-            depth_topics={
-                "left_depth": f"{camera_prefix}/left_camera/aligned_depth_to_color/image_raw",  # noqa E501
-                "right_depth": f"{camera_prefix}/right_camera/aligned_depth_to_color/image_raw",  # noqa E501
-                "middle_depth": f"{camera_prefix}/middle_camera/aligned_depth_to_color/image_raw",  # noqa E501
-            },
-            intrinsic_topics={
-                "left_intrinsic": f"{camera_prefix}/left_camera/color/camera_info",  # noqa E501
-                "right_intrinsic": f"{camera_prefix}/right_camera/color/camera_info",  # noqa E501
-                "middle_intrinsic": f"{camera_prefix}/middle_camera/color/camera_info",  # noqa E501
-            },
-            arm_state_topics={
-                "left_arm_state": "/puppet/joint_left",
-                "right_arm_state": "/puppet/joint_right",
-            },
-        ),
+        observation_config=ObservationConfig(channels=build_obs_channels()),
         control_config=ControlConfig(
-            left_arm_control_topic="/left_algo_cmd",
-            right_arm_control_topic="/right_algo_cmd",
+            channels=build_action_channels(),
             control_frequency=200.0,
         ),
-        server_url="http://localhost:6050/sem",
+        server_url="http://localhost:2000/holobrain",
         infer_frequency=3.0,
         delay_horizon=32,
     )

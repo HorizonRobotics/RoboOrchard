@@ -17,7 +17,6 @@
 import os
 import threading
 
-import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node, ParameterDescriptor
@@ -35,12 +34,16 @@ class NodeState:
 
 
 class DeployNode(Node):
-    """A ROS2 node that deploys a dual arm robot system asynchronously.
+    """A ROS2 node that deploys a robot asynchronously.
 
-    The node subscribes to various sensor topics, synchronizes them,
-    and sends the observations to a model server for inference. The inferred
-    actions are then executed on the robot arms at a controlled frequency.
-    """  # noqa: E501
+    The node synchronizes the configured observation channels and requests
+    inference on its own timer, without waiting for the current action
+    sequence to run out. Each response is spliced onto the step the robot
+    has reached, so control keeps running while a request is in flight.
+
+    How many arms or hands the embodiment has comes from the config; the
+    node itself is embodiment agnostic.
+    """
 
     def __init__(self):
         super().__init__("async_deploy_node")
@@ -91,33 +94,15 @@ class DeployNode(Node):
             self.max_delay_horizon = self.config.max_delay_horizon
 
     def _extract_remaining_actions(self):
-        """Extract remaining actions based on the current action index."""
+        """Return the unpublished steps and the index they follow."""
         if self.current_actions is None:
-            return None, None
-        action_horizon = self.current_actions.get("action_horizon", 0)
-        left_actions = self.current_actions.get("left_arm_actions", [])
-        right_actions = self.current_actions.get("right_arm_actions", [])
-        if len(left_actions) != len(right_actions):
-            self.get_logger().error(
-                "Left and right arm actions length mismatch."
-                "Check the model server output."
-            )
-            return None, None
-        actual_horizon = len(left_actions)
-        if action_horizon > actual_horizon:
-            self.get_logger().warning(
-                "Action horizon is greater than actual actions length."
-            )
-            action_horizon = actual_horizon
-        if self.current_action_idx < actual_horizon - 1:
-            left_remaining = left_actions[self.current_action_idx + 1 :].copy()
-            right_remaining = right_actions[
-                self.current_action_idx + 1 :
-            ].copy()
-            remaining_actions = np.hstack([left_remaining, right_remaining])
-            return remaining_actions, self.current_action_idx
-        else:
-            return None, None
+            return {}, None
+        remaining = self.action_executor.remaining_actions(
+            self.current_actions, self.current_action_idx
+        )
+        if not remaining:
+            return {}, None
+        return remaining, self.current_action_idx
 
     def _model_infer_timer_callback(self):
         """Timer callback to request model inference in given frequency.
@@ -141,7 +126,7 @@ class DeployNode(Node):
             remaining_actions, remaining_actions_start_idx = (
                 self._extract_remaining_actions()
             )
-        current_observations["remaining_actions"] = remaining_actions
+        current_observations.update(remaining_actions)
         predict_actions = self.model_inferencer.request_inference(
             current_observations
         )
@@ -149,12 +134,12 @@ class DeployNode(Node):
             self.get_logger().error("Model server returns no actions.")
             return
         new_action = predict_actions.copy()
-        old_action = (
-            self.current_actions.copy()
-            if self.current_actions is not None
-            else None
-        )
         with self.shared_state_lock:
+            old_action = (
+                self.current_actions.copy()
+                if self.current_actions is not None
+                else None
+            )
             if old_action is None:
                 self.current_actions = new_action.copy()
                 self.current_action_idx = 0
@@ -188,9 +173,10 @@ class DeployNode(Node):
             if self.current_actions is None:
                 return
 
-            if self.current_action_idx >= self.current_actions.get(
-                "action_horizon", 0
-            ):
+            step_count = self.action_executor.action_step_count(
+                self.current_actions
+            )
+            if self.current_action_idx >= step_count:
                 self.get_logger().info(
                     "Wait for new actions.", throttle_duration_sec=1
                 )

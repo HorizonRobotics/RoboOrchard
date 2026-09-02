@@ -16,57 +16,34 @@
 
 import threading
 
-import cv_bridge
-import numpy as np
 from message_filters import ApproximateTimeSynchronizer
 from rclpy.node import Node
 
+from robo_orchard_deploy_ros2 import codec
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.topic_manager import TopicManager
 
 
 class ObservationManager:
+    """Subscribe the configured observation channels and sync them.
+
+    The manager is embodiment agnostic: which topics exist, what they carry
+    and under which key the model server expects them all come from
+    ``config.observation_config.channels``.
+    """
+
     def __init__(self, node: Node, config: DeployConfig):
         self._node = node
         self._config = config
-        self.cv_bridge = cv_bridge.CvBridge()
         self.current_observations = {}
         self.obs_lock = threading.Lock()
         self.topic_manager = TopicManager(self._node)
-        self._processing_map = {
-            "color_topics": self._process_color_image,
-            "depth_topics": self._process_depth_image,
-            "intrinsic_topics": self._process_camera_intrinsic,
-            "arm_state_topics": self._process_arm_state,
-        }
-        self._subscriber_info = []
-        self._initialize()
+        self._channels = list(config.observation_config.channels)
         self._init_is_ready = False
         self._init_timer = self._node.create_timer(
             1.0, self._attempt_subscriptions
         )
-        self.last_timestamp = -1.0
-
-    def _initialize(self):
-        obs_config = self._config.observation_config
-
-        for obs_type, topics_dict in obs_config.model_dump().items():
-            if obs_type not in self._processing_map:
-                continue
-
-            processing_callback = self._processing_map[obs_type]
-
-            for obs_key, topic_name in topics_dict.items():
-                self._subscriber_info.append(
-                    {
-                        "obs_key": obs_key,
-                        "topic_name": topic_name,
-                        "callback": processing_callback,
-                        "msg_type": None,
-                        "subscriber_obj": None,
-                    }
-                )
-        self._subscriber_info.sort(key=lambda x: x["topic_name"])
+        self._has_new_frame = False
 
     def _attempt_subscriptions(self):
         """Timer callback to attempt subscribing all observation topics."""
@@ -81,11 +58,12 @@ class ObservationManager:
         }
 
         all_topics_available = True
-        for info in self._subscriber_info:
-            if info["topic_name"] not in available_topics:
+        for channel in self._channels:
+            if channel.topic not in available_topics:
                 self._node.get_logger().warning(
-                    f"Topic '{info['topic_name']}' for '{info['obs_key']}' "
-                    f"not available yet. Retrying..."
+                    f"Topic '{channel.topic}' for "
+                    f"'{channel.server_input_key}' not available yet. "
+                    f"Retrying..."
                 )
                 all_topics_available = False
                 break
@@ -94,25 +72,37 @@ class ObservationManager:
             return
 
         _subscribers = []
-        for info in self._subscriber_info:
-            topic_name = info["topic_name"]
-            msg_type_str = available_topics[topic_name]
-            msg_type_class = self.topic_manager.get_message_class(msg_type_str)
+        for channel in self._channels:
+            published_type = available_topics[channel.topic]
+            if published_type != channel.msg_type:
+                self._node.get_logger().warning(
+                    f"Topic '{channel.topic}' publishes '{published_type}' "
+                    f"but the channel declares '{channel.msg_type}'. "
+                    f"Subscribing with the declared type."
+                )
+            msg_type_class = self.topic_manager.get_message_class(
+                channel.msg_type
+            )
 
             if msg_type_class is None:
                 self._node.get_logger().error(
-                    f"Cannot import msg type for topic '{topic_name}'"
+                    f"Cannot import msg type for topic '{channel.topic}'"
                 )
                 return
 
-            subscriber = self.topic_manager.create_subscriber(
-                topic_name, msg_type_class
+            _subscribers.append(
+                self.topic_manager.create_subscriber(
+                    channel.topic,
+                    msg_type_class,
+                    qos_profile=channel.qos_profile,
+                )
             )
-            _subscribers.append(subscriber)
 
         self._subscribers = _subscribers
         self.approx_sync = ApproximateTimeSynchronizer(
-            self._subscribers, queue_size=1, slop=0.1
+            self._subscribers,
+            queue_size=self._config.observation_config.sync_queue_size,
+            slop=self._config.observation_config.sync_slop,
         )
         self.approx_sync.registerCallback(self._observe_callback)
 
@@ -122,49 +112,40 @@ class ObservationManager:
             "All observation topics are subscribed and synchronized."
         )
 
-    def _process_color_image(self, msg):
-        return self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-
-    def _process_depth_image(self, msg):
-        return self.cv_bridge.imgmsg_to_cv2(
-            msg, desired_encoding="passthrough"
-        )
-
-    def _process_camera_intrinsic(self, msg):
-        return np.array(msg.p).reshape(3, 4)
-
-    def _process_arm_state(self, msg):
-        return np.array(msg.position)
-
     def _observe_callback(self, *msgs):
         """Callback function for synchronized observations."""
         _cur_observations = {}
-        _obs_timestamps = []
 
-        for info, msg in zip(self._subscriber_info, msgs, strict=True):
-            if hasattr(msg, "header"):
-                timestamp = (
-                    msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+        for channel, msg in zip(self._channels, msgs, strict=True):
+            try:
+                _cur_observations[channel.server_input_key] = codec.decode(
+                    channel, msg
                 )
-                _obs_timestamps.append(timestamp)
+            except Exception as error:
+                self._node.get_logger().error(
+                    f"Dropping observation frame: channel "
+                    f"'{channel.server_input_key}' on topic "
+                    f"'{channel.topic}' failed to decode: {error}"
+                )
+                return
 
-            obs_key = info["obs_key"]
-            processing_callback = info["callback"]
-            _cur_observations[obs_key] = processing_callback(msg)
-
-        obs_timestamp = np.mean(_obs_timestamps) if _obs_timestamps else 0.0
         with self.obs_lock:
-            self.current_observations.update(_cur_observations)
-            self.current_observations["timestamp"] = obs_timestamp
+            self.current_observations = _cur_observations
+            self._has_new_frame = True
 
     def get_observations(self):
+        """Return the newest frame, or None if it was already served.
+
+        The caller polls at its own frequency, which is usually slower than
+        the topics publish, so the same frame would otherwise be inferred
+        more than once.
+        """
         with self.obs_lock:
-            current_ts = self.current_observations.get("timestamp", -1.0)
-            if self.last_timestamp == current_ts:
+            if not self._has_new_frame:
                 self._node.get_logger().debug(
                     "No new observations since last call,"
                     "check if the topics are publishing."
                 )
                 return None
-            self.last_timestamp = current_ts
+            self._has_new_frame = False
             return self.current_observations.copy()

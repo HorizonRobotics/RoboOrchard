@@ -16,6 +16,9 @@
 
 from message_filters import Subscriber
 from rclpy.node import Node
+from rclpy.qos import QoSProfile
+
+from robo_orchard_deploy_ros2.config import QosProfile
 
 
 class TopicManager:
@@ -54,14 +57,31 @@ class TopicManager:
 
         return self._node.create_publisher(msg_type_class, topic_name, 1)
 
-    def create_subscriber(self, topic_name: str, msg_type_class):
+    def create_subscriber(
+        self,
+        topic_name: str,
+        msg_type_class,
+        qos_profile: QosProfile,
+    ):
         """Creates a subscriber for the given topic and message type.
 
         Args:
-            topic (str): The topic name.
+            topic_name (str): The topic name.
             msg_type_class: The message class.
+            qos_profile (QosProfile): Subscription QoS settings.
 
         Returns:
             Subscriber: The created subscriber.
         """
-        return Subscriber(self._node, msg_type_class, topic_name)
+        ros_qos_profile = QoSProfile(
+            depth=qos_profile.depth,
+            reliability=qos_profile.reliability,
+            durability=qos_profile.durability,
+            history=qos_profile.history,
+        )
+        return Subscriber(
+            self._node,
+            msg_type_class,
+            topic_name,
+            qos_profile=ros_qos_profile,
+        )

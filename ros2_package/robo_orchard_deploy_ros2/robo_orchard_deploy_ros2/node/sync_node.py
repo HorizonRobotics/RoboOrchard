@@ -36,12 +36,16 @@ class NodeState:
 
 
 class DeployNode(Node):
-    """A ROS2 node that deploys a dual arm robot system synchronously.
+    """A ROS2 node that deploys a robot synchronously.
 
-    The node subscribes to various sensor topics, synchronizes them,
-    and sends the observations to a model server for inference. The inferred
-    actions are then executed on the robot arms at a controlled frequency.
-    """  # noqa: E501
+    The node synchronizes the configured observation channels, sends each
+    frame to the model server, and publishes the returned actions one step
+    per control tick. A new inference is requested only once the previous
+    sequence is exhausted.
+
+    How many arms or hands the embodiment has comes from the config; the
+    node itself is embodiment agnostic.
+    """
 
     def __init__(self):
         super().__init__("sync_deploy_node")
@@ -136,9 +140,10 @@ class DeployNode(Node):
             if self.state != NodeState.EXECUTING:
                 return
 
-            if self.current_action_index >= self.current_actions.get(
-                "action_horizon", 0
-            ):
+            step_count = self.action_executor.action_step_count(
+                self.current_actions
+            )
+            if self.current_action_index >= step_count:
                 self.get_logger().info(
                     "[IDLE]: Wait for new actions.", throttle_duration_sec=1
                 )
