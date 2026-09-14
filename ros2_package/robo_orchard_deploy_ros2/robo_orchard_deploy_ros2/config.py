@@ -30,6 +30,7 @@ __all__ = [
     "ActionChannelBase",
     "JointCommandChannel",
     "ActionChannel",
+    "TrajectoryStitchConfig",
     "ControlConfig",
     "DeployConfig",
 ]
@@ -221,6 +222,71 @@ ActionChannel = Annotated[
 ]
 
 
+class TrajectoryStitchConfig(BaseModel):
+    """Parameters of the chunk-handover trajectory solve.
+
+    The motion limits describe the robot and have no defaults. They are an
+    envelope, not a shaping target: a limit set below the motion the chunk
+    already asks for makes the program hard enough that the solver runs out
+    of iterations, and the chunk is installed unchanged. The rest are
+    solver settings whose defaults are a starting point, not a tuned value
+    for any particular embodiment.
+    """
+
+    max_velocity: float = Field(
+        gt=0,
+        description="Joint velocity envelope imposed on the solved trajectory, in rad/s. Set above the fastest motion the model commands.",  # noqa: E501
+    )
+    max_acceleration: float = Field(
+        gt=0,
+        description="Joint acceleration envelope imposed on the solved trajectory, in rad/s^2.",  # noqa: E501
+    )
+    max_jerk: float = Field(
+        gt=0,
+        description="Joint jerk envelope imposed on the solved trajectory, in rad/s^3.",  # noqa: E501
+    )
+    solver_dt: float = Field(
+        gt=0,
+        default=0.02,
+        description="Time step of the solver grid, in seconds. Deliberately coarser than the control period: a grid at control rate multiplies the problem size for no accuracy that survives resampling, and the weights below are relative to this value.",  # noqa: E501
+    )
+    horizon_quantum: int = Field(
+        default=16,
+        gt=0,
+        description="Round the solved window length up to a multiple of this many control steps, so the horizon takes a few distinct values and their solvers can be reused. Building a solver costs far more than a solve.",  # noqa: E501
+    )
+    track_weight: float = Field(
+        ge=0,
+        default=1.0,
+        description="Penalty on departing from the requested chunk.",
+    )
+    terminal_track_weight: float = Field(
+        ge=0,
+        default=10.0,
+        description="Extra penalty on departing from the requested chunk at its final step, so the solved trajectory ends where the chunk ends.",  # noqa: E501
+    )
+    acceleration_weight: float = Field(
+        ge=0,
+        default=1e-6,
+        description="Penalty on acceleration. Scales against the horizon: a short chunk needs larger accelerations to cover the same distance, so a weight tuned for a long horizon leaves a short one short of its endpoint.",  # noqa: E501
+    )
+    jerk_weight: float = Field(
+        ge=0,
+        default=2e-6,
+        description="Penalty on jerk, which is what the solve exists to bound.",  # noqa: E501
+    )
+    terminal_velocity_weight: float = Field(
+        ge=0,
+        default=0.05,
+        description="Damping on the final velocity. The terminal state is inherited verbatim as the next solve's initial condition, so leaving it free lets it ride the bound and compound until the solve is infeasible.",  # noqa: E501
+    )
+    terminal_acceleration_weight: float = Field(
+        ge=0,
+        default=0.05,
+        description="Damping on the final acceleration, for the same reason as terminal_velocity_weight.",  # noqa: E501
+    )
+
+
 class ControlConfig(BaseModel):
     channels: List[ActionChannel] = Field(
         min_length=1,
@@ -247,4 +313,13 @@ class DeployConfig(BaseModel):
     max_delay_horizon: int | None = Field(
         default=None,
         description="Maximum delay horizon (in number of steps) under control frame rate.",  # noqa: E501
+    )
+    max_command_velocity: float | None = Field(
+        default=None,
+        gt=0,
+        description="Clamp how far a joint command may move from the command before it, in rad/s, applied per action channel. Bounds the published command stream only: the first command of a channel, and the first after execution resumes, have no predecessor and are not bounded. A robot limit, so it has no default; null disables the clamp.",  # noqa: E501
+    )
+    trajectory_stitch: TrajectoryStitchConfig | None = Field(
+        default=None,
+        description="Re-solve each incoming action chunk so its position, velocity and acceleration continue the chunk the robot is already executing. Switching chunks is otherwise continuous in position alone, which leaves a velocity step at every handover. Requires the osqp and scipy packages. Null, the default, installs chunks unchanged.",  # noqa: E501
     )

@@ -14,8 +14,10 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import math
 import os
 import threading
+from time import perf_counter
 
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -26,6 +28,7 @@ from robo_orchard_deploy_ros2.action_exec import ActionExecutor
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.model_request import ModelInferencer
 from robo_orchard_deploy_ros2.obs_manager import ObservationManager
+from robo_orchard_deploy_ros2.trajectory_stitcher import TrajectoryStitcher
 
 
 class NodeState:
@@ -43,6 +46,11 @@ class DeployNode(Node):
 
     How many arms or hands the embodiment has comes from the config; the
     node itself is embodiment agnostic.
+
+    Stitched chunks target a future control step, allowing the old chunk
+    to keep running during the solve. The previous solve duration plus one
+    control period sets the lead time. A result that misses its scheduled
+    step is dropped rather than switched at an unconstrained point.
     """
 
     def __init__(self):
@@ -67,6 +75,11 @@ class DeployNode(Node):
         )
         self.current_actions = None
         self.current_action_idx = 0
+        # Where the live chunk began executing, so the next solve knows how
+        # far it got.
+        self._chunk_start_idx = 0
+        self._pending_actions: tuple[int, dict, int] | None = None
+        self._stitch_lead_steps = 1
         self.state = NodeState.PAUSED
         self.shared_state_lock = threading.Lock()
 
@@ -93,6 +106,18 @@ class DeployNode(Node):
         else:
             self.max_delay_horizon = self.config.max_delay_horizon
 
+        self._stitcher = TrajectoryStitcher(
+            self.config.trajectory_stitch,
+            self.config.control_config.control_frequency,
+            [
+                channel.server_output_key
+                for channel in self.config.control_config.channels
+            ],
+            self.get_logger(),
+        )
+        if self._stitcher.enabled:
+            self.get_logger().info("Chunk stitching enabled.")
+
     def _extract_remaining_actions(self):
         """Return the unpublished steps and the index they follow."""
         if self.current_actions is None:
@@ -113,7 +138,10 @@ class DeployNode(Node):
         accordingly.
         """
         with self.shared_state_lock:
-            if self.state != NodeState.EXECUTING:
+            if (
+                self.state != NodeState.EXECUTING
+                or self._pending_actions is not None
+            ):
                 return
         current_observations = self.obs_manager.get_observations()
         if not current_observations:
@@ -123,6 +151,7 @@ class DeployNode(Node):
         remaining_actions_start_idx = None
 
         with self.shared_state_lock:
+            requested_actions = self.current_actions
             remaining_actions, remaining_actions_start_idx = (
                 self._extract_remaining_actions()
             )
@@ -134,31 +163,118 @@ class DeployNode(Node):
             self.get_logger().error("Model server returns no actions.")
             return
         new_action = predict_actions.copy()
+
         with self.shared_state_lock:
-            old_action = (
-                self.current_actions.copy()
-                if self.current_actions is not None
-                else None
-            )
-            if old_action is None:
-                self.current_actions = new_action.copy()
-                self.current_action_idx = 0
-            elif new_action != old_action:
-                if remaining_actions_start_idx is not None:
-                    cur_delay_horizon = (
+            if (
+                self.state != NodeState.EXECUTING
+                or self.current_actions is not requested_actions
+            ):
+                return
+            if self.current_actions is None:
+                install_idx, prev_ran = 0, 0
+            elif new_action == self.current_actions:
+                return
+            else:
+                prev_ran = self.current_action_idx - self._chunk_start_idx
+                if remaining_actions_start_idx is None:
+                    install_idx = 0
+                else:
+                    install_idx = (
                         self.current_action_idx - remaining_actions_start_idx
                     )
-                    if cur_delay_horizon > self.max_delay_horizon:
+                    if install_idx > self.max_delay_horizon:
                         self.get_logger().warning(
-                            "Excessive latency detected, exceeding the limit: "
-                            "{cur_delay_horizon} > {self.max_delay_horizon}."
+                            "Excessive latency detected, exceeding the "
+                            f"limit: {install_idx} > "
+                            f"{self.max_delay_horizon}."
                         )
+                        # Nothing to undo: the solve is promoted on install,
+                        # so the stitcher still holds the chunk in flight.
                         return
-                    else:
-                        self.current_action_idx = cur_delay_horizon
+
+            switch_idx = self.current_action_idx
+            held_actions = None
+            if self._stitcher.enabled and self.current_actions is not None:
+                current_step_count = self.action_executor.action_step_count(
+                    self.current_actions
+                )
+                if current_step_count > 0 and switch_idx >= current_step_count:
+                    held_actions = self.current_actions
+                lead_steps = max(
+                    0,
+                    min(
+                        self._stitch_lead_steps,
+                        int(self.max_delay_horizon) - install_idx,
+                        current_step_count - switch_idx - 1,
+                        self.action_executor.action_step_count(new_action)
+                        - install_idx
+                        - 1,
+                    ),
+                )
+                switch_idx += lead_steps
+                install_idx += lead_steps
+                prev_ran += lead_steps
+
+        if self._stitcher.enabled:
+            solve_started = perf_counter()
+            new_action = self._stitcher.stitch(
+                new_action,
+                install_idx,
+                prev_ran,
+                held_actions=held_actions,
+            )
+            with self.shared_state_lock:
+                self._stitch_lead_steps = (
+                    math.ceil(
+                        (perf_counter() - solve_started)
+                        * self.config.control_config.control_frequency
+                    )
+                    + 1
+                )
+                if (
+                    self.state != NodeState.EXECUTING
+                    or self.current_actions is not requested_actions
+                ):
+                    return
+                if self.current_action_idx > switch_idx:
+                    self.get_logger().warning(
+                        "Missed the planned handover step; keeping the "
+                        "current actions."
+                    )
+                    return
+                if self.current_action_idx == switch_idx:
+                    self._switch_actions(new_action, install_idx)
                 else:
-                    self.current_action_idx = 0
-                self.current_actions = new_action.copy()
+                    self._pending_actions = (
+                        switch_idx,
+                        new_action,
+                        install_idx,
+                    )
+            return
+
+        with self.shared_state_lock:
+            if remaining_actions_start_idx is not None:
+                install_idx = max(
+                    install_idx,
+                    self.current_action_idx - remaining_actions_start_idx,
+                )
+                if install_idx > self.max_delay_horizon:
+                    self.get_logger().warning(
+                        "Excessive latency before the handover, "
+                        f"exceeding the limit: {install_idx} > "
+                        f"{self.max_delay_horizon}."
+                    )
+                    return
+            self._switch_actions(new_action, install_idx)
+
+    def _switch_actions(self, actions: dict, start_idx: int) -> None:
+        """Switch chunks while holding ``shared_state_lock``."""
+        self.current_actions = actions
+        self.current_action_idx = start_idx
+        self._chunk_start_idx = start_idx
+        self._pending_actions = None
+        if self._stitcher.enabled:
+            self._stitcher.commit()
 
     def _action_timer_callback(self):
         """Timer callback to execute actions at the control frequency.
@@ -169,6 +285,11 @@ class DeployNode(Node):
         with self.shared_state_lock:
             if self.state != NodeState.EXECUTING:
                 return
+
+            if self._pending_actions is not None:
+                switch_idx, actions, start_idx = self._pending_actions
+                if self.current_action_idx == switch_idx:
+                    self._switch_actions(actions, start_idx)
 
             if self.current_actions is None:
                 return
@@ -222,6 +343,10 @@ class DeployNode(Node):
             if self.state == NodeState.PAUSED:
                 self.current_actions = None
                 self.current_action_idx = 0
+                self._chunk_start_idx = 0
+                self._pending_actions = None
+                self.action_executor.reset_limiter()
+                self._stitcher.reset()
                 self.state = NodeState.EXECUTING
                 response.success = True
                 response.message = "Node executing."
@@ -242,6 +367,10 @@ class DeployNode(Node):
                 response.success = True
                 self.current_actions = None
                 self.current_action_idx = 0
+                self._chunk_start_idx = 0
+                self._pending_actions = None
+                self.action_executor.reset_limiter()
+                self._stitcher.reset()
                 response.message = "Node paused."
                 self.get_logger().info("Node paused.")
             else:

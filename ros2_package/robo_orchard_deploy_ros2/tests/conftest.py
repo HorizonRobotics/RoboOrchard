@@ -130,6 +130,23 @@ def _install_stub_modules():
     sys.modules["rclpy.node"] = rclpy_node
     sys.modules["rclpy.qos"] = rclpy_qos
 
+    rclpy_node.ParameterDescriptor = object
+    rclpy_callback_groups = types.ModuleType("rclpy.callback_groups")
+    rclpy_callback_groups.MutuallyExclusiveCallbackGroup = object
+    rclpy.callback_groups = rclpy_callback_groups
+    sys.modules["rclpy.callback_groups"] = rclpy_callback_groups
+
+    std_srvs = types.ModuleType("std_srvs")
+    std_srvs_srv = types.ModuleType("std_srvs.srv")
+    # The node annotates its service callbacks with these, so they are read
+    # at class definition time.
+    std_srvs_srv.Trigger = types.SimpleNamespace(
+        Request=object, Response=object
+    )
+    std_srvs.srv = std_srvs_srv
+    sys.modules["std_srvs"] = std_srvs
+    sys.modules["std_srvs.srv"] = std_srvs_srv
+
     message_filters = types.ModuleType("message_filters")
     message_filters.Subscriber = FakeSubscriber
     message_filters.ApproximateTimeSynchronizer = (

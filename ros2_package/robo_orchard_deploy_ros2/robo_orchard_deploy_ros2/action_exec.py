@@ -17,6 +17,7 @@
 import numpy as np
 from rclpy.node import Node
 
+from robo_orchard_deploy_ros2.command_limiter import CommandLimiter
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.topic_manager import TopicManager
 
@@ -37,6 +38,25 @@ class ActionExecutor:
             self._build_output(channel)
             for channel in config.control_config.channels
         ]
+        # Keyed per channel, so it does not assume how many there are.
+        self._limiter = CommandLimiter(
+            config.max_command_velocity,
+            config.control_config.control_frequency,
+            node.get_logger(),
+        )
+
+    def reset_limiter(self):
+        """Forget the last command sent on every channel.
+
+        Call this on the pause boundary, where no state from before
+        describes the robot after: it may have been moved, driven by
+        something else, or powered down.
+
+        Not on an ordinary gap between chunks. There the robot is holding
+        the last command, which still says where it is, and clamping
+        against it is both correct and protective.
+        """
+        self._limiter.reset()
 
     def _build_output(self, channel):
         """Resolve the message class and publisher of one action channel."""
@@ -73,7 +93,14 @@ class ActionExecutor:
         goal_msg = msg_type_class()
         goal_msg.header.stamp = self._node.get_clock().now().to_msg()
         goal_msg.name = channel.joint_names
-        goal_msg.position = [float(value) for value in joint_position]
+        # Clamped after validation, so a malformed step is rejected on its
+        # own terms rather than smoothed into a plausible one.
+        goal_msg.position = [
+            float(value)
+            for value in self._limiter.apply(
+                joint_position, channel.server_output_key
+            )
+        ]
         if channel.velocities is not None:
             goal_msg.velocity = channel.velocities
         if channel.efforts is not None:

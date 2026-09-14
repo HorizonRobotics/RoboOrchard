@@ -176,6 +176,7 @@ class DeployNode(Node):
             if self.state != NodeState.EXECUTING:
                 self.current_actions = None
                 self.current_action_index = 0
+                self.action_executor.reset_limiter()
                 self.state = NodeState.IDLE
                 response.success = True
                 response.message = "Node executing."
@@ -199,6 +200,7 @@ class DeployNode(Node):
                 response.success = True
                 self.current_actions = None
                 self.current_action_index = 0
+                self.action_executor.reset_limiter()
                 response.message = "Node paused."
                 self.get_logger().info("Node paused.")
             elif self.state == NodeState.PAUSED:

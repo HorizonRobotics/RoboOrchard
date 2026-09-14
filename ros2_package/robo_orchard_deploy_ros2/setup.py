@@ -36,7 +36,17 @@ setup(
         ),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools"],
+    install_requires=[
+        "setuptools",
+        "numpy",
+        "requests",
+    ],
+    extras_require={
+        # trajectory_stitch is null by default, so these are only needed by
+        # a deployment that turns it on. The node reports their absence at
+        # startup and installs chunks unchanged.
+        "stitching": ["osqp", "scipy"],
+    },
     zip_safe=True,
     maintainer="yiwei.jin",
     maintainer_email="yiwei.jin@horizon.auto",

@@ -72,7 +72,7 @@ class _FakeNode:
         return publisher
 
 
-def _deploy_config(channels):
+def _deploy_config(channels, max_command_velocity=None):
     return DeployConfig(
         observation_config=ObservationConfig(
             channels=[
@@ -80,6 +80,7 @@ def _deploy_config(channels):
             ]
         ),
         control_config=ControlConfig(channels=channels),
+        max_command_velocity=max_command_velocity,
     )
 
 
@@ -122,6 +123,54 @@ def test_each_arm_is_published_with_its_own_joint_names(node):
     assert left.position == [0.3, 0.4]
     assert right.name == ["Joint1_R", "Joint2_R"]
     assert right.position == [1.3, 1.4]
+
+
+def test_the_limiter_is_off_unless_a_velocity_is_configured(node):
+    executor = ActionExecutor(node, _deploy_config(_dual_arm_channels()))
+
+    for step in ([[0.0, 0.0]], [[9.0, 0.0]]):
+        executor.send_action(
+            {"left_arm_actions": step, "right_arm_actions": [[0.0, 0.0]]},
+            action_index=0,
+        )
+
+    published = node.publishers_by_topic["/left_algo_cmd"].published[-1]
+    assert published.position == [9.0, 0.0]
+
+
+def test_a_configured_velocity_clamps_the_published_step(node):
+    config = _deploy_config(_dual_arm_channels(), max_command_velocity=2.0)
+    allowed = 2.0 / config.control_config.control_frequency
+    executor = ActionExecutor(node, config)
+
+    for step in ([[0.0, 0.0]], [[9.0, 0.0]]):
+        executor.send_action(
+            {"left_arm_actions": step, "right_arm_actions": [[0.0, 0.0]]},
+            action_index=0,
+        )
+
+    published = node.publishers_by_topic["/left_algo_cmd"].published[-1]
+    assert published.position == pytest.approx([allowed, 0.0])
+
+
+def test_resetting_the_limiter_lets_the_next_command_through(node):
+    executor = ActionExecutor(
+        node,
+        _deploy_config(_dual_arm_channels(), max_command_velocity=2.0),
+    )
+
+    executor.send_action(
+        {"left_arm_actions": [[0.0, 0.0]], "right_arm_actions": [[0.0, 0.0]]},
+        action_index=0,
+    )
+    executor.reset_limiter()
+    executor.send_action(
+        {"left_arm_actions": [[9.0, 0.0]], "right_arm_actions": [[0.0, 0.0]]},
+        action_index=0,
+    )
+
+    published = node.publishers_by_topic["/left_algo_cmd"].published[-1]
+    assert published.position == [9.0, 0.0]
 
 
 def test_velocities_and_efforts_are_optional(node):
