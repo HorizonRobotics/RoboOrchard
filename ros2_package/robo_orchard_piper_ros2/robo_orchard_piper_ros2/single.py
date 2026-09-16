@@ -26,6 +26,7 @@ from std_srvs.srv import Trigger
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
+    DEFAULT_JOINT_NAMES,
     create_piper,
     enable_arm_ctrl,
     get_arm_ee_pose,
@@ -34,6 +35,7 @@ from robo_orchard_piper_ros2.ros_bridge import (
     joint_control,
     set_ctrl_method,
     switch_piper_ctrl_mode,
+    validate_joint_names,
 )
 
 
@@ -59,6 +61,7 @@ class PiperSingleControlNode(Node):
 
         # ROS parameters
         self.declare_parameter("can_port", "can0")
+        self.declare_parameter("joint_names", list(DEFAULT_JOINT_NAMES))
         self.declare_parameter("gripper_exist", True)
         self.declare_parameter("gripper_val_mutiple", 1)
         self.declare_parameter("auto_enable_arm_ctrl", False)
@@ -70,6 +73,9 @@ class PiperSingleControlNode(Node):
 
         self.can_port = (
             self.get_parameter("can_port").get_parameter_value().string_value
+        )
+        self.joint_names = validate_joint_names(
+            self.get_parameter("joint_names").value
         )
         self.gripper_exist = (
             self.get_parameter("gripper_exist")
@@ -193,7 +199,7 @@ class PiperSingleControlNode(Node):
         arm_status = get_arm_status(self.piper)
         self.arm_status_pub.publish(arm_status)
 
-        joint_state = get_arm_state(self.piper)
+        joint_state = get_arm_state(self.piper, self.joint_names)
         joint_state.header.stamp = self.get_clock().now().to_msg()
         self.joint_pub.publish(joint_state)
 
@@ -204,12 +210,16 @@ class PiperSingleControlNode(Node):
     def joint_callback(self, joint_data):
         """Callback function for joint angles."""
         if self.is_controlable():
-            joint_control(
-                self.piper,
-                joint_data=joint_data,
-                has_gripper=self.gripper_exist,
-                gripper_val_mutiple=self.gripper_val_mutiple,
-            )
+            try:
+                joint_control(
+                    self.piper,
+                    joint_data=joint_data,
+                    has_gripper=self.gripper_exist,
+                    gripper_val_mutiple=self.gripper_val_mutiple,
+                    joint_names=self.joint_names,
+                )
+            except ValueError as error:
+                self.get_logger().error(f"Rejecting joint command: {error}")
 
     def _enable_ctrl_service_callback(
         self, request: Trigger.Request, response: Trigger.Response
@@ -267,7 +277,7 @@ class PiperSingleControlNode(Node):
         control_freq = 200.0  # Hz
 
         def _gen_reset_traj():
-            cur_joint_state = get_arm_state(self.piper)
+            cur_joint_state = get_arm_state(self.piper, self.joint_names)
             target_joint_state = self.reset_joint_position
             elapsed_time = 3.0  # seconds
             num_steps = int(elapsed_time * control_freq)
@@ -296,6 +306,7 @@ class PiperSingleControlNode(Node):
                     joint_data=position,
                     has_gripper=self.gripper_exist,
                     gripper_val_mutiple=self.gripper_val_mutiple,
+                    joint_names=self.joint_names,
                 )
                 time.sleep(1.0 / control_freq)
             response.success = True

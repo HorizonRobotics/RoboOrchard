@@ -144,6 +144,8 @@ def test_launch_declares_arguments_and_eight_nodes():
     description = module.generate_launch_description()
 
     assert [argument.name for argument in _launch_arguments(description)] == [
+        "left_joint_names",
+        "right_joint_names",
         "left_algo_topic",
         "right_algo_topic",
         "left_slave_can_port",

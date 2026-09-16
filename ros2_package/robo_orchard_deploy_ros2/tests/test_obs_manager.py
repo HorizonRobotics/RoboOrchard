@@ -73,7 +73,12 @@ class _FakeNode:
 
 
 def _joint_state(positions, names=None):
-    return types.SimpleNamespace(name=names or [], position=positions)
+    return types.SimpleNamespace(
+        name=names
+        if names is not None
+        else [f"joint{index}" for index in range(1, len(positions) + 1)],
+        position=positions,
+    )
 
 
 def _config(joint_names=None, qos_profile=None):
@@ -147,7 +152,10 @@ def test_a_frame_is_served_once(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert list(served["left_arm_state"]) == [0.1, 0.2]
+    assert served["left_arm_state"] == {
+        "name": ["joint1", "joint2"],
+        "position": [0.1, 0.2],
+    }
     assert manager.get_observations() is None
 
 
@@ -160,7 +168,7 @@ def test_every_new_frame_is_served_again(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert list(served["left_arm_state"]) == [0.3, 0.4]
+    assert served["left_arm_state"]["position"] == [0.3, 0.4]
 
 
 def test_an_identical_frame_still_counts_as_new(node):
@@ -196,4 +204,4 @@ def test_a_dropped_frame_does_not_hide_the_next_one(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert list(served["left_arm_state"]) == [0.7]
+    assert served["left_arm_state"] == {"name": ["joint1"], "position": [0.7]}

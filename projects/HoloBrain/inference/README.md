@@ -2,6 +2,18 @@
 
     Modify the script that generates the configuration file in `gen_sync_config.py` or `gen_async_config.py`
 
+    The Piper command names match the dual-arm launch defaults:
+    `left_joint1` through `left_joint6`, `left_gripper`, and the corresponding
+    `right_` names. If you override the driver's `joint_names` list, update
+    these command names, any observation selectors, and Pico's expected
+    joint lists together. The default gripper label is `gripper`, not
+    `joint7`; another label requires consistent explicit configuration.
+
+    Joint observations now send the driver's `name` and `position` together
+    as JSON under the existing channel key. Update the model server to parse
+    this format before upgrading the client. Image/RTC binary arrays and
+    response action arrays remain unchanged.
+
 2. Launch deploy node
 
     ```bash

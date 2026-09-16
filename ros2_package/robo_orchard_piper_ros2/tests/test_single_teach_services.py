@@ -41,7 +41,7 @@ def _install_stub_modules():
                 else [],
             )
             return types.SimpleNamespace(
-                get_parameter_value=lambda: parameter_value
+                value=value, get_parameter_value=lambda: parameter_value
             )
 
         def get_logger(self):
@@ -98,6 +98,10 @@ def _install_stub_modules():
     sys.modules["robo_orchard_piper_msg_ros2.msg"] = piper_msg.msg
 
     fake_bridge = types.ModuleType("robo_orchard_piper_ros2.ros_bridge")
+    fake_bridge.DEFAULT_JOINT_NAMES = tuple(
+        [f"joint{index}" for index in range(1, 7)] + ["gripper"]
+    )
+    fake_bridge.validate_joint_names = list
     fake_bridge.create_piper = lambda *args, **kwargs: types.SimpleNamespace(
         GetArmStatus=lambda: types.SimpleNamespace(
             arm_status=types.SimpleNamespace(ctrl_mode=0x01, teach_status=0)
@@ -148,6 +152,70 @@ def test_is_controlable_accepts_raw_sdk_can_mode_value():
     node._enable_flag = True
 
     assert node.is_controlable() is True
+
+
+def test_joint_callback_passes_names_and_rejects_invalid_commands(
+    monkeypatch,
+):
+    node = _build_node(ctrl_mode=0x01)
+    node._enable_flag = True
+    node.joint_names = [f"axis{index}" for index in range(7)]
+    node.gripper_exist = True
+    node.gripper_val_mutiple = 1
+    errors = []
+    node.get_logger = lambda: types.SimpleNamespace(error=errors.append)
+    calls = []
+
+    def reject_command(piper, **kwargs):
+        calls.append(kwargs)
+        raise ValueError("Invalid names")
+
+    monkeypatch.setattr(single_module, "joint_control", reject_command)
+    message = types.SimpleNamespace(name=["right_joint1"], position=[0.1])
+
+    node.joint_callback(message)
+
+    assert calls[0]["joint_names"] == node.joint_names
+    assert calls[0]["joint_data"] is message
+    assert errors == ["Rejecting joint command: Invalid names"]
+
+
+def test_reset_uses_the_same_names_for_feedback_and_commands(monkeypatch):
+    node = _build_node(ctrl_mode=0x01)
+    node._enable_flag = True
+    node.joint_names = [f"axis{index}" for index in range(7)]
+    node.gripper_exist = True
+    node.gripper_val_mutiple = 1
+    node.reset_joint_position = [0.0] * 7
+    node.get_logger = lambda: types.SimpleNamespace(
+        info=lambda *args: None, error=lambda *args: None
+    )
+    feedback_names = []
+    commands = []
+    names = node.joint_names
+
+    def feedback(piper, configured_names):
+        feedback_names.append(configured_names)
+        return types.SimpleNamespace(
+            name=names, position=[0.1] * 7, velocity=[], effort=[]
+        )
+
+    monkeypatch.setattr(single_module, "get_arm_state", feedback)
+    monkeypatch.setattr(
+        single_module,
+        "joint_control",
+        lambda piper, **kwargs: commands.append(kwargs),
+    )
+    monkeypatch.setattr(single_module.time, "sleep", lambda seconds: None)
+    response = types.SimpleNamespace(success=False, message="")
+
+    node._reset_ctrl_service_callback(None, response)
+
+    assert response.success
+    assert feedback_names == [names]
+    assert len(commands) == 600
+    assert all(command["joint_names"] == names for command in commands)
+    assert all(command["joint_data"].name == names for command in commands)
 
 
 def test_enable_arm_ctrl_in_active_teach_mode_does_not_attempt_recovery(

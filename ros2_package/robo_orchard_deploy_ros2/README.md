@@ -1,5 +1,51 @@
 # RoboOchard Deploy ROS2 Package
 
+## Named joint observations
+
+Each `JointStateChannel` keeps its existing `server_input_key`. Its value is
+now a JSON form field containing only the source ROS message's `name` and
+`position` lists, rather than a binary NumPy file. For example, a channel
+selecting two joints can send:
+
+```json
+{"name": ["left_joint1", "left_gripper"], "position": [0.12, 0.03]}
+```
+
+Names and positions have the same length and order. With `joint_names=None`,
+the codec copies the message's published order. An explicit `joint_names`
+selection filters/reorders both lists together without renaming joints.
+Empty/duplicate names, mismatched lengths, and non-finite positions reject
+the observation frame. No header, velocity, effort, or other ROS metadata is
+sent. Units remain those of the source topic.
+
+The driver/project owns robot joint names. Deploy does not infer left/right
+from topic strings or add model-specific aliases. Piper drivers expose a
+`joint_names` list parameter for this purpose; other drivers' existing ROS
+names are used directly. Keep command-channel `joint_names` aligned with
+the receiving driver and with the server's existing output-array order.
+
+Images, camera-info arrays, and RTC remaining-action arrays retain their
+existing field names and NumPy file encoding. `instruction`, `delay_horizon`,
+response action arrays, and inference/stitching behavior are unchanged.
+Requests containing only joint observations do not require a binary file.
+RTC keys must not overlap observation keys, other RTC keys, or the reserved
+`instruction`/`delay_horizon` fields. Invalid bindings fail at configuration
+load rather than overwriting an observation during request assembly.
+
+### Model-service compatibility
+
+This changes the joint-observation wire format: the server must parse the
+JSON form field under each existing joint-observation key instead of loading
+a NumPy file for that key. Reconstruct arrays from `position` and use `name`
+for joint identity; observation order does not redefine the configured
+control-channel response order. Upgrade the client and server together.
+
+The earlier, unmerged `server_joint_names` configuration and top-level
+`joint_names`, `action_joint_names`, and `remaining_action_joint_names` form
+fields are removed. Joint channel configurations reject unknown fields
+instead of silently accepting the removed aliases. There is no new
+`server_config` or generic metadata layer.
+
 ## Asynchronous trajectory handover
 
 When trajectory stitching is enabled, the node solves for a future control

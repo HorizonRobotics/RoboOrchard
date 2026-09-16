@@ -14,14 +14,29 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import List
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
     """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
+    joint_names_args = [
+        DeclareLaunchArgument(
+            f"{side}_joint_names",
+            default_value=(
+                f"[{side}_joint1, {side}_joint2, {side}_joint3, "
+                f"{side}_joint4, {side}_joint5, {side}_joint6, "
+                f"{side}_gripper]"
+            ),
+            description="Names in hardware order: six joints, then gripper.",
+        )
+        for side in ("left", "right")
+    ]
     # --- Declare Launch Arguments ---
     left_master_can_port_arg = DeclareLaunchArgument(
         "left_master_can_port",
@@ -64,6 +79,10 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "joint_names": ParameterValue(
+                    LaunchConfiguration("left_joint_names"),
+                    value_type=List[str],
+                ),
                 "master_can_port": LaunchConfiguration("left_master_can_port"),
                 "slave_can_port": LaunchConfiguration("left_slave_can_port"),
                 "gripper_exist": True,
@@ -93,6 +112,10 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "joint_names": ParameterValue(
+                    LaunchConfiguration("right_joint_names"),
+                    value_type=List[str],
+                ),
                 "master_can_port": LaunchConfiguration(
                     "right_master_can_port"
                 ),
@@ -120,6 +143,7 @@ def generate_launch_description():
     # The launch description is a container for all the actions to be executed.
     return LaunchDescription(
         [
+            *joint_names_args,
             # Add the declared arguments
             left_master_can_port_arg,
             left_slave_can_port_arg,

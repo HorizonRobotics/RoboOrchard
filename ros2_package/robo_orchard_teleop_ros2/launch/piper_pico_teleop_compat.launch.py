@@ -25,6 +25,18 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     """Launch Pico teleop with algo-topic outputs and dual-arm debug."""
+    joint_names_args = [
+        DeclareLaunchArgument(
+            f"{side}_joint_names",
+            default_value=(
+                f"[{side}_joint1, {side}_joint2, {side}_joint3, "
+                f"{side}_joint4, {side}_joint5, {side}_joint6, "
+                f"{side}_gripper]"
+            ),
+            description="Names in hardware order: six joints, then gripper.",
+        )
+        for side in ("left", "right")
+    ]
     left_can_port_arg = DeclareLaunchArgument(
         "left_can_port",
         default_value="can_left",
@@ -102,6 +114,14 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "left_joint_names": ParameterValue(
+                    LaunchConfiguration("left_joint_names"),
+                    value_type=List[str],
+                ),
+                "right_joint_names": ParameterValue(
+                    LaunchConfiguration("right_joint_names"),
+                    value_type=List[str],
+                ),
                 "urdf_path": LaunchConfiguration("urdf_path"),
                 "ee_link_name": "link6",
                 "base_link_name": "base_link",
@@ -144,6 +164,10 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "joint_names": ParameterValue(
+                    LaunchConfiguration("left_joint_names"),
+                    value_type=List[str],
+                ),
                 "can_port": LaunchConfiguration("left_can_port"),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
@@ -173,6 +197,10 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "joint_names": ParameterValue(
+                    LaunchConfiguration("right_joint_names"),
+                    value_type=List[str],
+                ),
                 "can_port": LaunchConfiguration("right_can_port"),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
@@ -195,6 +223,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            *joint_names_args,
             left_can_port_arg,
             right_can_port_arg,
             enable_mit_control_mode_arg,

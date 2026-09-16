@@ -29,7 +29,7 @@ from robo_orchard_deploy_ros2.config import (
 CAMERA_PREFIX = "/agilex"
 CAMERA_SIDES = ("left", "right", "middle")
 ARM_SIDES = ("left", "right")
-PIPER_JOINT_NAMES = [f"joint{index}" for index in range(1, 8)]
+PIPER_JOINT_NAMES = [f"joint{index}" for index in range(1, 7)] + ["gripper"]
 
 
 def build_obs_channels():
@@ -73,7 +73,7 @@ def build_action_channels():
         JointCommandChannel(
             server_output_key=f"{side}_arm_actions",
             topic=f"/{side}_algo_cmd",
-            joint_names=PIPER_JOINT_NAMES,
+            joint_names=[f"{side}_{name}" for name in PIPER_JOINT_NAMES],
             velocities=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0],
             efforts=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
         )

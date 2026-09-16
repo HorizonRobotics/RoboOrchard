@@ -63,7 +63,10 @@ def test_joint_state_channel_reorders_to_the_declared_joints():
 
     decoded = codec.decode(channel, msg)
 
-    assert decoded.tolist() == [0.2, 0.1]
+    assert decoded == {
+        "name": ["Joint2_L", "Joint1_L"],
+        "position": [0.2, 0.1],
+    }
 
 
 def test_joint_state_channel_without_names_keeps_the_published_order():
@@ -76,7 +79,55 @@ def test_joint_state_channel_without_names_keeps_the_published_order():
 
     decoded = codec.decode(channel, msg)
 
-    assert decoded.tolist() == [0.1, 0.2]
+    assert decoded == {
+        "name": ["Joint1_L", "Joint2_L"],
+        "position": [0.1, 0.2],
+    }
+
+
+def test_joint_observation_is_a_snapshot_of_the_message():
+    channel = JointStateChannel(server_input_key="state", topic="/state")
+    message = types.SimpleNamespace(name=["left_joint1"], position=[0.1])
+    observation = codec.decode(channel, message)
+
+    message.name[0] = "right_joint1"
+    message.position[0] = 0.9
+
+    assert observation == {"name": ["left_joint1"], "position": [0.1]}
+
+
+@pytest.mark.parametrize(
+    ("names", "positions"),
+    [
+        ([], []),
+        ([], [0.1]),
+        (["joint1", "joint1"], [0.1, 0.2]),
+        ([" "], [0.1]),
+        (["joint1"], [0.1, 0.2]),
+        (["joint1"], [[0.1]]),
+        (["joint1"], [float("nan")]),
+        (["joint1"], [float("inf")]),
+    ],
+)
+def test_invalid_joint_observations_are_rejected(names, positions):
+    channel = JointStateChannel(server_input_key="state", topic="/state")
+
+    with pytest.raises(ValueError):
+        codec.decode(
+            channel, types.SimpleNamespace(name=names, position=positions)
+        )
+
+
+@pytest.mark.parametrize("selected", [[], ["joint1", "joint1"]])
+def test_joint_selection_cannot_empty_or_duplicate_names(selected):
+    channel = JointStateChannel(
+        server_input_key="state", topic="/state", joint_names=selected
+    )
+
+    with pytest.raises(ValueError):
+        codec.decode(
+            channel, types.SimpleNamespace(name=["joint1"], position=[0.1])
+        )
 
 
 def test_missing_joint_names_the_channel_and_the_topic():

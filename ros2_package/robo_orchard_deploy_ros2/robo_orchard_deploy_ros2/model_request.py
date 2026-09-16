@@ -21,7 +21,7 @@ import numpy as np
 import requests
 from rclpy.node import Node
 
-from robo_orchard_deploy_ros2.config import DeployConfig
+from robo_orchard_deploy_ros2.config import DeployConfig, JointStateChannel
 
 
 class ModelInferencer:
@@ -35,6 +35,11 @@ class ModelInferencer:
         self._node = node
         self._config = config
         self._session = requests.Session()
+        self._joint_observation_keys = {
+            channel.server_input_key
+            for channel in config.observation_config.channels
+            if isinstance(channel, JointStateChannel)
+        }
         self._expected_response_keys = {
             channel.server_output_key
             for channel in config.control_config.channels
@@ -59,7 +64,16 @@ class ModelInferencer:
         request_file = {}
         request_data = {}
         for key, value in observation.items():
-            if value is not None and isinstance(value, np.ndarray):
+            if key in self._joint_observation_keys:
+                if not isinstance(value, dict) or set(value) != {
+                    "name",
+                    "position",
+                }:
+                    raise ValueError(
+                        f"Joint observation '{key}' must contain name/position"
+                    )
+                request_data[key] = json.dumps(value, allow_nan=False)
+            elif value is not None and isinstance(value, np.ndarray):
                 request_file[key] = (
                     f"{key}.bin",
                     self._encode_np_array(observation[key]),
@@ -106,21 +120,23 @@ class ModelInferencer:
         """Send a request to the model infer server.
 
         Args:
-            observation (dict): Observation arrays keyed by server input name.
+            observation (dict): Arrays and named joint observations keyed by
+                server input name. Remaining actions retain their array form.
 
         Returns:
             dict | None: Validated action fields, or None when the request or
             response is invalid.
         """
-        request_files, request_datas = self._pack_request_data(observation)
-        if not request_files:
-            self._node.get_logger().error(
-                "No request files to send to model server."
-            )
+        try:
+            request_files, request_datas = self._pack_request_data(observation)
+        except (TypeError, ValueError) as error:
+            self._node.get_logger().error(f"Invalid model request: {error}")
             return None
-        elif not request_datas:
+        if not request_files and not (
+            self._joint_observation_keys & request_datas.keys()
+        ):
             self._node.get_logger().error(
-                "No request data to send to model server."
+                "No observations to send to model server."
             )
             return None
 

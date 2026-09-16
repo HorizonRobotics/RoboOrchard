@@ -14,13 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from __future__ import annotations
 # ruff: noqa: E402
+
 import math
 import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
@@ -391,7 +393,6 @@ sys.modules["robo_orchard_teleop_ros2.bridge.pico.teleop"] = teleop_module
 
 from robo_orchard_teleop_ros2.bridge.pico.teleop import VRTeleOp
 from robo_orchard_teleop_ros2.robot.piper.pico_vr import (
-    JOINT_NAMES,
     PIPER_MAX_GRIPPER_OPENING_M,
     PiperPicoVRTeleOpNode,
     _trigger_to_gripper_position,
@@ -459,28 +460,194 @@ def test_pico_node_uses_higher_control_rate():
     assert node.timers[0].period_s == 1.0 / 30.0
 
 
-def test_pico_node_publishes_joint_command_in_teleop_timer():
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize(
+    "names",
+    [
+        [f"joint{index}" for index in range(1, 7)] + ["gripper"],
+        [f"left_joint{index}" for index in range(1, 7)] + ["left_gripper"],
+        ["shoulder", "upper", "elbow", "forearm", "wrist", "tool", "opening"],
+        ["joint6", "joint5", "joint4", "joint3", "joint2", "joint1", "joint7"],
+    ],
+)
+def test_pico_publishes_configured_names_in_hardware_ik_order(side, names):
     import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
 
     pico_vr_module.os.path.exists = lambda _path: True
     VRTeleOp.instances.clear()
 
-    node = PiperPicoVRTeleOpNode()
-    node._arm_state["left"] = pico_vr_module.ArmEngageState.ACTIVE
-    left_teleop = VRTeleOp.instances[0]
-    left_teleop.latest_vr_state.left_controller.trigger = 0.25
-    left_teleop.next_result = _TeleOpResult(
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[_Parameter(f"{side}_joint_names", names)]
+    )
+    node._arm_state[side] = pico_vr_module.ArmEngageState.ACTIVE
+    feedback = _JointState(
+        name=list(names), position=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.02]
+    )
+    teleop = getattr(node, f"{side}_teleop")
+    updates = []
+    teleop.update_robot_joint_state = updates.append
+    getattr(node, f"sub_{side}_joint_state_callback")(feedback)
+    assert updates == [feedback.position[:6]]
+    getattr(teleop.latest_vr_state, f"{side}_controller").trigger = 0.25
+    teleop.next_result = _TeleOpResult(
         target_ee_pose=_Pose(),
         solution=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
     )
 
     node.timer_callback()
 
-    assert len(node.left_cmd_pub.messages) == 1
-    msg = node.left_cmd_pub.messages[0]
+    publisher = getattr(node, f"{side}_cmd_pub")
+    assert len(publisher.messages) == 1
+    msg = publisher.messages[0]
     assert msg.position[:6] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     assert math.isclose(msg.position[6], 0.075)
-    assert msg.name == JOINT_NAMES
+    assert msg.name == names
+    assert msg.name is not feedback.name
+    assert node.joint_names[side] is not names
+
+
+@pytest.mark.parametrize("names", [None, [], ["joint1"] * 7, [" "] * 7])
+def test_pico_does_not_publish_commands_without_valid_feedback_names(names):
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    node = PiperPicoVRTeleOpNode()
+    feedback = (
+        None if names is None else _JointState(name=names, position=[0.0] * 7)
+    )
+
+    node._handle_teleop_result(
+        side="left",
+        ret=_TeleOpResult(target_ee_pose=_Pose(), solution=[0.1] * 6),
+        gripper=0.02,
+        header=object(),
+        joint_state_cmd_publisher=node.left_cmd_pub,
+        target_pose_publisher=node.left_target_pub,
+        joint_state=feedback,
+    )
+
+    assert node.left_cmd_pub.messages == []
+    assert node.get_logger().messages[-1][0] == "error"
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize(
+    "configured_names",
+    [
+        [f"joint{index}" for index in range(1, 7)] + ["gripper"],
+        ["shoulder", "upper", "elbow", "forearm", "wrist", "tool", "opening"],
+        ["joint6", "joint5", "joint4", "joint3", "joint2", "joint1", "joint7"],
+    ],
+)
+def test_reordered_feedback_never_seeds_ik_or_labels_its_solution(
+    side, configured_names
+):
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[
+            _Parameter(f"{side}_joint_names", configured_names)
+        ]
+    )
+    getattr(node, f"sub_{side}_joint_state_callback")(
+        _JointState(name=list(configured_names), position=[0.0] * 7)
+    )
+    assert getattr(node, f"{side}_joint_state_msg") is not None
+    names = list(configured_names)
+    names[0], names[1] = names[1], names[0]
+    feedback = _JointState(
+        name=names, position=[0.2, 0.1, 0.3, 0.4, 0.5, 0.6, 0.02]
+    )
+    teleop = getattr(node, f"{side}_teleop")
+    updates = []
+    teleop.update_robot_joint_state = updates.append
+
+    getattr(node, f"sub_{side}_joint_state_callback")(feedback)
+
+    assert updates == []
+    assert getattr(node, f"{side}_joint_state_msg") is None
+    node._handle_teleop_result(
+        side=side,
+        ret=_TeleOpResult(target_ee_pose=_Pose(), solution=[0.1] * 6),
+        gripper=0.02,
+        header=object(),
+        joint_state_cmd_publisher=getattr(node, f"{side}_cmd_pub"),
+        target_pose_publisher=getattr(node, f"{side}_target_pub"),
+        joint_state=feedback,
+    )
+    assert getattr(node, f"{side}_cmd_pub").messages == []
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize(
+    "names",
+    [
+        None,
+        "abcdefg",
+        [],
+        ["name"] * 7,
+        [f"name{index}" for index in range(6)],
+        [f"name{index}" for index in range(8)],
+        [" ", "b", "c", "d", "e", "f", "g"],
+        [1, "b", "c", "d", "e", "f", "g"],
+    ],
+)
+def test_invalid_joint_configuration_fails_before_ik_creation(side, names):
+    VRTeleOp.instances.clear()
+    with pytest.raises(ValueError, match=f"{side}_joint_names"):
+        PiperPicoVRTeleOpNode(
+            parameter_overrides=[_Parameter(f"{side}_joint_names", names)]
+        )
+    assert VRTeleOp.instances == []
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize(
+    "invalid", ["duplicate", "foreign", "missing", "length", "nan", "inf"]
+)
+def test_malformed_custom_feedback_clears_cache_and_blocks_commands(
+    side, invalid
+):
+    import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
+
+    pico_vr_module.os.path.exists = lambda _path: True
+    names = ["shoulder", "upper", "elbow", "forearm", "wrist", "tool", "jaw"]
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[_Parameter(f"{side}_joint_names", names)]
+    )
+    callback = getattr(node, f"sub_{side}_joint_state_callback")
+    callback(_JointState(name=list(names), position=[0.0] * 7))
+    assert getattr(node, f"{side}_joint_state_msg") is not None
+    feedback = _JointState(name=list(names), position=[0.1] * 7)
+    if invalid == "duplicate":
+        feedback.name[1] = feedback.name[0]
+    elif invalid == "foreign":
+        feedback.name[0] = "joint1"
+    elif invalid == "missing":
+        feedback.name.pop()
+        feedback.position.pop()
+    elif invalid == "length":
+        feedback.position.pop()
+    else:
+        feedback.position[0] = float(invalid)
+    updates = []
+    getattr(node, f"{side}_teleop").update_robot_joint_state = updates.append
+
+    callback(feedback)
+
+    assert updates == []
+    assert getattr(node, f"{side}_joint_state_msg") is None
+    node._handle_teleop_result(
+        side=side,
+        ret=_TeleOpResult(target_ee_pose=_Pose(), solution=[0.1] * 6),
+        gripper=0.02,
+        header=object(),
+        joint_state_cmd_publisher=getattr(node, f"{side}_cmd_pub"),
+        target_pose_publisher=getattr(node, f"{side}_target_pub"),
+        joint_state=feedback,
+    )
+    assert getattr(node, f"{side}_cmd_pub").messages == []
 
 
 def test_pico_node_does_not_publish_when_teleop_returns_none():

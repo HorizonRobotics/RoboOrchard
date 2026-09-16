@@ -22,12 +22,14 @@ from sensor_msgs.msg import JointState
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
+    DEFAULT_JOINT_NAMES,
     PiperLossError,
     create_piper,
     get_arm_ctrl_state,
     get_arm_ee_pose,
     get_arm_state,
     get_arm_status,
+    validate_joint_names,
 )
 
 
@@ -37,6 +39,10 @@ class PiperAlohaRawNode(Node):
         super().__init__("piper_aloha_raw")
 
         self.declare_parameter("can_port", "can0")
+        self.declare_parameter("joint_names", list(DEFAULT_JOINT_NAMES))
+        self.joint_names = validate_joint_names(
+            self.get_parameter("joint_names").value
+        )
 
         self.can_port = (
             self.get_parameter("can_port").get_parameter_value().string_value
@@ -70,11 +76,11 @@ class PiperAlohaRawNode(Node):
         arm_status = get_arm_status(self.piper)
         self.arm_status_pub.publish(arm_status)
 
-        joint_state = get_arm_state(self.piper)
+        joint_state = get_arm_state(self.piper, self.joint_names)
         joint_state.header.stamp = self.get_clock().now().to_msg()
         self.joint_pub.publish(joint_state)
 
-        joint_state = get_arm_ctrl_state(self.piper)
+        joint_state = get_arm_ctrl_state(self.piper, self.joint_names)
         joint_state.header.stamp = self.get_clock().now().to_msg()
         self.master_joint_pub.publish(joint_state)
 

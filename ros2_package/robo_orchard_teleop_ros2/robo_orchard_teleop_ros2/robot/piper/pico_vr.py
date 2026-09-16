@@ -14,6 +14,7 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import math
 import os
 from enum import Enum, unique
 from typing import Any, Literal
@@ -42,15 +43,27 @@ from robo_orchard_teleop_ros2.bridge.pico.teleop import (
     VRTeleOp,
 )
 
-JOINT_NAMES = [
-    "joint1",
-    "joint2",
-    "joint3",
-    "joint4",
-    "joint5",
-    "joint6",
-    "gripper",
-]
+JOINT_NAMES = [f"joint{index}" for index in range(1, 7)] + ["gripper"]
+
+
+def _joint_names_from_feedback(
+    joint_state: JointState | None, expected_names: list[str]
+) -> list[str]:
+    """Require the configured hardware/IK order before using joint values."""
+    if joint_state is None:
+        raise ValueError("No joint feedback")
+    names = list(joint_state.name)
+    if (
+        names != expected_names
+        or len(joint_state.position) != len(names)
+        or not all(math.isfinite(value) for value in joint_state.position)
+    ):
+        raise ValueError(
+            "Joint feedback must match the configured hardware/IK order "
+            "and contain finite positions"
+        )
+    return names
+
 
 TELEOP_CONTROL_FREQ_HZ = 30.0
 TRANSLATION_SCALE_FACTOR = 1.2
@@ -83,6 +96,27 @@ class ArmEngageState(Enum):
 class PiperPicoVRTeleOpNode(Node):
     def __init__(self, **kwargs):
         super().__init__("piper_pico_vr_teleop", **kwargs)
+
+        self.joint_names: dict[str, list[str]] = {}
+        for side in ("left", "right"):
+            parameter = f"{side}_joint_names"
+            self.declare_parameter(parameter, list(JOINT_NAMES))
+            names = self.get_parameter(parameter).value
+            if (
+                not isinstance(names, (list, tuple))
+                or len(names) != 7
+                or any(
+                    not isinstance(name, str) or not name.strip()
+                    for name in names
+                )
+                or len(set(names)) != 7
+            ):
+                raise ValueError(
+                    f"{parameter} must contain seven unique non-empty "
+                    "strings in hardware/IK order (six arm joints, "
+                    "then gripper)"
+                )
+            self.joint_names[side] = list(names)
 
         self.declare_parameter(
             "urdf_path",
@@ -432,6 +466,12 @@ class PiperPicoVRTeleOpNode(Node):
         self.left_teleop.update_robot_ee_pose(msg.pose)
 
     def sub_left_joint_state_callback(self, msg: JointState):
+        try:
+            _joint_names_from_feedback(msg, self.joint_names["left"])
+        except ValueError as error:
+            self.left_joint_state_msg = None
+            self.get_logger().error(f"Rejecting left joint feedback: {error}")
+            return
         self.left_joint_state_msg = msg
         self.left_teleop.update_robot_joint_state(msg.position[:-1])
 
@@ -439,6 +479,12 @@ class PiperPicoVRTeleOpNode(Node):
         self.right_teleop.update_robot_ee_pose(msg.pose)
 
     def sub_right_joint_state_callback(self, msg: JointState):
+        try:
+            _joint_names_from_feedback(msg, self.joint_names["right"])
+        except ValueError as error:
+            self.right_joint_state_msg = None
+            self.get_logger().error(f"Rejecting right joint feedback: {error}")
+            return
         self.right_joint_state_msg = msg
         self.right_teleop.update_robot_joint_state(msg.position[:-1])
 
@@ -763,21 +809,36 @@ class PiperPicoVRTeleOpNode(Node):
 
     def _handle_teleop_result(
         self,
+        side: Literal["left", "right"],
         ret: TeleOpResult,
         gripper: float,
         header: Header,
         joint_state_cmd_publisher,
         target_pose_publisher,
+        joint_state: JointState | None,
     ):
         if self.enable_pose_control and ret.solution is not None:
             positions = list(ret.solution)
             positions.append(gripper)
-            joint_state_msg = JointState(
-                header=header,
-                name=JOINT_NAMES,
-                position=positions,
-            )
-            joint_state_cmd_publisher.publish(joint_state_msg)
+            try:
+                names = _joint_names_from_feedback(
+                    joint_state, self.joint_names[side]
+                )
+                if len(positions) != len(names) or not all(
+                    math.isfinite(value) for value in positions
+                ):
+                    raise ValueError("Invalid IK joint positions")
+            except ValueError as error:
+                self.get_logger().error(
+                    f"Cannot publish joint command: {error}"
+                )
+            else:
+                joint_state_msg = JointState(
+                    header=header,
+                    name=names,
+                    position=positions,
+                )
+                joint_state_cmd_publisher.publish(joint_state_msg)
 
         pose_msg = PoseStamped(header=header, pose=ret.target_ee_pose)
         target_pose_publisher.publish(pose_msg)
@@ -794,6 +855,7 @@ class PiperPicoVRTeleOpNode(Node):
 
         if left_ret is not None:
             self._handle_teleop_result(
+                side="left",
                 ret=left_ret,
                 gripper=_trigger_to_gripper_position(
                     self.left_teleop.latest_vr_state.left_controller.trigger
@@ -801,10 +863,12 @@ class PiperPicoVRTeleOpNode(Node):
                 header=Header(frame_id="/robot/left", stamp=current_stamp),
                 joint_state_cmd_publisher=self.left_cmd_pub,
                 target_pose_publisher=self.left_target_pub,
+                joint_state=self.left_joint_state_msg,
             )
 
         if right_ret is not None:
             self._handle_teleop_result(
+                side="right",
                 ret=right_ret,
                 gripper=_trigger_to_gripper_position(
                     self.right_teleop.latest_vr_state.right_controller.trigger
@@ -812,6 +876,7 @@ class PiperPicoVRTeleOpNode(Node):
                 header=Header(frame_id="/robot/right", stamp=current_stamp),
                 joint_state_cmd_publisher=self.right_cmd_pub,
                 target_pose_publisher=self.right_target_pub,
+                joint_state=self.right_joint_state_msg,
             )
 
 

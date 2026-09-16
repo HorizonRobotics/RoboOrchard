@@ -16,10 +16,14 @@
 
 from __future__ import annotations
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
 from typing import List
+
+import pytest
+import yaml
 
 LAUNCH_PATH = (
     Path(__file__).resolve().parents[1]
@@ -56,7 +60,7 @@ class _Node:
         self.kwargs = kwargs
 
 
-def _load_module():
+def _load_module(launch_path=LAUNCH_PATH):
     launch_module = types.ModuleType("launch")
     launch_module.LaunchDescription = _LaunchDescription
     launch_actions = types.ModuleType("launch.actions")
@@ -90,7 +94,7 @@ def _load_module():
     sys.modules["launch_ros.parameter_descriptions"] = launch_ros_param_desc
 
     spec = importlib.util.spec_from_file_location(
-        "piper_pico_teleop_compat_launch", LAUNCH_PATH
+        "piper_pico_teleop_compat_launch", launch_path
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -103,6 +107,80 @@ def _load_module():
             sys.modules[name] = saved
 
     return module
+
+
+@pytest.mark.parametrize(
+    "launch_name",
+    [
+        "piper_control_compat.launch.py",
+        "piper_aloha_compat.launch.py",
+        "piper_aloha_raw_compat.launch.py",
+        "piper_dagger_compat.launch.py",
+        "piper_pico_dagger_compat.launch.py",
+        "piper_pico_teleop_compat.launch.py",
+    ],
+)
+def test_all_piper_launches_share_each_sides_joint_names(launch_name):
+    description = _load_module(
+        LAUNCH_PATH.with_name(launch_name)
+    ).generate_launch_description()
+    arguments = {
+        entity.name: entity
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+    }
+    for side in ("left", "right"):
+        names = yaml.safe_load(arguments[f"{side}_joint_names"].default_value)
+        assert names == [f"{side}_joint{index}" for index in range(1, 7)] + [
+            f"{side}_gripper"
+        ]
+    drivers = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, _Node)
+        and entity.kwargs["package"] == "robo_orchard_piper_ros2"
+    ]
+    assert len(drivers) >= 2
+    for driver in drivers:
+        side = "left" if "left" in driver.kwargs["namespace"] else "right"
+        names = driver.kwargs["parameters"][0]["joint_names"]
+        assert isinstance(names, _ParameterValue)
+        assert names.value_type == List[str]
+        assert names.value.name == f"{side}_joint_names"
+    for entity in description.entities:
+        if (
+            isinstance(entity, _Node)
+            and entity.kwargs["executable"] == "piper_pico_vr_teleop"
+        ):
+            for side in ("left", "right"):
+                names = entity.kwargs["parameters"][0][f"{side}_joint_names"]
+                assert isinstance(names, _ParameterValue)
+                assert names.value_type == List[str]
+                assert names.value.name == f"{side}_joint_names"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["shoulder", "upper", "elbow", "forearm", "wrist", "tool", "opening"],
+        ["true", "false", "123", "null", "on", "off", "axis: tool"],
+        ["joint6", "joint5", "joint4", "joint3", "joint2", "joint1", "joint7"],
+    ],
+)
+def test_joint_names_survive_ros_parameter_evaluation(names):
+    launch = pytest.importorskip("launch")
+    descriptions = pytest.importorskip("launch_ros.parameter_descriptions")
+    substitutions = pytest.importorskip("launch.substitutions")
+    if not getattr(launch, "__file__", None):
+        pytest.skip("Requires the real ROS launch runtime, not test doubles")
+    context = launch.LaunchContext()
+    context.launch_configurations["joint_names"] = json.dumps(names)
+    value = descriptions.ParameterValue(
+        substitutions.LaunchConfiguration("joint_names"),
+        value_type=List[str],
+    )
+
+    assert list(value.evaluate(context)) == names
 
 
 def test_launch_starts_bridge_teleop_and_both_arm_controllers():

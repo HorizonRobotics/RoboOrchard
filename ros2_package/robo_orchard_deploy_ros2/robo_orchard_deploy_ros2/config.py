@@ -16,7 +16,7 @@
 
 from typing import Annotated, List, Literal, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 
 __all__ = [
@@ -96,7 +96,9 @@ class CameraInfoChannel(ObsChannelBase):
 
 
 class JointStateChannel(ObsChannelBase):
-    """A joint state topic decoded into a joint position vector."""
+    """A joint state topic decoded into paired ROS names and positions."""
+
+    model_config = ConfigDict(extra="forbid")
 
     kind: Literal["joint_state"] = "joint_state"
     msg_type: str = Field(
@@ -106,9 +108,8 @@ class JointStateChannel(ObsChannelBase):
     joint_names: List[str] | None = Field(
         default=None,
         description=(
-            "Joints to read, in model order. None keeps the order published "
-            "by the topic, which is only safe when the publisher order is "
-            "known and stable."
+            "ROS joints to select in this order. None keeps all names and "
+            "positions in the published order."
         ),
     )
 
@@ -135,6 +136,13 @@ class ObservationConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_server_input_keys(self) -> "ObservationConfig":
+        for channel in self.channels:
+            if isinstance(channel, JointStateChannel) and (
+                channel.server_input_key in {"instruction", "delay_horizon"}
+            ):
+                raise ValueError(
+                    "Joint observation key conflicts with a request form field"
+                )
         keys = [channel.server_input_key for channel in self.channels]
         duplicated = sorted({key for key in keys if keys.count(key) > 1})
         if duplicated:
@@ -169,6 +177,8 @@ class JointCommandChannel(ActionChannelBase):
     name their joints differently.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["joint_command"] = "joint_command"
     msg_type: str = Field(
         default="sensor_msgs/msg/JointState",
@@ -184,7 +194,7 @@ class JointCommandChannel(ActionChannelBase):
     )
     joint_names: List[str] = Field(
         min_length=1,
-        description="Joint names of this arm or hand, in model order.",
+        description="Joint names of this arm or hand, in channel order.",
     )
     velocities: List[float] | None = Field(
         default=None,
@@ -323,3 +333,20 @@ class DeployConfig(BaseModel):
         default=None,
         description="Re-solve each incoming action chunk so its position, velocity and acceleration continue the chunk the robot is already executing. Switching chunks is otherwise continuous in position alone, which leaves a velocity step at every handover. Requires the osqp and scipy packages. Null, the default, installs chunks unchanged.",  # noqa: E501
     )
+
+    @model_validator(mode="after")
+    def _validate_remaining_request_keys(self) -> "DeployConfig":
+        keys = {
+            channel.server_input_key
+            for channel in self.observation_config.channels
+        } | {"instruction", "delay_horizon"}
+        for channel in self.control_config.channels:
+            key = channel.server_remaining_key
+            if key is None:
+                continue
+            if key in keys:
+                raise ValueError(
+                    f"server_remaining_key '{key}' conflicts with request key"
+                )
+            keys.add(key)
+        return self

@@ -23,6 +23,7 @@ from sensor_msgs.msg import JointState
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
+    DEFAULT_JOINT_NAMES,
     create_piper,
     enable_arm_ctrl,
     get_arm_ee_pose,
@@ -30,6 +31,7 @@ from robo_orchard_piper_ros2.ros_bridge import (
     get_arm_status,
     joint_control,
     set_ctrl_method,
+    validate_joint_names,
 )
 
 
@@ -51,6 +53,7 @@ class PiperAlohaNode(Node):
 
         # ROS parameters for master and slave arms
         self.declare_parameter("master_can_port", "can0")
+        self.declare_parameter("joint_names", list(DEFAULT_JOINT_NAMES))
         self.declare_parameter("slave_can_port", "can1")
         self.declare_parameter("gripper_exist", True)
         self.declare_parameter("gripper_val_mutiple", 1)
@@ -58,6 +61,9 @@ class PiperAlohaNode(Node):
         self.declare_parameter("enable_mit_ctrl", False)
 
         self.declare_parameter("enable_master_ctrl", False)
+        self.joint_names = validate_joint_names(
+            self.get_parameter("joint_names").value
+        )
         self.declare_parameter("enable_master_mit_ctrl", False)
 
         self.master_can_port = (
@@ -254,7 +260,7 @@ class PiperAlohaNode(Node):
         status_pub.publish(arm_status)
 
         # publish joint states
-        joint_states_msg = get_arm_state(piper)
+        joint_states_msg = get_arm_state(piper, self.joint_names)
         joint_states_msg.header.stamp = self.get_clock().now().to_msg()
         joint_pub.publish(joint_states_msg)
 
@@ -265,12 +271,16 @@ class PiperAlohaNode(Node):
 
     def joint_cmd_callback(self, msg: JointState):
         if self.can_ctrl_master():
-            joint_control(
-                self.master_piper,
-                joint_data=msg,
-                has_gripper=self.gripper_exist,
-                gripper_val_mutiple=self.gripper_val_mutiple,
-            )
+            try:
+                joint_control(
+                    self.master_piper,
+                    joint_data=msg,
+                    has_gripper=self.gripper_exist,
+                    gripper_val_mutiple=self.gripper_val_mutiple,
+                    joint_names=self.joint_names,
+                )
+            except ValueError as error:
+                self.get_logger().error(f"Rejecting joint command: {error}")
 
 
 def main(args=None):

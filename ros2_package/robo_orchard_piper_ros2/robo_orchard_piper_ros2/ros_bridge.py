@@ -17,6 +17,7 @@
 import logging
 import math
 import time
+from collections.abc import Sequence
 
 from geometry_msgs.msg import PoseStamped
 from piper_sdk import C_PiperInterface
@@ -28,9 +29,11 @@ from sensor_msgs.msg import JointState
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 
 __all__ = [
+    "DEFAULT_JOINT_NAMES",
     "PiperLossError",
     "create_piper",
     "get_arm_status",
+    "validate_joint_names",
     "get_arm_ctrl_state",
     "get_arm_state",
     "get_arm_ee_pose",
@@ -43,6 +46,16 @@ __all__ = [
 
 
 global_logger = logging.getLogger(__name__)
+
+DEFAULT_JOINT_NAMES = (
+    "joint1",
+    "joint2",
+    "joint3",
+    "joint4",
+    "joint5",
+    "joint6",
+    "gripper",
+)
 
 
 class PiperLossError(Exception):
@@ -114,17 +127,40 @@ def get_arm_status(piper: C_PiperInterface) -> PiperStatusMsg:
     return arm_status
 
 
-def get_arm_ctrl_state(piper: C_PiperInterface) -> JointState:
+def validate_joint_names(joint_names: Sequence[str]) -> list[str]:
+    """Copy seven unique names ordered by hardware joints 1-6, then gripper.
+
+    Raises:
+        ValueError: If the configured names are not seven non-empty strings.
+    """
+    if (
+        not isinstance(joint_names, Sequence)
+        or isinstance(joint_names, (str, bytes))
+        or len(joint_names) != 7
+        or any(
+            not isinstance(name, str) or not name.strip()
+            for name in joint_names
+        )
+        or len(set(joint_names)) != 7
+    ):
+        raise ValueError(
+            "joint_names must contain seven unique non-empty strings "
+            "in hardware order (six arm joints, then gripper)"
+        )
+    return list(joint_names)
+
+
+def get_arm_ctrl_state(
+    piper: C_PiperInterface,
+    joint_names: Sequence[str] = DEFAULT_JOINT_NAMES,
+) -> JointState:
+    """Read SDK command feedback labeled in configured hardware order.
+
+    ``joint_names`` labels arm joints 1-6 followed by the gripper, without
+    changing the SDK value order or existing unit conversions.
+    """
     joint_states = JointState()
-    joint_states.name = [
-        "joint1",
-        "joint2",
-        "joint3",
-        "joint4",
-        "joint5",
-        "joint6",
-        "gripper",
-    ]
+    joint_states.name = validate_joint_names(joint_names)
     joint_states.position = [0.0] * 7
     joint_states.velocity = [0.0] * 7
     joint_states.effort = [0.0] * 7
@@ -148,17 +184,17 @@ def get_arm_ctrl_state(piper: C_PiperInterface) -> JointState:
     return joint_states
 
 
-def get_arm_state(piper: C_PiperInterface) -> JointState:
+def get_arm_state(
+    piper: C_PiperInterface,
+    joint_names: Sequence[str] = DEFAULT_JOINT_NAMES,
+) -> JointState:
+    """Read measured joints labeled in configured hardware order.
+
+    ``joint_names`` labels arm joints 1-6 followed by the gripper, without
+    changing the SDK value order or existing unit conversions.
+    """
     joint_states = JointState()
-    joint_states.name = [
-        "joint1",
-        "joint2",
-        "joint3",
-        "joint4",
-        "joint5",
-        "joint6",
-        "gripper",
-    ]
+    joint_states.name = validate_joint_names(joint_names)
     joint_states.position = [0.0] * 7
     joint_states.velocity = [0.0] * 7
     joint_states.effort = [0.0] * 7
@@ -245,29 +281,44 @@ def joint_control(
     joint_data: JointState,
     has_gripper: bool = True,
     gripper_val_mutiple: float = 1.0,
-):
+    joint_names: Sequence[str] = DEFAULT_JOINT_NAMES,
+) -> None:
+    """Validate a named command before sending any targets to the SDK.
+
+    Names may arrive in any order. All six arm joints are required; the
+    gripper is required when enabled and otherwise may be omitted. Positions
+    are radians for arm joints and meters for the gripper opening.
+    ``joint_names`` defines hardware order: six arm joints, then gripper.
+    """
     factor = 57324.840764  # 1000 * 180 / 3.14
-
-    joint_positions = {}
-
-    gripper = 0
-
-    for idx, joint_name in enumerate(joint_data.name):
-        joint_positions[joint_name] = round(joint_data.position[idx] * factor)
-
-    if len(joint_data.position) >= 7:
-        gripper = round(joint_data.position[6] * 1000 * 1000)
-        gripper = gripper * gripper_val_mutiple
+    names = list(joint_data.name)
+    positions = list(joint_data.position)
+    expected_names = validate_joint_names(joint_names)
+    required_names = expected_names if has_gripper else expected_names[:6]
+    if len(names) != len(positions) or len(names) != len(set(names)):
+        raise ValueError("Joint names must be unique and match positions")
+    if set(required_names) - set(names) or set(names) - set(expected_names):
+        raise ValueError("Joint command names do not match this controller")
+    if not all(math.isfinite(value) for value in positions):
+        raise ValueError("Joint positions must be finite")
+    if not math.isfinite(gripper_val_mutiple):
+        raise ValueError("Gripper multiplier must be finite")
+    joint_positions = dict(zip(names, positions, strict=True))
+    try:
+        arm_targets = [
+            round(joint_positions[name] * factor)
+            for name in expected_names[:6]
+        ]
+        if has_gripper:
+            gripper = round(joint_positions[expected_names[6]] * 1000000)
+            gripper *= gripper_val_mutiple
+            if not math.isfinite(gripper):
+                raise ValueError("Gripper target exceeds numeric range")
+    except OverflowError as error:
+        raise ValueError("Joint targets exceed numeric range") from error
 
     # control joints
-    piper.JointCtrl(
-        joint_positions.get("joint1", 0),
-        joint_positions.get("joint2", 0),
-        joint_positions.get("joint3", 0),
-        joint_positions.get("joint4", 0),
-        joint_positions.get("joint5", 0),
-        joint_positions.get("joint6", 0),
-    )
+    piper.JointCtrl(*arm_targets)
 
     # control gripper
     if has_gripper:

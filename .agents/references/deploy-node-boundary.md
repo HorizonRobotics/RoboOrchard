@@ -37,6 +37,10 @@ but they must share the same observation, inference, and action contracts.
 - The model service contract and the robot topic contract are independent.
   Changing one side should require an adapter or configuration change, not
   robot-specific branches in the deploy nodes.
+- Joint observations preserve paired ROS `name` and `position` lists and
+  send them as JSON under the existing channel key. Name selection must
+  reorder both lists together. Global naming belongs in the driver/project,
+  not a second set of model-facing aliases inside Deploy.
 
 ## Current Channel Support
 
@@ -76,7 +80,8 @@ they do not make the channel a velocity-control or force-control interface.
 
 - `config.py` defines channel schemas and validates configuration contracts.
 - `topic_manager.py` resolves ROS 2 message classes and creates topic I/O.
-- `codec.py` converts observation messages into model input arrays.
+- `codec.py` converts observation messages into arrays or paired joint names
+  and positions.
 - `obs_manager.py` subscribes, synchronizes, and snapshots observations.
 - `model_request.py` owns model-service request and response transport.
 - `action_exec.py` validates action sequences and publishes control messages.
