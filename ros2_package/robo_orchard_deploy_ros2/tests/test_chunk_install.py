@@ -23,7 +23,9 @@ it replaces got -- is not visible from the outside.
 
 from __future__ import annotations
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -33,6 +35,7 @@ from robo_orchard_deploy_ros2.node.async_node import DeployNode, NodeState
 from robo_orchard_deploy_ros2.trajectory_stitcher import (
     TrajectoryStitcher,
     _eval_cubic,
+    _PiecewiseJerkQP,
 )
 
 CHUNK = {"actions": [[float(i)] for i in range(100)]}
@@ -41,6 +44,10 @@ CHUNK = {"actions": [[float(i)] for i in range(100)]}
 class _Logger:
     def __init__(self):
         self.warnings = []
+        self.debug_messages = []
+
+    def debug(self, message, **kwargs):
+        self.debug_messages.append(message)
 
     def warning(self, message, **kwargs):
         self.warnings.append(message)
@@ -71,6 +78,9 @@ class _Stitcher:
         self.commits += 1
 
     def reset(self):
+        pass
+
+    def discard_pending(self):
         pass
 
 
@@ -107,6 +117,10 @@ def _node(
     """
     node = DeployNode.__new__(DeployNode)
     node.shared_state_lock = threading.Lock()
+    node._inference_generation = 0
+    node._status_publisher = Mock()
+    node._event_publisher = Mock()
+    node.get_clock = Mock()
     node.state = NodeState.EXECUTING
     node.current_actions = current_actions
     node.current_action_idx = current_action_idx
@@ -438,8 +452,18 @@ def test_real_solver_matches_the_state_at_the_scheduled_handover():
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_pausing_during_inference_discards_the_response(resume):
-    node = _node(dict(CHUNK), 30, 0, {"actions": [[9.0]] * 100})
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("stitching", [False, True])
+def test_pausing_during_inference_discards_the_response(
+    resume, empty, stitching
+):
+    node = _node(
+        None if empty else dict(CHUNK),
+        0 if empty else 30,
+        0,
+        {"actions": [[9.0]] * 100},
+    )
+    node._stitcher.enabled = stitching
 
     def request_inference(observations):
         node._disable_inference_callback(None, SimpleNamespace())
@@ -451,13 +475,26 @@ def test_pausing_during_inference_discards_the_response(resume):
     node._model_infer_timer_callback()
 
     assert node.current_actions is None
+    assert node.current_action_idx == 0
+    assert node._inference_generation == (2 if resume else 1)
     assert node._pending_actions is None
     assert node._stitcher.calls == []
+    assert node._logger.debug_messages == [
+        "Discarding stale inference response."
+    ]
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_pausing_during_a_solve_does_not_queue_an_obsolete_switch(resume):
-    node = _node(dict(CHUNK), 30, 0, {"actions": [[9.0]] * 100})
+@pytest.mark.parametrize("empty", [False, True])
+def test_pausing_during_a_solve_does_not_queue_an_obsolete_switch(
+    resume, empty
+):
+    node = _node(
+        None if empty else dict(CHUNK),
+        0 if empty else 30,
+        0,
+        {"actions": [[9.0]] * 100},
+    )
     node._stitch_lead_steps = 4
     solve = node._stitcher.stitch
 
@@ -479,6 +516,119 @@ def test_pausing_during_a_solve_does_not_queue_an_obsolete_switch(resume):
         node._model_infer_timer_callback()
         assert node.current_actions == {"actions": [[9.0]] * 100}
         assert node._stitcher.commits == 1
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("phase", ["before", "during", "after"])
+def test_restart_around_real_solve_discards_all_stale_state(
+    monkeypatch, resume, empty, phase
+):
+    actions = {"actions": [[0.2]] * 100}
+    node = _node(
+        None if empty else {"actions": [[0.0]] * 100},
+        0 if empty else 20,
+        0,
+        actions,
+    )
+    stitcher = TrajectoryStitcher(
+        TrajectoryStitchConfig(
+            max_velocity=3.0, max_acceleration=10.0, max_jerk=500.0
+        ),
+        200.0,
+        ["actions"],
+    )
+    if not stitcher.enabled:
+        pytest.skip("osqp is not installed")
+    node._stitcher = stitcher
+    original_stitch = stitcher.stitch
+    original_solve = _PiecewiseJerkQP.solve
+
+    def pause():
+        assert node._disable_inference_callback(
+            None, SimpleNamespace()
+        ).success
+        if resume:
+            assert node._enable_inference_callback(
+                None, SimpleNamespace()
+            ).success
+
+    def stitch_across_pause(*args, **kwargs):
+        if phase == "before":
+            pause()
+        result = original_stitch(*args, **kwargs)
+        if phase == "after":
+            pause()
+        return result
+
+    def solve_across_pause(solver, state, reference):
+        pause()
+        return original_solve(solver, state, reference)
+
+    if phase == "during":
+        monkeypatch.setattr(_PiecewiseJerkQP, "solve", solve_across_pause)
+    else:
+        monkeypatch.setattr(stitcher, "stitch", stitch_across_pause)
+    node._model_infer_timer_callback()
+    node._action_timer_callback()
+
+    assert stitcher.n_solved == 1
+    assert node.action_executor.sent == []
+    assert node.current_actions is None
+    assert node._pending_actions is None
+    assert stitcher._pending is None
+    assert stitcher._live is None
+    assert node._stitch_lead_steps == 1
+
+    monkeypatch.setattr(stitcher, "stitch", original_stitch)
+    monkeypatch.setattr(_PiecewiseJerkQP, "solve", original_solve)
+    if resume:
+        node._model_infer_timer_callback()
+        node._action_timer_callback()
+        assert len(node.action_executor.sent) == 1
+        assert stitcher._live is not None
+
+
+def test_disable_waits_for_publication_of_selected_action():
+    node = _node({"actions": [[0.2]]}, 0, 0, None)
+    selected = threading.Event()
+    release_publish = threading.Event()
+    disable_started = threading.Event()
+    disabled = threading.Event()
+    operations = []
+    original_send = node.action_executor.send_action
+
+    def delayed_send(actions, action_index):
+        selected.set()
+        assert release_publish.wait(timeout=5)
+        original_send(actions, action_index)
+        operations.append("publish")
+
+    def disable():
+        disable_started.set()
+        response = node._disable_inference_callback(None, SimpleNamespace())
+        assert response.success
+        operations.append("disable_returned")
+        disabled.set()
+
+    node.action_executor.send_action = delayed_send
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        action_future = executor.submit(node._action_timer_callback)
+        try:
+            assert selected.wait(timeout=5)
+            disable_future = executor.submit(disable)
+            assert disable_started.wait(timeout=5)
+            assert not disabled.wait(timeout=0.05)
+        finally:
+            release_publish.set()
+        action_future.result(timeout=5)
+        disable_future.result(timeout=5)
+
+    assert node.state == NodeState.PAUSED
+    assert node.current_actions is None
+    assert operations == ["publish", "disable_returned"]
+    node._action_timer_callback()
+    assert node.action_executor.sent == [[0.2]]
 
 
 def test_handover_does_not_require_exporting_remaining_actions():

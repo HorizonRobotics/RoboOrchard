@@ -1,5 +1,50 @@
 # RoboOchard Deploy ROS2 Package
 
+## Published inference state
+
+Both nodes publish `robo_orchard_deploy_msg_ros2/msg/InferenceStatus` on the
+relative topic `status`, using queue depth 10. A snapshot is published at
+startup, after each actual enable/disable transition, and every second. The
+header timestamp is the snapshot publication time, including heartbeats.
+
+- `enabled`: inference and action execution are permitted. This does not
+  guarantee observations, a model response, available actions, or robot motion.
+- `disabled`: inference and action execution are not permitted. The synchronous
+  node starts in INIT and the asynchronous node starts paused; both report
+  `disabled`. Synchronous IDLE and EXECUTING both report `enabled`.
+
+`InferenceEvent` messages are published on the relative topic `events`, also
+with depth 10. Only actual lifecycle transitions produce `enable_triggered` or
+`disable_triggered` events; startup, heartbeats, and redundant calls do not.
+`details` is explanatory text, not a machine-readable state contract.
+
+For a node launched in `/robot/inference_service`, the topics are
+`/robot/inference_service/status` and `/robot/inference_service/events`.
+Clients should derive current state from fresh status snapshots, not service
+success callbacks or event history. These topics use volatile durability, so
+late subscribers obtain a snapshot on the next heartbeat. Existing `enable`
+and `disable` Trigger services remain unchanged. Build and deploy the new
+message package alongside the node before subscribing through rosbridge.
+
+## Inference enable/disable boundary
+
+Disabling inference invalidates outstanding model requests and clears buffered
+actions, pending handovers, and the limiter/stitcher reference state. Repeated
+disable calls also invalidate and clear this state. Re-enabling cannot make a
+response from an earlier enabled period valid again, including the first
+request before any action chunk has been installed.
+
+The asynchronous node checks validity after model inference and again after
+stitching, without holding the control lock during either expensive operation.
+A reset invalidates in-flight stitch solves; results rejected by the node are
+also discarded if their solve began after that reset. The live trajectory is
+not replaced by a rejected solve.
+
+Action publication is serialized with disable. A successful disable response
+means no previously selected local action can subsequently begin publication.
+It does not cancel remote model computation, retract commands already sent to
+ROS, or provide a hardware emergency stop.
+
 ## Named joint observations
 
 Each `JointStateChannel` keeps its existing `server_input_key`. Its value is

@@ -29,12 +29,46 @@ from robo_orchard_deploy_ros2.config import TrajectoryStitchConfig
 from robo_orchard_deploy_ros2.trajectory_stitcher import (
     TrajectoryStitcher,
     _eval_cubic,
+    _PiecewiseJerkQP,
 )
 
 CONTROL_HZ = 200.0
 N_JOINTS = 7
 CHUNK_LEN = 400
 KEYS = ["channel_a", "channel_b"]
+
+
+def test_reset_during_solve_prevents_pending_cache_repopulation(monkeypatch):
+    stitcher = _stitcher()
+    request = {key: [[0.2] * N_JOINTS] * 40 for key in KEYS}
+    original_solve = _PiecewiseJerkQP.solve
+
+    def solve_after_reset(solver, state, reference):
+        stitcher.reset()
+        return original_solve(solver, state, reference)
+
+    monkeypatch.setattr(_PiecewiseJerkQP, "solve", solve_after_reset)
+    stitcher.stitch(request)
+
+    assert stitcher.n_solved == 1
+    assert stitcher._pending is None
+    stitcher.commit()
+    assert stitcher._live is None
+
+
+def test_discarding_a_solve_preserves_the_live_trajectory():
+    stitcher = _stitcher()
+    stitcher.stitch(_chunk(n_steps=40))
+    stitcher.commit()
+    live = stitcher._live
+    assert live is not None
+    stitcher.stitch(_chunk(n_steps=40, seed=1), prev_ran=1)
+    assert stitcher._pending is not None
+
+    stitcher.discard_pending()
+
+    assert stitcher._pending is None
+    assert stitcher._live is live
 
 
 def _config(**overrides):

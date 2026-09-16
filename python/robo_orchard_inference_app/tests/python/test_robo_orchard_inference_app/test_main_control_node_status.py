@@ -223,3 +223,111 @@ def test_render_configure_panel_checks_tf_recovery_before_sync(monkeypatch):
         ("recovery", True),
         ("sync", "episode"),
     ]
+
+
+def test_component_initialization_starts_inference_status_monitor(monkeypatch):
+    import robo_orchard_inference_app.components.main_control as control
+
+    calls = []
+    helper = types.SimpleNamespace(
+        start_status_monitor=lambda: calls.append("start_monitor")
+    )
+    collecting_state = types.SimpleNamespace(
+        episode_meta=object(), inference_state=object()
+    )
+    for name, value in {
+        "collecting_state": collecting_state,
+        "launch_cfg": types.SimpleNamespace(ros_bridge=object()),
+        "ros_client": object(),
+        "logger": object(),
+    }.items():
+        monkeypatch.setattr(
+            MainControlComponent,
+            name,
+            property(lambda self, value=value: value),
+        )
+    monkeypatch.setattr(
+        control, "EditEpisodeMetaComponent", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(control, "RosServiceHelper", lambda **kwargs: helper)
+
+    component = MainControlComponent()
+
+    assert component.ros_helper is helper
+    assert calls == ["start_monitor"]
+
+
+def test_only_state_panel_is_scheduled_for_periodic_refresh(monkeypatch):
+    import robo_orchard_inference_app.components.main_control as control
+
+    component = object.__new__(MainControlComponent)
+    panels = [
+        "state",
+        "configure",
+        "recorder",
+        "robot_control",
+        "handeye_calib",
+    ]
+    calls = []
+    fragments = []
+    for panel in panels:
+        monkeypatch.setattr(
+            component,
+            f"_render_{panel}_panel",
+            lambda panel=panel: calls.append(panel),
+        )
+
+    def fragment(*, run_every):
+        def decorate(callback):
+            fragments.append((run_every, callback))
+            return callback
+
+        return decorate
+
+    monkeypatch.setattr(control.st, "fragment", fragment, raising=False)
+
+    component()
+
+    assert calls == panels
+    assert fragments == [(1.0, component._render_state_panel)]
+
+
+def test_state_panel_projects_status_before_rendering(monkeypatch):
+    import robo_orchard_inference_app.components.main_control as control
+
+    component = object.__new__(MainControlComponent)
+    state = types.SimpleNamespace(
+        control_mode="takeover", is_inference_service_running=True
+    )
+    monkeypatch.setattr(
+        MainControlComponent,
+        "collecting_state",
+        property(lambda self: types.SimpleNamespace(inference_state=state)),
+    )
+
+    def refresh():
+        state.is_inference_service_running = None
+
+    component.ros_helper = types.SimpleNamespace(refresh_runtime_state=refresh)
+    indicators = []
+    monkeypatch.setattr(
+        control.st, "expander", lambda *args, **kwargs: _Expander()
+    )
+    monkeypatch.setattr(
+        control.st,
+        "columns",
+        lambda *args, **kwargs: [_Expander(), _Expander()],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        control,
+        "multi_status_indicator",
+        lambda **kwargs: indicators.append(kwargs),
+    )
+
+    component._render_state_panel()
+
+    assert indicators[0]["current_status"] == "takeover"
+    assert indicators[1]["current_status"] is None
+    assert indicators[1]["status_config"][True].text == "Enabled"
+    assert indicators[1]["status_config"][False].text == "Disabled"

@@ -27,6 +27,8 @@ robot is currently following, imposed as a hard equality. The result tracks
 the requested chunk under bounds on velocity, acceleration and jerk.
 """
 
+import threading
+
 import numpy as np
 
 try:
@@ -189,6 +191,8 @@ class TrajectoryStitcher:
 
         self._dt_ctrl = 1.0 / control_frequency
         self._qp = {}
+        self._state_lock = threading.Lock()
+        self._reset_generation = 0
         # The solve currently driving the robot, kept whole rather than
         # reduced to an end state: how far it will run is only known when
         # the next chunk arrives.
@@ -207,18 +211,32 @@ class TrajectoryStitcher:
     def enabled(self):
         return self._enabled
 
-    def reset(self):
+    def reset(self) -> None:
         """Drop the live trajectory.
 
         Called when execution is paused or resumed: forcing continuity onto
         a trajectory from before the gap would command the robot back to
         wherever it was when it stopped.
+
+        Invalidates in-flight solves without waiting for the solver. Calls
+        to ``stitch`` must still be serialized by the caller.
         """
         if self._enabled:
-            self._live = None
-            self._pending = None
+            with self._state_lock:
+                self._reset_generation += 1
+                self._live = None
+                self._pending = None
 
-    def commit(self):
+    def discard_pending(self) -> None:
+        """Discard a rejected solve without changing the live trajectory.
+
+        Call after ``stitch`` returns if the node rejects its result.
+        """
+        if self._enabled:
+            with self._state_lock:
+                self._pending = None
+
+    def commit(self) -> None:
         """Promote the last solve to the live trajectory.
 
         Call once the chunk has actually been installed. Skipping this --
@@ -232,8 +250,9 @@ class TrajectoryStitcher:
         has been superseded.
         """
         if self._enabled:
-            self._live = self._pending
-            self._pending = None
+            with self._state_lock:
+                self._live = self._pending
+                self._pending = None
 
     def stitch(
         self,
@@ -274,7 +293,10 @@ class TrajectoryStitcher:
         if not self._enabled:
             return actions
 
-        self._pending = None
+        with self._state_lock:
+            reset_generation = self._reset_generation
+            live_trajectory = self._live
+            self._pending = None
         cfg = self._config
         dt_qp = cfg.solver_dt
 
@@ -312,8 +334,8 @@ class TrajectoryStitcher:
             state[:, 0] = np.concatenate(
                 [held_actions[key][-1] for key in self._keys]
             )
-        elif self._live is not None:
-            live, live_t0 = self._live
+        elif live_trajectory is not None:
+            live, live_t0 = live_trajectory
             t = live_t0 + max(0, prev_ran) * self._dt_ctrl
             state = np.array(
                 [_eval_cubic(*live[d], dt_qp, t) for d in range(n_j)]
@@ -361,7 +383,9 @@ class TrajectoryStitcher:
         # Held, not promoted: whether this chunk is installed is decided
         # after the solve. The time origin is the instant this chunk would
         # begin executing.
-        self._pending = (solved, 0.0)
+        with self._state_lock:
+            if reset_generation == self._reset_generation:
+                self._pending = (solved, 0.0)
         self.n_solved += 1
 
         # Only the solved window is replaced; rewriting what came before it

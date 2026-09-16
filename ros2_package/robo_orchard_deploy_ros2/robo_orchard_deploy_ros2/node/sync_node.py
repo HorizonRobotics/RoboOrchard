@@ -22,6 +22,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node, ParameterDescriptor
 from std_srvs.srv import Trigger
 
+from robo_orchard_deploy_msg_ros2.msg import InferenceEvent, InferenceStatus
 from robo_orchard_deploy_ros2.action_exec import ActionExecutor
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.model_request import ModelInferencer
@@ -70,6 +71,14 @@ class DeployNode(Node):
         self.current_action_index = 0
         self.state = NodeState.INIT
         self.state_lock = threading.Lock()
+        self._inference_generation = 0
+        self._status_publisher = self.create_publisher(
+            InferenceStatus, "status", 10
+        )
+        self._event_publisher = self.create_publisher(
+            InferenceEvent, "events", 10
+        )
+        self._status_timer = self.create_timer(1.0, self._publish_status)
 
         self.create_service(
             Trigger,
@@ -86,6 +95,7 @@ class DeployNode(Node):
             f"Initialized SyncDeployNode with model server "
             f"{self.config.server_url}"
         )
+        self._publish_status()
 
     def _initialize(self):
         self.declare_parameter(
@@ -117,6 +127,7 @@ class DeployNode(Node):
         with self.state_lock:
             if self.state != NodeState.IDLE:
                 return
+            request_generation = self._inference_generation
         cur_obs = self.obs_manager.get_observations()
         if not cur_obs:
             self.get_logger().warning(
@@ -129,10 +140,24 @@ class DeployNode(Node):
             return
         else:
             with self.state_lock:
+                if (
+                    request_generation != self._inference_generation
+                    or self.state != NodeState.IDLE
+                ):
+                    self.get_logger().debug(
+                        "Discarding stale inference response."
+                    )
+                    return
                 self.current_actions = predict_actions
                 self.current_action_index = 0
-                if self.state == NodeState.IDLE:
-                    self.state = NodeState.EXECUTING
+                self.state = NodeState.EXECUTING
+
+    def _invalidate_actions_locked(self) -> None:
+        """Clear buffered actions and invalidate outstanding requests."""
+        self._inference_generation += 1
+        self.current_actions = None
+        self.current_action_index = 0
+        self.action_executor.reset_limiter()
 
     def _action_timer_callback(self):
         """Timer callback to execute actions at the control frequency."""
@@ -168,15 +193,42 @@ class DeployNode(Node):
                 self.state = NodeState.IDLE
                 return
 
+    def _publish_status(self) -> None:
+        with self.state_lock:
+            self._publish_status_locked()
+
+    def _publish_status_locked(self) -> None:
+        message = InferenceStatus()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.data = (
+            InferenceStatus.ENABLED
+            if self.state in (NodeState.IDLE, NodeState.EXECUTING)
+            else InferenceStatus.DISABLED
+        )
+        self._status_publisher.publish(message)
+
+    def _publish_lifecycle_change_locked(self, enabled: bool) -> None:
+        self._publish_status_locked()
+        event = InferenceEvent()
+        event.header.stamp = self.get_clock().now().to_msg()
+        event.event_type = (
+            InferenceEvent.ENABLE_TRIGGERED
+            if enabled
+            else InferenceEvent.DISABLE_TRIGGERED
+        )
+        event.details = (
+            "Inference enabled." if enabled else "Inference disabled."
+        )
+        self._event_publisher.publish(event)
+
     def _enable_inference_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ):
         """Callback to resume the inference and action execution."""
         with self.state_lock:
+            was_enabled = self.state in (NodeState.IDLE, NodeState.EXECUTING)
             if self.state != NodeState.EXECUTING:
-                self.current_actions = None
-                self.current_action_index = 0
-                self.action_executor.reset_limiter()
+                self._invalidate_actions_locked()
                 self.state = NodeState.IDLE
                 response.success = True
                 response.message = "Node executing."
@@ -185,6 +237,8 @@ class DeployNode(Node):
                 response.success = True
                 response.message = "Node is already executing."
                 self.get_logger().warning("Node is already executing.")
+            if not was_enabled:
+                self._publish_lifecycle_change_locked(True)
         return response
 
     def _disable_inference_callback(
@@ -192,15 +246,14 @@ class DeployNode(Node):
     ):
         """Callback to pause the inference and action execution."""
         with self.state_lock:
+            was_enabled = self.state in (NodeState.IDLE, NodeState.EXECUTING)
+            self._invalidate_actions_locked()
             if (
                 self.state == NodeState.EXECUTING
                 or self.state == NodeState.IDLE
             ):  # noqa: E501
                 self.state = NodeState.PAUSED
                 response.success = True
-                self.current_actions = None
-                self.current_action_index = 0
-                self.action_executor.reset_limiter()
                 response.message = "Node paused."
                 self.get_logger().info("Node paused.")
             elif self.state == NodeState.PAUSED:
@@ -211,6 +264,8 @@ class DeployNode(Node):
                 response.success = True
                 response.message = "Node is not executing."
                 self.get_logger().warning("Node is in INIT state.")
+            if was_enabled:
+                self._publish_lifecycle_change_locked(False)
         return response
 
 

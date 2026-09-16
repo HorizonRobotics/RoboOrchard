@@ -62,7 +62,7 @@ class EpisodeCounter:
 
 class InferenceState(pydantic.BaseModel):
     control_mode: Literal["auto", "takeover", "stop"] = "auto"
-    is_inference_service_running: bool = False
+    is_inference_service_running: bool | None = None
     arm_ctrl_status: Literal["enabled", "disabled"] = "enabled"
 
 
@@ -114,7 +114,6 @@ class CollectingState(pydantic.BaseModel):
         default_factory=lambda: InferenceState(
             control_mode="auto",
             arm_ctrl_status="enabled",
-            is_inference_service_running=False,
         )
     )
 

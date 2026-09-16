@@ -67,6 +67,25 @@ class FakeJointState:
         self.effort = []
 
 
+class FakeInferenceStatus:
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+    def __init__(self):
+        self.header = types.SimpleNamespace(stamp=None)
+        self.data = ""
+
+
+class FakeInferenceEvent:
+    ENABLE_TRIGGERED = "enable_triggered"
+    DISABLE_TRIGGERED = "disable_triggered"
+
+    def __init__(self):
+        self.header = types.SimpleNamespace(stamp=None)
+        self.event_type = ""
+        self.details = ""
+
+
 class FakeReliabilityPolicy(IntEnum):
     SYSTEM_DEFAULT = 0
     RELIABLE = 1
@@ -146,6 +165,13 @@ def _install_stub_modules():
     std_srvs.srv = std_srvs_srv
     sys.modules["std_srvs"] = std_srvs
     sys.modules["std_srvs.srv"] = std_srvs_srv
+
+    deploy_msg = types.ModuleType("robo_orchard_deploy_msg_ros2")
+    deploy_msg.msg = types.ModuleType("robo_orchard_deploy_msg_ros2.msg")
+    deploy_msg.msg.InferenceStatus = FakeInferenceStatus
+    deploy_msg.msg.InferenceEvent = FakeInferenceEvent
+    sys.modules["robo_orchard_deploy_msg_ros2"] = deploy_msg
+    sys.modules["robo_orchard_deploy_msg_ros2.msg"] = deploy_msg.msg
 
     message_filters = types.ModuleType("message_filters")
     message_filters.Subscriber = FakeSubscriber

@@ -24,6 +24,8 @@ guard wired into only one of them is a guard with a hole in it.
 
 from __future__ import annotations
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -31,6 +33,12 @@ from robo_orchard_deploy_ros2.node import async_node, sync_node
 
 
 class _Logger:
+    def __init__(self):
+        self.debug_messages = []
+
+    def debug(self, message, **kwargs):
+        self.debug_messages.append(message)
+
     def warning(self, message, **kwargs):
         pass
 
@@ -52,6 +60,10 @@ class _Executor:
 def _async():
     node = async_node.DeployNode.__new__(async_node.DeployNode)
     node.shared_state_lock = threading.Lock()
+    node._inference_generation = 0
+    node._status_publisher = Mock()
+    node._event_publisher = Mock()
+    node.get_clock = Mock()
     node.state = async_node.NodeState.EXECUTING
     node.current_actions = {"actions": [[1.0]]}
     node.current_action_idx = 7
@@ -59,18 +71,24 @@ def _async():
     node._pending_actions = (10, {"actions": [[2.0]]}, 0)
     node.action_executor = _Executor()
     node._stitcher = type("_S", (), {"resets": 0, "reset": lambda s: None})()
-    node.get_logger = lambda: _Logger()
+    node._logger = _Logger()
+    node.get_logger = lambda: node._logger
     return node
 
 
 def _sync():
     node = sync_node.DeployNode.__new__(sync_node.DeployNode)
     node.state_lock = threading.Lock()
+    node._inference_generation = 0
+    node._status_publisher = Mock()
+    node._event_publisher = Mock()
+    node.get_clock = Mock()
     node.state = sync_node.NodeState.EXECUTING
     node.current_actions = {"actions": [[1.0]]}
     node.current_action_index = 7
     node.action_executor = _Executor()
-    node.get_logger = lambda: _Logger()
+    node._logger = _Logger()
+    node.get_logger = lambda: node._logger
     return node
 
 
@@ -122,3 +140,70 @@ def test_resuming_drops_a_pending_handover():
     node._enable_inference_callback(None, _Response())
 
     assert node._pending_actions is None
+
+
+@pytest.mark.parametrize(
+    ("build", "action_index"),
+    [(_async, "current_action_idx"), (_sync, "current_action_index")],
+    ids=["async", "sync"],
+)
+def test_repeated_disable_still_invalidates_and_clears_state(
+    build, action_index
+):
+    node = build()
+    node._disable_inference_callback(None, _Response())
+    assert getattr(node, action_index) == 0
+    node.current_actions = {"actions": [[2.0]]}
+    setattr(node, action_index, 1)
+    node._disable_inference_callback(None, _Response())
+
+    assert node._inference_generation == 2
+    assert node.current_actions is None
+    assert getattr(node, action_index) == 0
+    assert node.action_executor.resets == 2
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_sync_late_response_cannot_restore_actions(resume):
+    node = _sync()
+    node.state = sync_node.NodeState.IDLE
+    node.current_actions = None
+    node.current_action_index = 0
+    node.obs_manager = SimpleNamespace(
+        get_observations=lambda: {"observation": [1.0]}
+    )
+
+    def delayed_response(observations):
+        node._disable_inference_callback(None, _Response())
+        if resume:
+            node._enable_inference_callback(None, _Response())
+        return {"actions": [[0.2]]}
+
+    node.model_inferencer = SimpleNamespace(request_inference=delayed_response)
+    node._model_infer_callback()
+
+    assert node.current_actions is None
+    assert node.current_action_index == 0
+    assert node._inference_generation == (2 if resume else 1)
+    assert node._logger.debug_messages == [
+        "Discarding stale inference response."
+    ]
+    if resume:
+        node.model_inferencer.request_inference = lambda obs: {
+            "actions": [[0.3]]
+        }
+        node._model_infer_callback()
+        assert node.current_actions == {"actions": [[0.3]]}
+        assert node.state == sync_node.NodeState.EXECUTING
+
+
+def test_disabling_sync_initial_state_also_clears_actions():
+    node = _sync()
+    node.state = sync_node.NodeState.INIT
+
+    response = node._disable_inference_callback(None, _Response())
+
+    assert response.success
+    assert node.current_actions is None
+    assert node.current_action_index == 0
+    assert node._inference_generation == 1

@@ -109,6 +109,10 @@ class ROSBridgeCfg(pydantic.BaseModel):
     )
 
     inference_node_candidates: list[str] = pydantic.Field(default_factory=list)
+    inference_status_topic: str = "/robot/inference_service/status"
+    status_timeout_s: float = pydantic.Field(
+        default=5.0, gt=0, allow_inf_nan=False
+    )
 
     # arm control
     enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)

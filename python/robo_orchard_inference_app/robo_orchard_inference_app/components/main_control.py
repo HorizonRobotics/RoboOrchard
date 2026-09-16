@@ -59,6 +59,7 @@ class MainControlComponent(ComponentBase):
             inference_state=self.collecting_state.inference_state,
             logger=self.logger,
         )
+        self.ros_helper.start_status_monitor()
         self._known_tf_publisher_startup_id: str | None = None
 
     def _is_tf_publisher_online(self) -> bool:
@@ -82,6 +83,7 @@ class MainControlComponent(ComponentBase):
         if self.ros_helper is None:
             return
 
+        self.ros_helper.refresh_runtime_state()
         with st.expander("ℹ️ Current State", expanded=False):
             control_mode_col, inference_service_col = st.columns([1, 1])
             state = self.collecting_state.inference_state
@@ -99,8 +101,8 @@ class MainControlComponent(ComponentBase):
                 multi_status_indicator(
                     current_status=state.is_inference_service_running,
                     status_config={
-                        True: StatusConfig(text="Inference", color="green"),
-                        False: StatusConfig(text="Inference", color="grey"),
+                        True: StatusConfig(text="Enabled", color="green"),
+                        False: StatusConfig(text="Disabled", color="grey"),
                     },
                 )
 
@@ -337,7 +339,7 @@ class MainControlComponent(ComponentBase):
     # --- Entry ---
     def __call__(self):
         """Renders the entire main control UI."""
-        self._render_state_panel()
+        st.fragment(run_every=1.0)(self._render_state_panel)()
         self._render_configure_panel()
         self._render_recorder_panel()
         self._render_robot_control_panel()

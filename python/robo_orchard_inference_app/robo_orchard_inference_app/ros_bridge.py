@@ -15,7 +15,11 @@
 # permissions and limitations under the License.
 
 import atexit
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -27,7 +31,7 @@ from robo_orchard_inference_app.state import InferenceState
 
 
 class RosServiceHelper:
-    """Encapsulates all interactions with ROS services."""
+    """Encapsulates ROS service requests and runtime status subscriptions."""
 
     def __init__(
         self,
@@ -50,7 +54,81 @@ class RosServiceHelper:
         self.logger = logger
         self._is_recording = False
         self._synced_tf_fingerprint: tuple[str, frozenset] | None = None
+        self._status_lock = threading.Lock()
+        self._status_messages: dict[str, tuple[float, dict]] = {}
+        self._status_topics: list[roslibpy.Topic] = []
         atexit.register(self.cleanup)
+
+    def start_status_monitor(self) -> None:
+        """Subscribe once; callbacks cache snapshots without updating UI state.
+
+        Start and cleanup are owned by the UI thread. Transport callbacks
+        only access the cache under its lock.
+        """
+        if self._status_topics:
+            return
+        topic = roslibpy.Topic(
+            self.ros_client,
+            self.cfg.inference_status_topic,
+            "robo_orchard_deploy_msg_ros2/msg/InferenceStatus",
+        )
+        self.ros_client.on("close", self._invalidate_status)
+        self._status_topics.append(topic)
+        try:
+            topic.subscribe(partial(self._receive_status, "inference"))
+        except Exception:
+            self._stop_status_monitor()
+            raise
+
+    def _receive_status(self, key: str, message: dict) -> None:
+        with self._status_lock:
+            if not self._status_topics or not self.ros_client.is_connected:
+                return
+            self._status_messages[key] = (
+                time.monotonic(),
+                deepcopy(message),
+            )
+
+    def _invalidate_status(self, *args) -> None:
+        with self._status_lock:
+            self._status_messages.clear()
+
+    def status_snapshot(self, key: str) -> dict | None:
+        """Return a copy of a fresh snapshot, or None when unavailable.
+
+        Freshness uses local monotonic receive time, not the ROS timestamp.
+        """
+        with self._status_lock:
+            if not self.ros_client.is_connected:
+                self._status_messages.clear()
+                return None
+            received = self._status_messages.get(key)
+            if received is None:
+                return None
+            timestamp, message = received
+            if time.monotonic() - timestamp > self.cfg.status_timeout_s:
+                return None
+            return deepcopy(message)
+
+    def refresh_runtime_state(self) -> None:
+        """Project the latest inference snapshot into the UI-owned model."""
+        inference = self.status_snapshot("inference")
+        value = inference.get("data") if inference is not None else None
+        self.state.is_inference_service_running = (
+            {"enabled": True, "disabled": False}.get(value)
+            if isinstance(value, str)
+            else None
+        )
+
+    def _stop_status_monitor(self) -> None:
+        with self._status_lock:
+            topics = self._status_topics
+            self._status_topics = []
+            self._status_messages.clear()
+        if topics:
+            self.ros_client.off("close", self._invalidate_status)
+        for topic in topics:
+            topic.unsubscribe()
 
     def _check_client_connected(self) -> bool:
         """Checks if the ROS client is connected.
@@ -407,9 +485,6 @@ class RosServiceHelper:
         return self._call_services(
             service_names=self.cfg.enable_inference_service_name,
             success_msg="Inference service enabled!",
-            success_callback=lambda: setattr(
-                self.state, "is_inference_service_running", True
-            ),
         )
 
     def disable_inference(self) -> bool:
@@ -417,9 +492,6 @@ class RosServiceHelper:
         return self._call_services(
             service_names=self.cfg.disable_inference_service_name,
             success_msg="Inference service disabled!",
-            success_callback=lambda: setattr(
-                self.state, "is_inference_service_running", False
-            ),
         )
 
     def is_inference_node_active(self) -> bool:
@@ -477,12 +549,16 @@ class RosServiceHelper:
             self._is_recording = False
         return flag
 
-    def cleanup(self):
-        if self._is_recording:
-            try:
-                self.stop_recording()
-            except:  # noqa: E722
-                pass
+    def cleanup(self) -> None:
+        """Release status subscriptions and preserve recording shutdown."""
+        try:
+            self._stop_status_monitor()
+        finally:
+            if self._is_recording:
+                try:
+                    self.stop_recording()
+                except:  # noqa: E722
+                    pass
 
     def record_handeye_calib_pose(self) -> bool:
         """Sends a request to record the current hand-eye calibration pose."""

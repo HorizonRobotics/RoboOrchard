@@ -24,6 +24,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node, ParameterDescriptor
 from std_srvs.srv import Trigger
 
+from robo_orchard_deploy_msg_ros2.msg import InferenceEvent, InferenceStatus
 from robo_orchard_deploy_ros2.action_exec import ActionExecutor
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.model_request import ModelInferencer
@@ -82,6 +83,14 @@ class DeployNode(Node):
         self._stitch_lead_steps = 1
         self.state = NodeState.PAUSED
         self.shared_state_lock = threading.Lock()
+        self._inference_generation = 0
+        self._status_publisher = self.create_publisher(
+            InferenceStatus, "status", 10
+        )
+        self._event_publisher = self.create_publisher(
+            InferenceEvent, "events", 10
+        )
+        self._status_timer = self.create_timer(1.0, self._publish_status)
 
         self.create_service(
             Trigger,
@@ -117,6 +126,7 @@ class DeployNode(Node):
         )
         if self._stitcher.enabled:
             self.get_logger().info("Chunk stitching enabled.")
+        self._publish_status()
 
     def _extract_remaining_actions(self):
         """Return the unpublished steps and the index they follow."""
@@ -143,6 +153,7 @@ class DeployNode(Node):
                 or self._pending_actions is not None
             ):
                 return
+            request_generation = self._inference_generation
         current_observations = self.obs_manager.get_observations()
         if not current_observations:
             self.get_logger().warning("No observations received yet.")
@@ -151,6 +162,11 @@ class DeployNode(Node):
         remaining_actions_start_idx = None
 
         with self.shared_state_lock:
+            if (
+                request_generation != self._inference_generation
+                or self.state != NodeState.EXECUTING
+            ):
+                return
             requested_actions = self.current_actions
             remaining_actions, remaining_actions_start_idx = (
                 self._extract_remaining_actions()
@@ -167,8 +183,10 @@ class DeployNode(Node):
         with self.shared_state_lock:
             if (
                 self.state != NodeState.EXECUTING
+                or request_generation != self._inference_generation
                 or self.current_actions is not requested_actions
             ):
+                self.get_logger().debug("Discarding stale inference response.")
                 return
             if self.current_actions is None:
                 install_idx, prev_ran = 0, 0
@@ -224,6 +242,13 @@ class DeployNode(Node):
                 held_actions=held_actions,
             )
             with self.shared_state_lock:
+                if (
+                    self.state != NodeState.EXECUTING
+                    or request_generation != self._inference_generation
+                    or self.current_actions is not requested_actions
+                ):
+                    self._stitcher.discard_pending()
+                    return
                 self._stitch_lead_steps = (
                     math.ceil(
                         (perf_counter() - solve_started)
@@ -231,11 +256,6 @@ class DeployNode(Node):
                     )
                     + 1
                 )
-                if (
-                    self.state != NodeState.EXECUTING
-                    or self.current_actions is not requested_actions
-                ):
-                    return
                 if self.current_action_idx > switch_idx:
                     self.get_logger().warning(
                         "Missed the planned handover step; keeping the "
@@ -253,6 +273,12 @@ class DeployNode(Node):
             return
 
         with self.shared_state_lock:
+            if (
+                self.state != NodeState.EXECUTING
+                or request_generation != self._inference_generation
+                or self.current_actions is not requested_actions
+            ):
+                return
             if remaining_actions_start_idx is not None:
                 install_idx = max(
                     install_idx,
@@ -306,9 +332,20 @@ class DeployNode(Node):
             current_idx_local = self.current_action_idx
             self.current_action_idx += 1
 
-        self.action_executor.send_action(
-            current_action_local, current_idx_local
-        )
+            self.action_executor.send_action(
+                current_action_local, current_idx_local
+            )
+
+    def _invalidate_actions_locked(self) -> None:
+        """Drop all action state while holding ``shared_state_lock``."""
+        self._inference_generation += 1
+        self.current_actions = None
+        self.current_action_idx = 0
+        self._chunk_start_idx = 0
+        self._pending_actions = None
+        self._stitch_lead_steps = 1
+        self.action_executor.reset_limiter()
+        self._stitcher.reset()
 
     def _initialize(self):
         self.declare_parameter(
@@ -335,22 +372,46 @@ class DeployNode(Node):
                 f.read()
             )
 
+    def _publish_status(self) -> None:
+        with self.shared_state_lock:
+            self._publish_status_locked()
+
+    def _publish_status_locked(self) -> None:
+        message = InferenceStatus()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.data = (
+            InferenceStatus.ENABLED
+            if self.state == NodeState.EXECUTING
+            else InferenceStatus.DISABLED
+        )
+        self._status_publisher.publish(message)
+
+    def _publish_lifecycle_change_locked(self, enabled: bool) -> None:
+        self._publish_status_locked()
+        event = InferenceEvent()
+        event.header.stamp = self.get_clock().now().to_msg()
+        event.event_type = (
+            InferenceEvent.ENABLE_TRIGGERED
+            if enabled
+            else InferenceEvent.DISABLE_TRIGGERED
+        )
+        event.details = (
+            "Inference enabled." if enabled else "Inference disabled."
+        )
+        self._event_publisher.publish(event)
+
     def _enable_inference_callback(
         self, request: Trigger.Request, response: Trigger.Response
     ):
         """Callback to resume the inference and action execution."""
         with self.shared_state_lock:
             if self.state == NodeState.PAUSED:
-                self.current_actions = None
-                self.current_action_idx = 0
-                self._chunk_start_idx = 0
-                self._pending_actions = None
-                self.action_executor.reset_limiter()
-                self._stitcher.reset()
+                self._invalidate_actions_locked()
                 self.state = NodeState.EXECUTING
                 response.success = True
                 response.message = "Node executing."
                 self.get_logger().info("Node executing.")
+                self._publish_lifecycle_change_locked(True)
             else:
                 response.success = True
                 response.message = "Node is already executing."
@@ -362,17 +423,13 @@ class DeployNode(Node):
     ):
         """Callback to pause the inference and action execution."""
         with self.shared_state_lock:
+            self._invalidate_actions_locked()
             if self.state == NodeState.EXECUTING:
                 self.state = NodeState.PAUSED
                 response.success = True
-                self.current_actions = None
-                self.current_action_idx = 0
-                self._chunk_start_idx = 0
-                self._pending_actions = None
-                self.action_executor.reset_limiter()
-                self._stitcher.reset()
                 response.message = "Node paused."
                 self.get_logger().info("Node paused.")
+                self._publish_lifecycle_change_locked(False)
             else:
                 response.success = True
                 response.message = "Node is already paused."
