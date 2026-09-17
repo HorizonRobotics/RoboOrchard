@@ -61,7 +61,7 @@ class TaskConfigComponent(ComponentBase):
         return data_dict
 
     def _is_static_transform_config_locked(self) -> bool:
-        return self.collecting_state.is_recording
+        return self.collecting_state.recording_controls_locked
 
     def _render_username(self):
         new_collectors = st_tags(

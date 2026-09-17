@@ -148,14 +148,18 @@ def test_status_timeout_must_be_positive_and_finite(timeout):
         ROSBridgeCfg(status_timeout_s=timeout)
 
 
-def test_status_monitor_subscribes_once_to_inference_only(monitor):
+def test_status_monitor_subscribes_once_to_both_nodes(monitor):
     helper, topics, listeners, _clock = monitor
     helper.start_status_monitor()
 
-    assert len(topics) == 1
+    assert len(topics) == 2
     assert topics[0].name == "/robot/inference_service/status"
     assert topics[0].message_type == (
         "robo_orchard_deploy_msg_ros2/msg/InferenceStatus"
+    )
+    assert topics[1].name == "/mcap_recorder_service/status"
+    assert topics[1].message_type == (
+        "robo_orchard_data_msg_ros2/msg/RecorderStatus"
     )
     assert len(listeners["close"]) == 1
     assert set(listeners) == {"close"}
@@ -170,8 +174,85 @@ def test_status_monitor_honors_configured_topic(monitor):
     helper.cfg.inference_status_topic = "/custom/inference/status"
     helper.start_status_monitor()
 
-    assert topics[-1].name == "/custom/inference/status"
+    assert topics[-2].name == "/custom/inference/status"
     assert topics[0].unsubscribed == 1
+
+
+def test_node_status_caches_expire_independently(monitor, monkeypatch):
+    helper, topics, listeners, clock = monitor
+    topics[0].callback({"data": "enabled"})
+    clock[0] += helper.cfg.status_timeout_s
+    topics[1].callback({"data": "recording", "session_id": "session"})
+    clock[0] += 0.001
+    helper.refresh_runtime_state()
+    assert helper.state.is_inference_service_running is None
+    assert helper.status_snapshot("recorder")["data"] == "recording"
+
+    topics[0].callback({"data": "disabled"})
+    helper.ros_client.get_services = lambda: [
+        f"{helper.cfg.recorder_name}/stop_recording"
+    ]
+    monkeypatch.setattr(
+        helper, "_call_service_result", lambda **kwargs: (True, None)
+    )
+    assert helper.stop_recording()
+    assert helper.status_snapshot("recorder") is None
+    assert helper.status_snapshot("inference") == {"data": "disabled"}
+
+    topics[1].callback({"data": "completed", "session_id": "session"})
+    listeners["close"][0](None)
+    assert helper.status_snapshot("inference") is None
+    assert helper.status_snapshot("recorder") is None
+
+
+def test_second_subscription_failure_releases_both_topics(
+    monitor, monkeypatch
+):
+    helper, topics, listeners, _clock = monitor
+    helper.cleanup()
+    topic_type = type(topics[0])
+    subscribe = topic_type.subscribe
+
+    def subscribe_or_fail(topic, callback):
+        if topic.name == f"{helper.cfg.recorder_name}/status":
+            raise RuntimeError("recorder subscription failed")
+        subscribe(topic, callback)
+        callback({"data": "enabled"})
+
+    monkeypatch.setattr(topic_type, "subscribe", subscribe_or_fail)
+    with pytest.raises(RuntimeError, match="recorder subscription failed"):
+        helper.start_status_monitor()
+    assert all(topic.unsubscribed == 1 for topic in topics)
+    assert listeners["close"] == []
+    assert helper.status_snapshot("inference") is None
+    assert helper._status_topics == []
+
+
+@pytest.mark.parametrize("failed_topic", ["inference", "recorder"])
+def test_topic_construction_failure_does_not_register_listener(
+    monitor, monkeypatch, failed_topic
+):
+    import robo_orchard_inference_app.ros_bridge as bridge
+
+    helper, topics, listeners, _clock = monitor
+    helper.cleanup()
+    topic_type = type(topics[0])
+    failed_name = (
+        helper.cfg.inference_status_topic
+        if failed_topic == "inference"
+        else f"{helper.cfg.recorder_name}/status"
+    )
+
+    def create_topic(client, name, message_type):
+        if name == failed_name:
+            raise RuntimeError("invalid topic")
+        return topic_type(client, name, message_type)
+
+    monkeypatch.setattr(bridge.roslibpy, "Topic", create_topic)
+    with pytest.raises(RuntimeError, match="invalid topic"):
+        helper.start_status_monitor()
+    assert listeners["close"] == []
+    assert helper._status_topics == []
 
 
 def test_callback_caches_only_and_ui_refresh_preserves_legacy_control(monitor):
@@ -283,13 +364,14 @@ def test_failed_subscription_releases_resources_and_can_retry(
     monkeypatch.setattr(topic_type, "subscribe", fail_subscribe)
     with pytest.raises(RuntimeError, match="subscription failed"):
         helper.start_status_monitor()
-    assert topics[-1].unsubscribed == 1
+    assert topics[-2].unsubscribed == 1
+    assert topics[-1].unsubscribed == 0
     assert listeners["close"] == []
     assert helper._status_topics == []
 
     monkeypatch.setattr(topic_type, "subscribe", subscribe)
     helper.start_status_monitor()
-    topics[-1].callback({"data": "enabled"})
+    topics[-2].callback({"data": "enabled"})
     helper.refresh_runtime_state()
     assert helper.state.is_inference_service_running is True
 
@@ -340,16 +422,14 @@ def test_service_success_does_not_replace_reported_inference_state(
     assert helper.state.is_inference_service_running is enable
 
 
-def test_cleanup_keeps_recorder_shutdown_even_if_unsubscribe_fails(
+def test_cleanup_releases_recorder_subscription_if_inference_unsubscribe_fails(
     monitor, monkeypatch
 ):
     helper, topics, _listeners, _clock = monitor
-    helper._is_recording = True
     stops = []
 
     def stop_recording():
         stops.append(True)
-        helper._is_recording = False
         return True
 
     def fail_unsubscribe():
@@ -359,7 +439,8 @@ def test_cleanup_keeps_recorder_shutdown_even_if_unsubscribe_fails(
     monkeypatch.setattr(topics[0], "unsubscribe", fail_unsubscribe)
     with pytest.raises(RuntimeError, match="unsubscribe failed"):
         helper.cleanup()
-    assert stops == [True]
+    assert stops == []
+    assert topics[1].unsubscribed == 1
 
 
 def test_cleanup_uses_real_roslibpy_event_and_topic_apis():
@@ -424,7 +505,7 @@ def test_cleanup_uses_real_roslibpy_event_and_topic_apis():
                 helper._invalidate_status.assert_not_called()
                 call_later.assert_not_called()
                 assert [message["op"] for message in sent] == [
-                    "subscribe", "unsubscribe"
+                    "subscribe", "subscribe", "unsubscribe", "unsubscribe"
                 ]
                 helper.start_status_monitor()
                 client.emit(topic, {"data": "disabled"})

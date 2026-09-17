@@ -44,7 +44,9 @@ def _load_task_config_module():
 
     streamlit_stub = types.SimpleNamespace(
         session_state=types.SimpleNamespace(
-            collecting_state=types.SimpleNamespace(is_recording=False),
+            collecting_state=types.SimpleNamespace(
+                recording_controls_locked=False
+            ),
         ),
         write=lambda *args, **kwargs: None,
         rerun=lambda: None,
@@ -96,7 +98,7 @@ def test_render_tf_directories_is_locked_during_recording():
 
     collecting_state = types.SimpleNamespace(
         task_cfg=task_cfg,
-        is_recording=True,
+        recording_controls_locked=True,
     )
     st_stub.session_state.collecting_state = collecting_state
     st_stub.write = lambda msg: written.append(msg)
@@ -119,7 +121,7 @@ def test_render_tf_directories_updates_on_change():
 
     collecting_state = types.SimpleNamespace(
         task_cfg=task_cfg,
-        is_recording=False,
+        recording_controls_locked=False,
     )
     st_stub.session_state.collecting_state = collecting_state
     st_stub.rerun = lambda: rerun_called.__setitem__(

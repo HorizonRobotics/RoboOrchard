@@ -18,6 +18,8 @@
 
 import sys
 import types
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -83,7 +85,7 @@ _version_stub.__git_hash__ = "test"
 sys.modules.setdefault("robo_orchard_inference_app.version", _version_stub)
 
 from robo_orchard_inference_app.config import TaskCfg
-from robo_orchard_inference_app.state import EpisodeMeta
+from robo_orchard_inference_app.state import CollectingState, EpisodeMeta
 
 
 class _DummyLogger:
@@ -127,7 +129,7 @@ def _make_component(task_cfg, episode_meta):
         "count", rerun_called["count"] + 1
     )
     component._task_cfg = task_cfg
-    component._collecting_state = types.SimpleNamespace(is_recording=False)
+    component._collecting_state = CollectingState()
 
     # stub task_cfg property
     type(component).task_cfg = property(lambda self: self._task_cfg)
@@ -227,7 +229,8 @@ def test_render_tf_directory_triggers_rerun_on_selection_change(monkeypatch):
     assert rerun_called["count"] == 1
 
 
-def test_render_tf_directory_locked_while_recording(monkeypatch):
+@pytest.mark.parametrize("pending", [False, True])
+def test_render_tf_directory_locked_while_recording(monkeypatch, pending):
     task_cfg = TaskCfg(
         candidate_tf_directories=["/media/tf_v1", "/media/tf_v2"]
     )
@@ -235,7 +238,8 @@ def test_render_tf_directory_locked_while_recording(monkeypatch):
     component, rerun_called, _, eem_st = _make_component(
         task_cfg, episode_meta
     )
-    component._collecting_state.is_recording = True
+    component._collecting_state.is_recording = not pending
+    component._collecting_state.recording_start_pending = pending
 
     written = []
     selectbox_calls = []

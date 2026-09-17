@@ -52,11 +52,11 @@ class RosServiceHelper:
         self.cfg = ros_bridge_cfg
         self.state = inference_state
         self.logger = logger
-        self._is_recording = False
         self._synced_tf_fingerprint: tuple[str, frozenset] | None = None
         self._status_lock = threading.Lock()
         self._status_messages: dict[str, tuple[float, dict]] = {}
         self._status_topics: list[roslibpy.Topic] = []
+        self._recorder_stop_status: dict | None = None
         atexit.register(self.cleanup)
 
     def start_status_monitor(self) -> None:
@@ -67,15 +67,26 @@ class RosServiceHelper:
         """
         if self._status_topics:
             return
-        topic = roslibpy.Topic(
-            self.ros_client,
-            self.cfg.inference_status_topic,
-            "robo_orchard_deploy_msg_ros2/msg/InferenceStatus",
-        )
+        topics = [
+            (key, roslibpy.Topic(self.ros_client, name, message_type))
+            for key, name, message_type in (
+                (
+                    "inference",
+                    self.cfg.inference_status_topic,
+                    "robo_orchard_deploy_msg_ros2/msg/InferenceStatus",
+                ),
+                (
+                    "recorder",
+                    f"{self.cfg.recorder_name}/status",
+                    "robo_orchard_data_msg_ros2/msg/RecorderStatus",
+                ),
+            )
+        ]
         self.ros_client.on("close", self._invalidate_status)
-        self._status_topics.append(topic)
         try:
-            topic.subscribe(partial(self._receive_status, "inference"))
+            for key, topic in topics:
+                self._status_topics.append(topic)
+                topic.subscribe(partial(self._receive_status, key))
         except Exception:
             self._stop_status_monitor()
             raise
@@ -84,10 +95,38 @@ class RosServiceHelper:
         with self._status_lock:
             if not self._status_topics or not self.ros_client.is_connected:
                 return
-            self._status_messages[key] = (
-                time.monotonic(),
-                deepcopy(message),
-            )
+            message = deepcopy(message)
+            self._status_messages[key] = (time.monotonic(), message)
+            stopped = self._recorder_stop_status
+            if (
+                key == "recorder"
+                and stopped is not None
+                and stopped.get("data") is None
+                and message.get("session_id") == stopped["session_id"]
+                and message.get("destination") == stopped["destination"]
+                and message.get("data") in {"completed", "idle", "failed"}
+            ):
+                self._recorder_stop_status = message
+
+    def recorder_stop_result(
+        self, session_id: str, destination: str
+    ) -> dict | None:
+        """Consume a matching Stop terminal result, not a live status.
+
+        Received terminal evidence survives later sessions and disconnection
+        until the App consumes it. Only one explicit Stop is tracked.
+        """
+        with self._status_lock:
+            result = self._recorder_stop_status
+            if (
+                result is None
+                or result.get("data") is None
+                or result["session_id"] != session_id
+                or result["destination"] != destination
+            ):
+                return None
+            self._recorder_stop_status = None
+            return deepcopy(result)
 
     def _invalidate_status(self, *args) -> None:
         with self._status_lock:
@@ -125,10 +164,18 @@ class RosServiceHelper:
             topics = self._status_topics
             self._status_topics = []
             self._status_messages.clear()
+            self._recorder_stop_status = None
         if topics:
             self.ros_client.off("close", self._invalidate_status)
+        error: Exception | None = None
         for topic in topics:
-            topic.unsubscribe()
+            try:
+                topic.unsubscribe()
+            except Exception as exc:
+                if error is None:
+                    error = exc
+        if error is not None:
+            raise error
 
     def _check_client_connected(self) -> bool:
         """Checks if the ROS client is connected.
@@ -254,7 +301,7 @@ class RosServiceHelper:
         )
         if error_msg:
             self.logger.error(error_msg)
-        return success
+        return success is True
 
     def _call_service_result(
         self,
@@ -262,20 +309,26 @@ class RosServiceHelper:
         timeout: float,
         service_type: str,
         request_data: dict | None,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool | None, str | None]:
+        """Return acceptance, rejection, or an unknown result with details."""
         try:
             service = roslibpy.Service(
                 self.ros_client, service_name, service_type
             )
             request = roslibpy.ServiceRequest(request_data)
+        except Exception as error:
+            return False, f"Cannot prepare service {service_name}: {error}"
+        try:
             result = service.call(request, timeout=timeout)
-            if not result.get("success", False):
+            if result.get("success") is False:
                 msg = result.get("message", "No message provided.")
                 return False, f"Service {service_name} failed: {msg}"
+            if result.get("success") is not True:
+                return None, f"Invalid response from service: {service_name}"
         except roslibpy.core.RosTimeoutError:
-            return False, f"Timeout calling service: {service_name}"
-        except Exception as e:
-            return False, f"Error calling {service_name}: {e}"
+            return None, f"Timeout calling service: {service_name}"
+        except Exception as error:
+            return None, f"Error calling {service_name}: {error}"
         return True, None
 
     def _set_param(
@@ -527,38 +580,106 @@ class RosServiceHelper:
             timeout=30.0,
         )
 
-    def start_recording(self, uri: str) -> bool:
-        flag = self._call_services(
-            service_names=[f"{self.cfg.recorder_name}/start_recording"],
-            success_msg="Recording Started!",
+    def start_recording(self, uri: str) -> bool | None:
+        """Request a recording session without inferring node state.
+
+        Args:
+            uri: Absolute recording destination associated with the request.
+
+        Returns:
+            True for an accepted request, False for rejection or failure before
+            dispatch, and None when a dispatched request's outcome is unknown.
+            A timeout does not cancel recording; use matching status to confirm
+            the session before retrying.
+        """
+        if not self._check_client_connected():
+            return False
+        service_name = f"{self.cfg.recorder_name}/start_recording"
+        try:
+            service_available = service_name in self.ros_client.get_services()
+        except Exception as error:
+            self.logger.error(f"Recorder Start discovery failed: {error}")
+            return False
+        if not service_available:
+            self.logger.error(f"Service {service_name} not found!")
+            return False
+        with self._status_lock:
+            self._status_messages.pop("recorder", None)
+            self._recorder_stop_status = None
+        success, error_msg = self._call_service_result(
+            service_name=service_name,
             timeout=5.0,
             service_type="robo_orchard_data_msg_ros2/srv/StartRecording",
             request_data=dict(destination=uri),
         )
-        if flag:
-            self._is_recording = True
-        return flag
+        if error_msg:
+            self.logger.error(error_msg)
+        if success is True:
+            self.logger.info("Recording session initialized!")
+        return success
 
-    def stop_recording(self) -> bool:
-        flag = self._call_services(
-            service_names=[f"{self.cfg.recorder_name}/stop_recording"],
-            success_msg="Recording Stopped!",
+    def stop_recording(
+        self, *, session: tuple[str, str] | None = None
+    ) -> bool | None:
+        """Request Stop, optionally retaining its session's terminal status.
+
+        Args:
+            session: This App's session ID and absolute destination to track.
+
+        Returns:
+            True for acceptance, False for rejection or failure before
+            dispatch, and None for an unknown dispatched result.
+        """
+        if not self._check_client_connected():
+            return False
+        with self._status_lock:
+            if session is not None:
+                session_id, destination = session
+                tracked = self._recorder_stop_status
+                if (
+                    tracked is None
+                    or tracked["session_id"] != session_id
+                    or tracked["destination"] != destination
+                ):
+                    self._recorder_stop_status = {
+                        "session_id": session_id,
+                        "destination": destination,
+                    }
+                received = self._status_messages.get("recorder")
+                if (
+                    received is not None
+                    and received[1].get("session_id") == session_id
+                    and received[1].get("destination") == destination
+                    and received[1].get("data")
+                    in {"completed", "idle", "failed"}
+                    and self._recorder_stop_status.get("data") is None
+                ):
+                    self._recorder_stop_status = received[1]
+            self._status_messages.pop("recorder", None)
+        service_name = f"{self.cfg.recorder_name}/stop_recording"
+        try:
+            service_available = service_name in self.ros_client.get_services()
+        except Exception as error:
+            self.logger.error(f"Recorder Stop discovery failed: {error}")
+            return False
+        if not service_available:
+            self.logger.error(f"Service {service_name} not found!")
+            return False
+        success, error_msg = self._call_service_result(
+            service_name=service_name,
             timeout=5.0,
+            service_type="std_srvs/srv/Trigger",
+            request_data={},
         )
-        if flag:
-            self._is_recording = False
-        return flag
+        if error_msg:
+            self.logger.error(error_msg)
+        if success is True:
+            self.logger.info("Recording Stopped!")
+        return success
 
     def cleanup(self) -> None:
-        """Release status subscriptions and preserve recording shutdown."""
-        try:
-            self._stop_status_monitor()
-        finally:
-            if self._is_recording:
-                try:
-                    self.stop_recording()
-                except:  # noqa: E722
-                    pass
+        """Release client subscriptions without stopping the recorder."""
+        self._stop_status_monitor()
 
     def record_handeye_calib_pose(self) -> bool:
         """Sends a request to record the current hand-eye calibration pose."""

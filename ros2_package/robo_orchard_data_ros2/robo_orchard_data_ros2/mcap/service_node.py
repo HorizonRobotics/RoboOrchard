@@ -17,17 +17,21 @@
 import functools
 import os
 import struct
+import time
+import uuid
 from datetime import datetime
 
 import rclpy
 import rosbag2_py
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node, ParameterDescriptor
 from rclpy.qos import QoSProfile
 from rclpy.serialization import deserialize_message, serialize_message
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
+from robo_orchard_data_msg_ros2.msg import RecorderStatus
 from robo_orchard_data_msg_ros2.srv import StartRecording
 from robo_orchard_data_ros2.mcap.config import RecordConfig, TopicSpec
 from robo_orchard_data_ros2.mcap.utils import (
@@ -44,6 +48,11 @@ class ServiceMcapRecorder(Node):
     RECORDING_FILE = "__RECORDING__"
 
     def __init__(self):
+        if not hasattr(rosbag2_py.SequentialWriter, "close"):
+            raise RuntimeError(
+                "Recorder requires rosbag2_py >= 0.15.14 with "
+                "SequentialWriter.close() support."
+            )
         super().__init__("mcap_recorder_service")
 
         # --- State Management ---
@@ -52,6 +61,10 @@ class ServiceMcapRecorder(Node):
         self.writer = None
         self.uri = None
         self.recording_flag = None
+        self.session_id = ""
+        self._recording_state = RecorderStatus.IDLE
+        self._failure_reason = ""
+        self._wait_started_at = None
 
         # Session wait list
         self._session_wait_topics = set()
@@ -66,7 +79,7 @@ class ServiceMcapRecorder(Node):
         self._hint_freq = 4096
         self._raw_stamp_parse_error_topics = set()
 
-        self._callback_group = ReentrantCallbackGroup()
+        self._callback_group = MutuallyExclusiveCallbackGroup()
 
         self._min_timestamp = None
         self._max_timestamp = None
@@ -75,6 +88,18 @@ class ServiceMcapRecorder(Node):
 
         # Static Latching
         self._latched_msgs = {}
+
+        self._status_publisher = self.create_publisher(
+            RecorderStatus, "~/status", 10
+        )
+        steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.create_timer(
+            1.0,
+            self._publish_status,
+            callback_group=self._callback_group,
+            clock=steady_clock,
+        )
+        self._publish_status()
 
         # --- Service Interfaces ---
         self._srv_start = self.create_service(
@@ -99,27 +124,63 @@ class ServiceMcapRecorder(Node):
             )
 
         self.create_timer(
-            1.0, self._monitor, callback_group=self._callback_group
+            1.0,
+            self._monitor,
+            callback_group=self._callback_group,
+            clock=steady_clock,
         )
         self.get_logger().info("ServiceMcapRecorder Ready.")
+
+    def _publish_status(self) -> None:
+        message = RecorderStatus()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.data = self._recording_state
+        message.session_id = self.session_id
+        message.destination = self.uri or ""
+        message.waiting_topics = sorted(self._session_wait_topics)
+        message.failure_reason = self._failure_reason
+        self._status_publisher.publish(message)
+
+    def _set_recording_state(self, state: str, reason: str = "") -> None:
+        self._recording_state = state
+        self._failure_reason = reason
+        self._publish_status()
+
+    def _fail_recording(self, reason: str) -> None:
+        close_error = self._cleanup_writer()
+        if close_error:
+            reason = f"{reason}; {close_error}"
+        self.get_logger().error(reason)
+        self._set_recording_state(RecorderStatus.FAILED, reason)
 
     @property
     def is_recording(self) -> bool:
         return self.writer is not None
 
-    def destroy_node(self):
+    def destroy_node(self) -> None:
         """Clean up resources on node shutdown."""
         self.get_logger().info("Shutting down recorder...")
         self._cleanup_writer()
         super().destroy_node()
 
-    def _handle_start_request(self, request, response):
+    def _handle_start_request(
+        self,
+        request: StartRecording.Request,
+        response: StartRecording.Response,
+    ) -> StartRecording.Response:
         """Handles the start recording request."""
         if self.is_recording:
             response.success = False
             response.message = "Already recording!"
             return response
 
+        self.session_id = str(uuid.uuid4())
+        self.uri = None
+        self._failure_reason = ""
+        self._session_wait_topics = set(self.config.wait_for_topics)
+        self._cnt = 0
+        self._min_timestamp = None
+        self._max_timestamp = None
         try:
             # 1. Resolve Path
             dest = request.destination
@@ -128,11 +189,14 @@ class ServiceMcapRecorder(Node):
             if not os.path.isabs(dest):
                 dest = os.path.abspath(dest)
             self.uri = dest
+            if os.path.lexists(dest):
+                raise FileExistsError(
+                    f"Recording destination already exists: {dest}"
+                )
 
             # 2. Initialize Writer
-            self.recording_flag = os.path.join(self.uri, self.RECORDING_FILE)
-            self.writer = rosbag2_py.SequentialWriter()
-            self.writer.open(
+            writer = rosbag2_py.SequentialWriter()
+            writer.open(
                 rosbag2_py.StorageOptions(
                     uri=self.uri,
                     storage_id="mcap",
@@ -143,16 +207,12 @@ class ServiceMcapRecorder(Node):
                     output_serialization_format="cdr",
                 ),
             )
+            self.writer = writer
 
             # 3. Register Existing Metadata
             for metadata in self._active_topic_metadata.values():
                 self.writer.create_topic(metadata)
                 self._msg_cnt[metadata.name] = 0
-
-            # 4. Reset Session Stats
-            self._cnt = 0
-            self._min_timestamp = None
-            self._max_timestamp = None
 
             for _, data in self._frame_rate_monitors.items():
                 data["monitor"] = FrameRateMonitor(
@@ -160,29 +220,30 @@ class ServiceMcapRecorder(Node):
                 )
 
             # 5. Initialize Logic Flags
-            self._session_wait_topics = (
-                set(self.config.wait_for_topics)
-                if self.config.wait_for_topics
-                else set()
-            )
             self._has_started_writing = False
 
             self.get_logger().info(
                 f"Session initialized. Waiting for topics: {self._session_wait_topics}"  # noqa: E501
             )
 
+            recording_flag = os.path.join(self.uri, self.RECORDING_FILE)
+            with open(recording_flag, "x"):
+                self.recording_flag = recording_flag
+            self._wait_started_at = time.monotonic()
+            self._set_recording_state(RecorderStatus.WAITING)
             response.success = True
             response.message = f"Session initialized at {self.uri}"
 
         except Exception as e:
-            self.get_logger().error(f"Start failed: {e}")
-            self._cleanup_writer()
+            self._fail_recording(f"Start failed: {e}")
             response.success = False
             response.message = str(e)
 
         return response
 
-    def _handle_stop_request(self, request, response):
+    def _handle_stop_request(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
         """Handles the stop recording request."""
         if not self.is_recording:
             response.success = False
@@ -190,13 +251,29 @@ class ServiceMcapRecorder(Node):
             return response
 
         saved_uri = self.uri
-        self._cleanup_writer()
+        had_data = self._cnt > 0
+        self._set_recording_state(RecorderStatus.FINALIZING)
+        close_error = self._cleanup_writer()
+        if close_error:
+            self._set_recording_state(RecorderStatus.FAILED, close_error)
+            response.success = False
+            response.message = close_error
+            return response
+        self._session_wait_topics.clear()
+        self._set_recording_state(
+            RecorderStatus.COMPLETED if had_data else RecorderStatus.IDLE
+        )
         response.success = True
-        response.message = f"Stopped. Saved to {saved_uri}"
+        response.message = (
+            f"Stopped. Saved to {saved_uri}"
+            if had_data
+            else f"Cancelled before writing data: {saved_uri}"
+        )
         return response
 
-    def _cleanup_writer(self):
-        """Safely closes the writer and cleans up."""
+    def _cleanup_writer(self) -> str | None:
+        """Close the writer, returning any close or marker cleanup failure."""
+        close_error = None
         # Set flag first to stop data flow
         self._has_started_writing = False
         recording_flag = self.recording_flag
@@ -206,20 +283,26 @@ class ServiceMcapRecorder(Node):
             try:
                 self.writer.close()
             except Exception as e:
-                self.get_logger().warning(
-                    f"Failed to close rosbag writer: {e}"
-                )
+                close_error = f"Failed to close rosbag writer: {e}"
+                self.get_logger().error(close_error)
             del self.writer
             self.writer = None
 
-        if recording_flag and os.path.exists(recording_flag):
+        if recording_flag:
             try:
                 os.remove(recording_flag)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as exc:
+                marker_error = f"Failed to remove recording marker: {exc}"
+                close_error = (
+                    f"{close_error}; {marker_error}"
+                    if close_error
+                    else marker_error
+                )
 
         self.get_logger().info("Recorded {} message".format(self._cnt))
-        if self.duration == 0:
+        if self._cnt == 0:
             msg = (
                 "Empty MCAP file detected. Currently wait for topics: "
                 f"{session_wait_topics}\n"
@@ -234,7 +317,7 @@ class ServiceMcapRecorder(Node):
                 "2. Check topic spec compatibility: ros2 topic info\n"
             )
             self.get_logger().warning(msg)
-        else:
+        elif self.duration > 0:
             duration = self.duration * 1e-9
             for topic, msg_cnt in self._msg_cnt.items():
                 self.get_logger().info(
@@ -246,8 +329,8 @@ class ServiceMcapRecorder(Node):
                 )
 
         self.recording_flag = None
-        self.uri = None
-        self._session_wait_topics = set()
+        self._wait_started_at = None
+        return close_error
 
     @functools.lru_cache(maxsize=512)  # noqa: B019
     def log_once(self, msg: str, level: str = "info"):
@@ -332,10 +415,12 @@ class ServiceMcapRecorder(Node):
             try:
                 self.writer.write(dst_topic, serialize_message(msg), timestamp)
             except Exception as e:
-                # This might happen if writer is deleted while writing
-                self.get_logger().error(f"Get error while writing: {e}")
+                self._fail_recording(f"Write failed for {src_topic}: {e}")
+                return
 
             self._cnt += 1
+            if self._recording_state == RecorderStatus.WAITING:
+                self._set_recording_state(RecorderStatus.RECORDING)
 
             if dst_topic in self._frame_rate_monitors:
                 self._frame_rate_monitors[dst_topic]["monitor"].update(
@@ -410,9 +495,12 @@ class ServiceMcapRecorder(Node):
             try:
                 self.writer.write(dst_topic, serialized_msg, timestamp)
             except Exception as e:
-                self.get_logger().error(f"Get error while writing: {e}")
+                self._fail_recording(f"Write failed for {src_topic}: {e}")
+                return
 
             self._cnt += 1
+            if self._recording_state == RecorderStatus.WAITING:
+                self._set_recording_state(RecorderStatus.RECORDING)
 
             if dst_topic in self._frame_rate_monitors:
                 self._frame_rate_monitors[dst_topic]["monitor"].update(
@@ -443,14 +531,10 @@ class ServiceMcapRecorder(Node):
         if not self._has_started_writing:
             self.get_logger().info("Beginning writing...")
 
-            if self.recording_flag:
-                with open(self.recording_flag, "w"):
-                    pass
-
             self._flush_latched_msgs()
-            self._has_started_writing = True
+            self._has_started_writing = self.is_recording
 
-        return True
+        return self.is_recording
 
     def _message_callback(
         self, msg, src_topic: str, dst_topic: str, spec: TopicSpec
@@ -531,6 +615,8 @@ class ServiceMcapRecorder(Node):
                 return None
 
         for topic, msg_types in self.get_topic_names_and_types():
+            if topic == self._status_publisher.topic_name:
+                continue
             if topic in self._insepct_topics:
                 continue
             self._insepct_topics.add(topic)
@@ -597,7 +683,12 @@ class ServiceMcapRecorder(Node):
 
             # If recording is active, register topic to the current writer
             if self.writer is not None:
-                self.writer.create_topic(meta)
+                try:
+                    self.writer.create_topic(meta)
+                except Exception as exc:
+                    self._fail_recording(
+                        f"Failed to register topic {topic}: {exc}"
+                    )
 
             if spec.frame_rate_monitor:
                 self._frame_rate_monitors[dst_topic] = {
@@ -618,6 +709,18 @@ class ServiceMcapRecorder(Node):
 
     def _monitor(self):
         if not self.is_recording:
+            return
+
+        if (
+            self._recording_state == RecorderStatus.WAITING
+            and self._wait_started_at is not None
+            and time.monotonic() - self._wait_started_at
+            >= self.config.wait_for_topics_timeout_s
+        ):
+            self._fail_recording(
+                "Timed out waiting for data; missing topics: "
+                f"{sorted(self._session_wait_topics)}"
+            )
             return
 
         if self._session_wait_topics:

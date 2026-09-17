@@ -15,8 +15,11 @@
 # permissions and limitations under the License.
 
 import os
+import stat
+from contextlib import suppress
 from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
 import pydantic
 
@@ -70,10 +73,6 @@ class NotReadyError(Exception):
     pass
 
 
-class NotRecordingError(Exception):
-    pass
-
-
 class EpisodeMeta(pydantic.BaseModel):
     user_name: str = ""
     task_name: str = ""
@@ -118,6 +117,24 @@ class CollectingState(pydantic.BaseModel):
     )
 
     is_recording: bool = False
+    recording_start_pending: bool = False
+    """A local Start request is awaiting its matching Recorder status."""
+
+    recording_session_id: str | None = None
+    """The session observed at this App's unique recording destination."""
+
+    _counted_episodes: dict[str, EpisodeCounter] = pydantic.PrivateAttr(
+        default_factory=dict
+    )
+    _pending_episode: tuple[str, EpisodeMeta, EpisodeCounter] | None = (
+        pydantic.PrivateAttr(default=None)
+    )
+    _last_recording_timestamp: str = pydantic.PrivateAttr(default="")
+
+    @property
+    def recording_controls_locked(self) -> bool:
+        """Protect recording controls without inferring node runtime state."""
+        return self.recording_start_pending or self.is_recording
 
     @property
     def user_name(self) -> str:
@@ -143,11 +160,13 @@ class CollectingState(pydantic.BaseModel):
     def is_configured(self) -> bool:
         return self.user_name and self.task_name
 
-    def prepare(self, workspace: str):
+    def prepare(self, workspace: str) -> None:
         if not self.is_configured:
             raise NotReadyError
 
-        session_root = os.path.join(workspace, self.session_time_str)
+        session_root = os.path.abspath(
+            os.path.join(workspace, self.session_time_str)
+        )
         self.data_root = os.path.join(
             session_root, "data", self.user_name, self.task_name
         )
@@ -158,36 +177,95 @@ class CollectingState(pydantic.BaseModel):
         os.makedirs(self.log_root, exist_ok=True)
 
     def prepare_recording_path(self) -> str:
+        """Allocate a legacy timestamp-only episode name without reuse.
+
+        Raises:
+            NotReadyError: The user and task have not been configured.
+            FileExistsError: The timestamp has not advanced or either path
+                already exists. No paths are changed on rejection.
+        """
         if not self.is_configured:
             raise NotReadyError
 
         time_str = time_str_now()
+        episode_name = f"episode_{time_str}"
+        data_uri = os.path.join(self.data_root, episode_name)
+        log_uri = os.path.join(self.log_root, episode_name)
+        if (
+            time_str <= self._last_recording_timestamp
+            or os.path.lexists(data_uri)
+            or os.path.lexists(log_uri)
+        ):
+            raise FileExistsError(
+                "Episode timestamp is already used; wait for the next "
+                "second before starting another recording."
+            )
 
-        self.current_data_uri = os.path.join(
-            self.data_root, f"episode_{time_str}"
-        )
-        self.current_log_uri = os.path.join(
-            self.log_root, f"episode_{time_str}"
-        )
+        self._last_recording_timestamp = time_str
+        self.current_data_uri = data_uri
+        self.current_log_uri = log_uri
 
         return self.current_data_uri
 
-    def at_start_recording(self):
-        self.is_recording = True
+    def at_stop_recording(self) -> None:
+        """Finalize an explicit Stop after Recorder confirms completion.
 
-    def at_stop_recording(self):
-        if not self.is_recording:
-            raise NotRecordingError
+        Recorder status owns is_recording; heartbeats do not finalize episodes.
+        Metadata is replaced atomically before counting. I/O failures propagate
+        without marking the episode finalized. Retries retain the first
+        attempt's metadata and counter, independently of later UI edits.
+        New files honor the process umask; existing file modes are preserved.
+        """
+        if self.current_data_uri in self._counted_episodes:
+            return
+        if self._pending_episode is None:
+            self._pending_episode = (
+                self.current_data_uri,
+                self.episode_meta.model_copy(deep=True),
+                self.episode_counter,
+            )
+        data_uri, episode_meta, counter = self._pending_episode
 
-        self.is_recording = False
+        metadata_path = os.path.join(data_uri, "episode_meta.json")
+        temporary_path = os.path.join(
+            data_uri, f".episode_meta.{uuid4().hex}.tmp"
+        )
+        try:
+            metadata_stat = os.stat(metadata_path, follow_symlinks=False)
+        except FileNotFoundError:
+            metadata_stat = None
 
-        self.episode_counter.add()
+        metadata_file = open(temporary_path, "x", encoding="utf-8")
+        try:
+            with metadata_file:
+                if metadata_stat and stat.S_ISREG(metadata_stat.st_mode):
+                    os.chmod(
+                        temporary_path, stat.S_IMODE(metadata_stat.st_mode)
+                    )
+                metadata_file.write(episode_meta.model_dump_json(indent=4))
+            os.replace(temporary_path, metadata_path)
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary_path)
 
-        if os.path.exists(self.current_data_uri):
-            with open(
-                os.path.join(self.current_data_uri, "episode_meta.json"), "w"
-            ) as fh:
-                fh.write(self.episode_meta.model_dump_json(indent=4))
+        counter.add()
+        self._counted_episodes[data_uri] = counter
+        self._pending_episode = None
+
+    def at_delete_recording(self, uri: str) -> None:
+        """Remove a deleted absolute URI from the counter that counted it.
+
+        Recordings not finalized by this App do not affect its counters.
+        Call only after successful deletion; repeated calls are idempotent.
+        Deleting the current episode abandons ownership and pending metadata.
+        """
+        if uri == self.current_data_uri:
+            self.recording_session_id = None
+        if self._pending_episode and self._pending_episode[0] == uri:
+            self._pending_episode = None
+        counter = self._counted_episodes.pop(uri, None)
+        if counter is not None:
+            counter.sub()
 
 
 class LogMessage(pydantic.BaseModel):

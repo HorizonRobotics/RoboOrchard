@@ -37,7 +37,7 @@ class MetaRow:
 
 
 _TF_DIRECTORY_LOCK_MESSAGE = (
-    "TF directory selection is locked while recording."
+    "TF directory selection is locked while recording or awaiting Start."
 )
 
 
@@ -217,7 +217,7 @@ class EditEpisodeMetaComponent(ComponentBase):
         with cols[0]:
             st.write("TF Directory")
         with cols[1]:
-            if self.collecting_state.is_recording:
+            if self.collecting_state.recording_controls_locked:
                 if current:
                     st.write(
                         f"{_TF_DIRECTORY_LOCK_MESSAGE} Current: {current}"

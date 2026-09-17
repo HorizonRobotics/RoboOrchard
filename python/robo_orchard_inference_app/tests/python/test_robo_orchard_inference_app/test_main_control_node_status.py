@@ -18,6 +18,9 @@
 
 import sys
 import types
+from contextlib import contextmanager
+
+import pytest
 
 
 def _install_stub_modules():
@@ -257,7 +260,7 @@ def test_component_initialization_starts_inference_status_monitor(monkeypatch):
     assert calls == ["start_monitor"]
 
 
-def test_only_state_panel_is_scheduled_for_periodic_refresh(monkeypatch):
+def test_both_status_panels_are_scheduled_for_periodic_refresh(monkeypatch):
     import robo_orchard_inference_app.components.main_control as control
 
     component = object.__new__(MainControlComponent)
@@ -289,45 +292,129 @@ def test_only_state_panel_is_scheduled_for_periodic_refresh(monkeypatch):
     component()
 
     assert calls == panels
-    assert fragments == [(1.0, component._render_state_panel)]
+    assert fragments == [
+        (1.0, component._render_state_panel),
+        (1.0, component._render_recorder_panel),
+    ]
 
 
-def test_state_panel_projects_status_before_rendering(monkeypatch):
+@pytest.mark.parametrize(
+    "status, color",
+    [
+        ("idle", "grey"),
+        ("waiting", "orange"),
+        ("recording", "red"),
+        ("finalizing", "orange"),
+        ("completed", "green"),
+        ("failed", "red"),
+        (None, "grey"),
+    ],
+)
+@pytest.mark.parametrize("pending", [None, "start", "stop"])
+def test_state_panel_projects_status_before_rendering(
+    monkeypatch, status, color, pending
+):
     import robo_orchard_inference_app.components.main_control as control
 
     component = object.__new__(MainControlComponent)
     state = types.SimpleNamespace(
         control_mode="takeover", is_inference_service_running=True
     )
+    collecting_state = types.SimpleNamespace(
+        inference_state=state, recording_start_pending=pending == "start"
+    )
+    component._pending_stop_session_id = (
+        "owned-session" if pending == "stop" else None
+    )
     monkeypatch.setattr(
         MainControlComponent,
         "collecting_state",
-        property(lambda self: types.SimpleNamespace(inference_state=state)),
+        property(lambda self: collecting_state),
     )
 
     def refresh():
         state.is_inference_service_running = None
 
-    component.ros_helper = types.SimpleNamespace(refresh_runtime_state=refresh)
-    indicators = []
-    monkeypatch.setattr(
-        control.st, "expander", lambda *args, **kwargs: _Expander()
+    snapshot = (
+        None
+        if status is None
+        else {
+            "data": status,
+            "destination": "/episode",
+            "waiting_topics": ["/camera"],
+            "failure_reason": "disk full",
+        }
     )
+    component.ros_helper = types.SimpleNamespace(
+        refresh_runtime_state=refresh,
+        status_snapshot=lambda key: snapshot,
+    )
+    indicators, rendered, captions, errors, panels = [], [], [], [], []
+    current_column = [None]
+
+    @contextmanager
+    def column(index):
+        current_column[0] = index
+        yield
+        current_column[0] = None
+
+    def columns(count):
+        assert count == 3
+        return [column(index) for index in range(count)]
+
+    def expander(label, **kwargs):
+        panels.append(label)
+        return _Expander()
+
+    def indicator(**kwargs):
+        rendered.append((current_column[0], "indicator"))
+        indicators.append(kwargs)
+
+    monkeypatch.setattr(control.st, "expander", expander, raising=False)
+    monkeypatch.setattr(control.st, "columns", columns, raising=False)
+    monkeypatch.setattr(control.st, "caption", captions.append, raising=False)
+    monkeypatch.setattr(control.st, "error", errors.append, raising=False)
     monkeypatch.setattr(
         control.st,
-        "columns",
-        lambda *args, **kwargs: [_Expander(), _Expander()],
+        "markdown",
+        lambda title: rendered.append((current_column[0], title)),
         raising=False,
     )
     monkeypatch.setattr(
         control,
         "multi_status_indicator",
-        lambda **kwargs: indicators.append(kwargs),
+        indicator,
     )
 
     component._render_state_panel()
 
+    assert panels == ["ℹ️ Current State"]
+    assert rendered == [
+        (0, "**Control**"),
+        (0, "indicator"),
+        (1, "**Recording**"),
+        (1, "indicator"),
+        (2, "**Inference**"),
+        (2, "indicator"),
+    ]
     assert indicators[0]["current_status"] == "takeover"
-    assert indicators[1]["current_status"] is None
-    assert indicators[1]["status_config"][True].text == "Enabled"
-    assert indicators[1]["status_config"][False].text == "Disabled"
+    assert indicators[1]["current_status"] == status
+    if status is not None:
+        assert indicators[1]["status_config"][status].text == (
+            status.capitalize()
+        )
+        assert indicators[1]["status_config"][status].color == color
+    else:
+        assert None not in indicators[1]["status_config"]
+    assert indicators[2]["current_status"] is None
+    assert indicators[2]["status_config"][True].text == "Enabled"
+    assert indicators[2]["status_config"][False].text == "Disabled"
+    assert ("/episode" in captions) is (status is not None)
+    assert ("Waiting for: /camera" in captions) is (status == "waiting")
+    assert ("Start requested; waiting for Recorder status." in captions) is (
+        pending == "start"
+    )
+    assert (
+        "Waiting for Recorder completion or metadata settlement." in captions
+    ) is (pending == "stop")
+    assert errors == (["disk full"] if status == "failed" else [])

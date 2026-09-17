@@ -60,7 +60,7 @@ class SideBarComponent(ComponentBase):
             with st.spinner("Deleting"):
                 remove_path(uri)
             self._delete_flags[uri] = True
-            self.collecting_state.episode_counter.sub()
+            self.collecting_state.at_delete_recording(uri)
             self._selected_uri = None  # reset selected state
         except FileNotFoundError:
             self.logger.error(f"Cannot found recording uri: {uri}")

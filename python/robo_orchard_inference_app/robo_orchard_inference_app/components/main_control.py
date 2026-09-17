@@ -14,10 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import os
 from dataclasses import dataclass, field
 
-import polling2
 import streamlit as st
 
 from robo_orchard_inference_app.components.edit_episode_meta import (
@@ -60,6 +58,8 @@ class MainControlComponent(ComponentBase):
             logger=self.logger,
         )
         self.ros_helper.start_status_monitor()
+        self._pending_stop_session_id: str | None = None
+        self._pending_stop_completed: bool = False
         self._known_tf_publisher_startup_id: str | None = None
 
     def _is_tf_publisher_online(self) -> bool:
@@ -84,11 +84,14 @@ class MainControlComponent(ComponentBase):
             return
 
         self.ros_helper.refresh_runtime_state()
+        snapshot = self.ros_helper.status_snapshot("recorder")
+        status = (snapshot or {}).get("data")
         with st.expander("ℹ️ Current State", expanded=False):
-            control_mode_col, inference_service_col = st.columns([1, 1])
+            control_col, recorder_col, inference_col = st.columns(3)
             state = self.collecting_state.inference_state
 
-            with control_mode_col:
+            with control_col:
+                st.markdown("**Control**")
                 multi_status_indicator(
                     current_status=state.control_mode,
                     status_config=dict(
@@ -97,7 +100,26 @@ class MainControlComponent(ComponentBase):
                         stop=StatusConfig(text="Stop", color="grey"),
                     ),
                 )
-            with inference_service_col:
+            with recorder_col:
+                st.markdown("**Recording**")
+                multi_status_indicator(
+                    current_status=status,
+                    status_config={
+                        value: StatusConfig(
+                            text=value.capitalize(), color=color
+                        )
+                        for value, color in (
+                            ("idle", "grey"),
+                            ("waiting", "orange"),
+                            ("recording", "red"),
+                            ("finalizing", "orange"),
+                            ("completed", "green"),
+                            ("failed", "red"),
+                        )
+                    },
+                )
+            with inference_col:
+                st.markdown("**Inference**")
                 multi_status_indicator(
                     current_status=state.is_inference_service_running,
                     status_config={
@@ -105,6 +127,24 @@ class MainControlComponent(ComponentBase):
                         False: StatusConfig(text="Disabled", color="grey"),
                     },
                 )
+            if self.collecting_state.recording_start_pending:
+                st.caption("Start requested; waiting for Recorder status.")
+            if self._pending_stop_session_id:
+                st.caption(
+                    "Waiting for Recorder completion or metadata settlement."
+                )
+            if snapshot:
+                if snapshot.get("destination"):
+                    st.caption(snapshot["destination"])
+                if status == "failed":
+                    st.error(
+                        snapshot.get("failure_reason") or "Recording failed"
+                    )
+                elif status == "waiting":
+                    st.caption(
+                        "Waiting for: "
+                        + ", ".join(snapshot.get("waiting_topics", []))
+                    )
 
     # --- Render Configure Panel ---
     def _render_configure_panel(self):
@@ -116,12 +156,16 @@ class MainControlComponent(ComponentBase):
         )
 
     # --- Data Recording Panel ---
-    def _render_recorder_panel(self):
+    def _render_recorder_panel(self) -> None:
         """Renders the data recording controls."""
-        if not self.collecting_state.is_configured:
-            return
+        snapshot = self.ros_helper.status_snapshot("recorder")
+        self._finalize_stopped_episode(snapshot)
+        status = (snapshot or {}).get("data")
+        if self._update_recorder_state(snapshot):
+            st.rerun()
 
-        self.collecting_state.prepare(self.launch_cfg.workspace)
+        if self.collecting_state.is_configured:
+            self.collecting_state.prepare(self.launch_cfg.workspace)
 
         def _get_start_btn_help() -> str | None:
             if self.launch_cfg.ui_control.start_keyboard is not None:
@@ -145,21 +189,25 @@ class MainControlComponent(ComponentBase):
             start_col, stop_col = st.columns(2)
 
             with start_col:
-                if st.button(
+                st.button(
                     "▶️ Start",
-                    disabled=self.collecting_state.is_recording,
+                    disabled=(
+                        not self.collecting_state.is_configured
+                        or self.collecting_state.recording_start_pending
+                        or self._pending_stop_session_id is not None
+                        or status not in {"idle", "completed", "failed"}
+                    ),
                     key=f"{self.key_prefix}_start_record_btn",
                     on_click=self._start_recording_callback,
                     use_container_width=True,
                     help=_get_start_btn_help(),
                     shortcut=self.launch_cfg.ui_control.start_keyboard,
-                ):
-                    self._handle_start_recording_event()
+                )
 
             with stop_col:
                 st.button(
                     "⏹️ Stop",
-                    disabled=not self.collecting_state.is_recording,
+                    disabled=status not in {"waiting", "recording"},
                     key=f"{self.key_prefix}_stop_record_btn",
                     on_click=self._stop_recording_callback,
                     use_container_width=True,
@@ -167,75 +215,172 @@ class MainControlComponent(ComponentBase):
                     shortcut=self.launch_cfg.ui_control.stop_keyboard,
                 )
 
-    def _start_recording_callback(self):
-        if self.collecting_state.is_recording:
+    def _update_recorder_state(self, snapshot: dict | None) -> bool:
+        """Update node state and the Start guard; report state changes."""
+        if snapshot is None:
+            return False
+        state = self.collecting_state
+        previous = (state.is_recording, state.recording_start_pending)
+        status = snapshot.get("data")
+        state.is_recording = status in {"waiting", "recording", "finalizing"}
+        if (
+            state.recording_start_pending
+            and snapshot.get("destination") == state.current_data_uri
+            and snapshot.get("session_id")
+            and status
+            in {
+                "idle",
+                "waiting",
+                "recording",
+                "finalizing",
+                "completed",
+                "failed",
+            }
+        ):
+            state.recording_session_id = snapshot["session_id"]
+            state.recording_start_pending = False
+        return previous != (state.is_recording, state.recording_start_pending)
+
+    def _start_recording_callback(self) -> None:
+        if self.collecting_state.recording_start_pending:
+            self.logger.warning("Recorder Start is still awaiting status.")
+            return
+        snapshot = self.ros_helper.status_snapshot("recorder")
+        if not self._finalize_stopped_episode(snapshot):
+            self.logger.warning("Previous Recorder Stop is still unsettled.")
+            return
+        if snapshot is None or snapshot.get("data") not in {
+            "idle",
+            "completed",
+            "failed",
+        }:
+            self.logger.error("Recorder is busy or its state is unknown.")
+            return
+
+        previous_uri = self.collecting_state.current_data_uri
+        previous_log_uri = self.collecting_state.current_log_uri
+        previous_session_id = self.collecting_state.recording_session_id
+        try:
+            data_uri = self.collecting_state.prepare_recording_path()
+        except FileExistsError as error:
+            self.logger.warning(str(error))
+            return
+        self.collecting_state.recording_session_id = None
+        self.collecting_state.recording_start_pending = True
+        try:
+            confirmed = self.ros_helper.start_recording(uri=data_uri)
+        except Exception as error:
+            self.logger.error(f"Recorder Start outcome is unknown: {error}")
+            confirmed = None
+        if confirmed is False:
+            self.collecting_state.recording_start_pending = False
+            self.collecting_state.current_data_uri = previous_uri
+            self.collecting_state.current_log_uri = previous_log_uri
+            self.collecting_state.recording_session_id = previous_session_id
+            self.logger.error("Recorder Start was rejected or not sent.")
+            return
+        self._update_recorder_state(
+            self.ros_helper.status_snapshot("recorder")
+        )
+        if confirmed is True:
+            self.logger.info(f"Recording session initialized: {data_uri}")
+        elif self.collecting_state.recording_start_pending:
             self.logger.error(
-                "An episode is recorded, please decide to save or not first!"  # noqa: E501
+                "Recorder Start outcome is unknown; waiting for node status."
+            )
+
+    def _stop_recording_callback(self) -> None:
+        """Request Stop; only finalize an episode owned by this App."""
+        snapshot = self.ros_helper.status_snapshot("recorder") or {}
+        if snapshot.get("data") not in {"waiting", "recording"}:
+            self.logger.error(
+                "Recorder is not stoppable or its state is unknown."
             )
             return
 
-        data_uri = self.collecting_state.prepare_recording_path()
-
-        if self.ros_helper.start_recording(uri=data_uri):
-            self.logger.info(f"Starting recording for episode: {data_uri}")
-            self.collecting_state.at_start_recording()
+        self._update_recorder_state(snapshot)
+        session = None
+        already_pending = self._pending_stop_session_id is not None
+        if (
+            snapshot.get("destination")
+            == self.collecting_state.current_data_uri
+            and self.collecting_state.recording_session_id
+            and snapshot.get("session_id")
+            == self.collecting_state.recording_session_id
+        ):
+            session = (
+                self.collecting_state.recording_session_id,
+                self.collecting_state.current_data_uri,
+            )
+            if not already_pending:
+                self._pending_stop_session_id = session[0]
+                self._pending_stop_completed = False
+        try:
+            success = self.ros_helper.stop_recording(session=session)
+        except Exception as error:
+            self.logger.error(f"Recorder Stop outcome is unknown: {error}")
+            success = None
+        if success is False:
+            if not already_pending:
+                self._pending_stop_session_id = None
+            self.logger.error(
+                "Stop recording failed! Please check Recorder status."
+            )
+        elif success is True:
+            self.logger.info("Recorder Stop accepted; awaiting node status.")
         else:
             self.logger.error(
-                "Failed to start recording! Please check the log panel."
+                "Recorder Stop outcome is unknown; waiting for node status."
             )
 
-    def _handle_start_recording_event(self):
-        """Handles the logic for starting a recording session."""
+    def _finalize_stopped_episode(self, snapshot: dict | None) -> bool:
+        """Settle an explicit Stop; return whether nothing remains pending.
 
-        if not self.collecting_state.is_recording:
-            return
+        Remember confirmed completion until metadata is saved, even if the
+        latest node snapshot disappears or moves to another session.
+        """
+        if not self._pending_stop_session_id:
+            return True
+        if (
+            self._pending_stop_session_id
+            != self.collecting_state.recording_session_id
+        ):
+            self._pending_stop_session_id = None
+            self._pending_stop_completed = False
+            return True
+        if not self._pending_stop_completed:
+            result = self.ros_helper.recorder_stop_result(
+                self._pending_stop_session_id,
+                self.collecting_state.current_data_uri,
+            )
+            if result is not None:
+                snapshot = result
+            if snapshot is None:
+                return False
+            if snapshot.get("session_id") != self._pending_stop_session_id:
+                return False
+            status = snapshot.get("data")
+            if status not in {"completed", "idle", "failed"}:
+                return False
+            if (
+                status != "completed"
+                or snapshot.get("destination")
+                != self.collecting_state.current_data_uri
+            ):
+                self._pending_stop_session_id = None
+                return True
+            self._pending_stop_completed = True
 
-        with st.spinner("Waiting...", show_time=True):
-            try:
-                # Poll for the __RECORDING__ flag file
-                recording_flag = os.path.join(
-                    self.collecting_state.current_data_uri, "__RECORDING__"
-                )
-                polling2.poll(
-                    lambda: os.path.exists(recording_flag),
-                    timeout=10.0,
-                    step=0.1,
-                )
-                self.logger.info(
-                    "Recording started to: "
-                    f"{self.collecting_state.current_data_uri}"
-                )
-            except polling2.TimeoutException:
-                self.logger.error(
-                    "Failed to start recorder because of timeout"
-                )  # noqa: E501
-            except Exception as e:
-                self.logger.error(
-                    "Get unexpected error when handle start "
-                    f"recording event: {e}"
-                )
-            finally:
-                st.rerun()
-
-    def _stop_recording_callback(self):
-        """Handles the logic for stopping a recording session."""
-        if not self.collecting_state.is_recording:
-            self.logger.error("Please start recording first!")
-            return
-
-        if self.ros_helper.stop_recording():
+        try:
             self.collecting_state.at_stop_recording()
-            self.logger.info(
-                "Episode {} saved to: {}".format(
-                    self.collecting_state.episode_counter.current(),
-                    self.collecting_state.current_data_uri,
-                )
-            )
-
-        else:
+        except OSError as error:
             self.logger.error(
-                "Stop recording failed! Please check the log panel."
+                f"Episode metadata settlement failed; will retry: {error}"
             )
+            return False
+        self._pending_stop_session_id = None
+        self._pending_stop_completed = False
+        return True
 
     # --- Robot Control Panel ---
     def _render_robot_control_panel(self):
@@ -296,12 +441,17 @@ class MainControlComponent(ComponentBase):
 
     def _is_reset_disabled(self) -> bool:
         state = self.collecting_state.inference_state
-        return self.collecting_state.is_recording or (
+        return self.collecting_state.recording_controls_locked or (
             state.control_mode in {"takeover", "stop"}
         )
 
     def reset_arm_ctrl_callback(self):
         """Resets the robot arm controllers."""
+        if self._is_reset_disabled():
+            self.logger.warning(
+                "Reset is blocked by recording or the current control mode."
+            )
+            return
         # Disabling inference gates the reset only when an inference node
         # is running; with none launched nothing can contend with the
         # reset, so skip the gate instead of blocking on a missing service.
@@ -341,6 +491,6 @@ class MainControlComponent(ComponentBase):
         """Renders the entire main control UI."""
         st.fragment(run_every=1.0)(self._render_state_panel)()
         self._render_configure_panel()
-        self._render_recorder_panel()
+        st.fragment(run_every=1.0)(self._render_recorder_panel)()
         self._render_robot_control_panel()
         self._render_handeye_calib_panel()

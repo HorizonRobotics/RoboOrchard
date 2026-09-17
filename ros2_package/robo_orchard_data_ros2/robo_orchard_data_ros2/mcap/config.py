@@ -139,6 +139,9 @@ class RecordConfig(BaseModel):
                 wait_for_topics = {"/camera/image_raw", "/lidar/points"}
                 # The recording will start only after both the camera and lidar topics
                 # have been subscribed to.
+        wait_for_topics_timeout_s (float): Positive, finite timeout in seconds
+            from session initialization until the first successful write.
+            Uses a monotonic clock and defaults to 10 seconds.
         static_topics (List[str]): A list of topic names identified as static topics
                 (e.g., topics with `Transient Local` durability like `/tf_static`).
                 Defaults to an empty list. These topics are typically recorded with special
@@ -162,5 +165,8 @@ class RecordConfig(BaseModel):
     no_discovery: bool = False
     max_cache_size: int = 256 * 1024 * 1024  # 256mb
     wait_for_topics: Set[str] = Field(default_factory=lambda: set())
+    wait_for_topics_timeout_s: float = Field(
+        default=10.0, gt=0.0, allow_inf_nan=False
+    )
     static_topics: List[str] = Field(default_factory=lambda: [])
     max_timestamp_difference_ns: int | None = None
