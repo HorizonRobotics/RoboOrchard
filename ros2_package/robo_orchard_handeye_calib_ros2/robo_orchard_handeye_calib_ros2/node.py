@@ -16,6 +16,8 @@
 
 import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -95,6 +97,12 @@ class CalibrationNode(Node):
             callback=self._save_data_service_callback,
             callback_group=self.data_cb,
         )
+        self.create_service(
+            srv_type=Trigger,
+            srv_name="reset_data",
+            callback=self._reset_data_service_callback,
+            callback_group=self.data_cb,
+        )
         self.get_logger().info("Hand-eye calibration node initialized.")
 
     def _obs_callback(self, aruco_msg: PoseStamped, ee_msg: PoseStamped):
@@ -153,17 +161,33 @@ class CalibrationNode(Node):
             )
             return response
 
-    def _save_data_service_callback(self, request, response):
+    def _clear_data(self) -> None:
+        """Discard collected samples and the current observation pair."""
+        self.aruco_poses_list.clear()
+        self.ee_poses_list.clear()
+        self.record_data_cnt = 0
+        self.cur_aruco_pose = None
+        self.cur_ee_pose = None
+
+    def _reset_data_service_callback(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        """Clear samples without removing saved results or published TF."""
+        self._clear_data()
+        response.success = True
+        response.message = "Calibration samples cleared."
+        return response
+
+    def _save_data_service_callback(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
         if len(self.aruco_poses_list) < 3 or len(self.ee_poses_list) < 3:
             response.success = False
             response.message = (
                 "Not enough data, please record at least 3 poses."
             )
             return response
-        self.get_logger().info(
-            f"Recording finished, result will be saved to"
-            f" {self.config.result_file}"
-        )
+        self.get_logger().info("Computing calibration result.")
         parent_frame = None
         child_frame = None
         try:
@@ -193,27 +217,49 @@ class CalibrationNode(Node):
             response.success = False
             response.message = f"Calibration failed: {e}"
             return response
-        with open(self.config.result_file, "w") as f:
-            json.dump(
-                {
-                    "parent_frame": parent_frame,
-                    "child_frame": child_frame,
-                    "result": {
-                        "position": res_position,
-                        "orientation": res_orientation,
+        result_file = self.config.result_file
+        try:
+            if self.config.output_root is not None:
+                output_root = Path(self.config.output_root)
+                output_root.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now(timezone.utc).strftime(
+                    "%Y%m%dT%H%M%S.%fZ"
+                )
+                result_dir = output_root / timestamp
+                result_file = str(result_dir / "result.json")
+                result_dir.mkdir()
+            with open(result_file, "x") as result_stream:
+                json.dump(
+                    {
+                        "parent_frame": parent_frame,
+                        "child_frame": child_frame,
+                        "result": {
+                            "position": res_position,
+                            "orientation": res_orientation,
+                        },
                     },
-                },
-                f,
-                indent=4,
-            )
-        # publish to ros2 tf_tree
-        self._publish_tf(
-            res_position, res_orientation, parent_frame, child_frame
-        )
+                    result_stream,
+                    indent=4,
+                )
+        except OSError as error:
+            response.success = False
+            response.message = f"Failed to save calibration result: {error}"
+            return response
+        if self.config.publish_tf:
+            try:
+                self._publish_tf(
+                    res_position, res_orientation, parent_frame, child_frame
+                )
+            except Exception as error:
+                response.success = False
+                response.message = (
+                    f"Calibration result saved in {result_file}, but TF "
+                    f"publication failed: {error}. Samples retained."
+                )
+                return response
+        self._clear_data()
         response.success = True
-        response.message = (
-            f"Calibration result saved in {self.config.result_file}."
-        )
+        response.message = f"Calibration result saved in {result_file}."
         return response
 
     def _publish_tf(

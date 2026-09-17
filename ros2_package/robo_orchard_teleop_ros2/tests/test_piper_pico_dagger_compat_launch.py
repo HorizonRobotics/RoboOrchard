@@ -138,7 +138,7 @@ def test_setup_registers_vr_orchestrator_console_script():
     ) in SETUP_PATH.read_text()
 
 
-def test_launch_declares_arguments_and_eight_nodes():
+def test_launch_declares_arguments_and_eight_nodes() -> None:
     module = _load_module()
 
     description = module.generate_launch_description()
@@ -150,6 +150,11 @@ def test_launch_declares_arguments_and_eight_nodes():
         "right_algo_topic",
         "left_slave_can_port",
         "right_slave_can_port",
+        "left_base_frame_id",
+        "left_ee_frame_id",
+        "right_base_frame_id",
+        "right_ee_frame_id",
+        "publish_ee_tf",
         "enable_mit_control_mode",
         "replay_time_s",
         "urdf_path",

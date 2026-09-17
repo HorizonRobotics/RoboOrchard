@@ -48,6 +48,31 @@ def generate_launch_description():
         default_value="can_right",
         description="CAN port for the right arm.",
     )
+    left_base_frame_id_arg = DeclareLaunchArgument(
+        "left_base_frame_id",
+        default_value="left_base_link",
+        description="Base frame of the left follower arm.",
+    )
+    left_ee_frame_id_arg = DeclareLaunchArgument(
+        "left_ee_frame_id",
+        default_value="left_end_effector",
+        description="End-effector frame of the left follower arm.",
+    )
+    right_base_frame_id_arg = DeclareLaunchArgument(
+        "right_base_frame_id",
+        default_value="right_base_link",
+        description="Base frame of the right follower arm.",
+    )
+    right_ee_frame_id_arg = DeclareLaunchArgument(
+        "right_ee_frame_id",
+        default_value="right_end_effector",
+        description="End-effector frame of the right follower arm.",
+    )
+    publish_ee_tf_arg = DeclareLaunchArgument(
+        "publish_ee_tf",
+        default_value="true",
+        description="Publish dynamic end-effector TF for follower arms.",
+    )
     enable_mit_control_mode_arg = DeclareLaunchArgument(
         "enable_mit_control_mode",
         default_value="true",
@@ -85,6 +110,15 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("left_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("left_base_frame_id"), value_type=str
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("left_ee_frame_id"), value_type=str
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_ee_tf"), value_type=bool
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -117,6 +151,15 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("right_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("right_base_frame_id"), value_type=str
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("right_ee_frame_id"), value_type=str
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_ee_tf"), value_type=bool
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -144,6 +187,11 @@ def generate_launch_description():
             # Add the declared arguments
             left_can_port_arg,
             right_can_port_arg,
+            left_base_frame_id_arg,
+            left_ee_frame_id_arg,
+            right_base_frame_id_arg,
+            right_ee_frame_id_arg,
+            publish_ee_tf_arg,
             enable_mit_control_mode_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,

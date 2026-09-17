@@ -94,6 +94,25 @@ cores. The core numbers depend on the machine.
 The thread-count variables keep NumPy's BLAS pool from spinning about four
 cores, which drags the 30 Hz control loop down to 20 Hz.
 
+## Piper feedback TF for calibration validation
+
+The `piper_control_compat`, `piper_dagger_compat`, `piper_pico_dagger_compat`,
+and `piper_pico_teleop_compat` launches broadcast follower end-effector TF
+by default: `left_base_link -> left_end_effector` and
+`right_base_link -> right_end_effector`. This supplies the dynamic pose edge
+needed for reprojection validation of hand-eye calibration results.
+
+Override the frames with `left_base_frame_id`, `left_ee_frame_id`,
+`right_base_frame_id`, and `right_ee_frame_id`, or set `publish_ee_tf:=false`
+to keep only pose topics. In the four-arm Dagger launch, master TF is disabled
+by default; the `left_master_*` / `right_master_*` frame arguments and
+`publish_master_ee_tf` configure it separately. Match these frame names to
+the hand-eye calibration configuration. See the
+[Piper package README](../robo_orchard_piper_ros2/README.md) for the complete
+parameter contract. The existing Aloha and Raw Aloha launches still use their
+separate drivers and are unchanged; control routing and reset behavior remain
+with the existing nodes.
+
 ## Engaging teleop
 
 Teleop drives the robot only while the operator engages it. Two input sources

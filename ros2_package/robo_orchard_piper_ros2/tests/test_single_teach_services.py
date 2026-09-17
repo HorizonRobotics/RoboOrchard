@@ -16,6 +16,9 @@
 
 import sys
 import types
+from unittest.mock import Mock
+
+import pytest
 
 
 def _install_stub_modules():
@@ -72,8 +75,25 @@ def _install_stub_modules():
     geometry_msgs = types.ModuleType("geometry_msgs")
     geometry_msgs.msg = types.ModuleType("geometry_msgs.msg")
     geometry_msgs.msg.PoseStamped = type("PoseStamped", (), {})
+
+    class FakeTransformStamped:
+        def __init__(self) -> None:
+            self.header = types.SimpleNamespace(stamp=None, frame_id="")
+            self.child_frame_id = ""
+            self.transform = types.SimpleNamespace(
+                translation=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                rotation=types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=0.0),
+            )
+
+    geometry_msgs.msg.TransformStamped = FakeTransformStamped
     sys.modules["geometry_msgs"] = geometry_msgs
     sys.modules["geometry_msgs.msg"] = geometry_msgs.msg
+
+    tf2_ros = types.ModuleType("tf2_ros")
+    tf2_ros.TransformBroadcaster = lambda node: types.SimpleNamespace(
+        sendTransform=Mock()
+    )
+    sys.modules["tf2_ros"] = tf2_ros
 
     sensor_msgs = types.ModuleType("sensor_msgs")
     sensor_msgs.msg = types.ModuleType("sensor_msgs.msg")
@@ -446,3 +466,127 @@ def test_node_does_not_register_disable_ctrl_service():
     node = PiperSingleControlNode()
 
     assert node._created_services == ["enable_ctrl", "reset_ctrl"]
+
+
+def _override_parameters(
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str | bool]
+) -> None:
+    base_node = PiperSingleControlNode.__mro__[1]
+    original_declare_parameter = base_node.declare_parameter
+
+    def declare_parameter(self, name: str, value: object) -> None:
+        original_declare_parameter(self, name, overrides.get(name, value))
+
+    monkeypatch.setattr(base_node, "declare_parameter", declare_parameter)
+
+
+def test_ee_tf_is_enabled_by_default() -> None:
+    node = PiperSingleControlNode()
+
+    assert node.base_frame_id == "base_link"
+    assert node.ee_frame_id == "end_effector"
+    assert node.publish_ee_tf is True
+    assert node._tf_broadcaster is not None
+
+
+@pytest.mark.parametrize("publish_ee_tf", [True, False])
+@pytest.mark.parametrize("role", ["left", "right", "left_master"])
+def test_ee_pose_and_tf_use_the_same_feedback_and_timestamp(
+    monkeypatch: pytest.MonkeyPatch, publish_ee_tf: bool, role: str
+) -> None:
+    base_frame_id = f"{role}_base_link"
+    ee_frame_id = f"{role}_end_effector"
+    joint_names = [f"{role}_axis{index}" for index in range(7)]
+    _override_parameters(
+        monkeypatch,
+        {
+            "joint_names": joint_names,
+            "base_frame_id": base_frame_id,
+            "ee_frame_id": ee_frame_id,
+            "publish_ee_tf": publish_ee_tf,
+        },
+    )
+    broadcaster_factory = Mock()
+    monkeypatch.setattr(
+        single_module, "TransformBroadcaster", broadcaster_factory
+    )
+    node = PiperSingleControlNode()
+    assert node.joint_names == joint_names
+    node.arm_status_pub = Mock()
+    node.joint_pub = Mock()
+    node.end_pose_pub = Mock()
+    node.get_clock = Mock()
+    arm_status = object()
+    joint_state = types.SimpleNamespace(
+        header=types.SimpleNamespace(stamp=None)
+    )
+    monkeypatch.setattr(
+        single_module, "get_arm_status", Mock(return_value=arm_status)
+    )
+    get_joint_state = Mock(return_value=joint_state)
+    monkeypatch.setattr(single_module, "get_arm_state", get_joint_state)
+    get_ee_pose = Mock()
+    monkeypatch.setattr(single_module, "get_arm_ee_pose", get_ee_pose)
+
+    for sample in range(2):
+        stamp = types.SimpleNamespace(sec=sample + 1, nanosec=100)
+        ee_pose = types.SimpleNamespace(
+            header=types.SimpleNamespace(stamp=None, frame_id=""),
+            pose=types.SimpleNamespace(
+                position=types.SimpleNamespace(x=0.1 + sample, y=-0.2, z=0.3),
+                orientation=types.SimpleNamespace(x=0.5, y=-0.5, z=0.5, w=0.5),
+            ),
+        )
+        get_ee_pose.return_value = ee_pose
+        node.get_clock.return_value.now.return_value.to_msg.side_effect = [
+            stamp,
+            stamp,
+        ]
+
+        node.publish_callback()
+
+        get_joint_state.assert_called_with(node.piper, joint_names)
+        node.arm_status_pub.publish.assert_called_with(arm_status)
+        node.joint_pub.publish.assert_called_with(joint_state)
+        node.end_pose_pub.publish.assert_called_with(ee_pose)
+        assert ee_pose.header.frame_id == base_frame_id
+        assert ee_pose.header.stamp == stamp
+        assert get_ee_pose.call_count == sample + 1
+        if publish_ee_tf:
+            broadcaster_factory.assert_called_once_with(node)
+            send_transform = node._tf_broadcaster.sendTransform
+            assert send_transform.call_count == sample + 1
+            transform = send_transform.call_args.args[0]
+            assert transform.header.frame_id == base_frame_id
+            assert transform.header.stamp == ee_pose.header.stamp
+            assert transform.child_frame_id == ee_frame_id
+            assert transform.transform.translation == ee_pose.pose.position
+            assert transform.transform.rotation == ee_pose.pose.orientation
+        else:
+            broadcaster_factory.assert_not_called()
+            assert node._tf_broadcaster is None
+
+
+@pytest.mark.parametrize(
+    "base_frame_id,ee_frame_id",
+    [
+        ("", "end_effector"),
+        ("base_link", ""),
+        (" ", "end_effector"),
+        ("base_link", "base_link"),
+    ],
+)
+def test_invalid_ee_frames_fail_before_connecting_to_can(
+    monkeypatch: pytest.MonkeyPatch, base_frame_id: str, ee_frame_id: str
+) -> None:
+    _override_parameters(
+        monkeypatch,
+        {"base_frame_id": base_frame_id, "ee_frame_id": ee_frame_id},
+    )
+    create_piper = Mock()
+    monkeypatch.setattr(single_module, "create_piper", create_piper)
+
+    with pytest.raises(ValueError, match="base_frame_id and ee_frame_id"):
+        PiperSingleControlNode()
+
+    create_piper.assert_not_called()

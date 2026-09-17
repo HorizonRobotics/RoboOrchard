@@ -19,10 +19,11 @@ import time
 from enum import IntEnum
 
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
+from tf2_ros import TransformBroadcaster
 
 from robo_orchard_piper_msg_ros2.msg import PiperStatusMsg
 from robo_orchard_piper_ros2.ros_bridge import (
@@ -56,12 +57,17 @@ class TeachStatusMode(IntEnum):
 
 
 class PiperSingleControlNode(Node):
+    """Publish Piper feedback and optional base-to-end-effector transforms."""
+
     def __init__(self) -> None:
         super().__init__("piper_single_ctrl")
 
         # ROS parameters
         self.declare_parameter("can_port", "can0")
         self.declare_parameter("joint_names", list(DEFAULT_JOINT_NAMES))
+        self.declare_parameter("base_frame_id", "base_link")
+        self.declare_parameter("ee_frame_id", "end_effector")
+        self.declare_parameter("publish_ee_tf", True)
         self.declare_parameter("gripper_exist", True)
         self.declare_parameter("gripper_val_mutiple", 1)
         self.declare_parameter("auto_enable_arm_ctrl", False)
@@ -77,6 +83,25 @@ class PiperSingleControlNode(Node):
         self.joint_names = validate_joint_names(
             self.get_parameter("joint_names").value
         )
+        self.base_frame_id = (
+            self.get_parameter("base_frame_id")
+            .get_parameter_value()
+            .string_value
+        )
+        self.ee_frame_id = (
+            self.get_parameter("ee_frame_id")
+            .get_parameter_value()
+            .string_value
+        )
+        self.publish_ee_tf = (
+            self.get_parameter("publish_ee_tf")
+            .get_parameter_value()
+            .bool_value
+        )
+        if not self.base_frame_id.strip() or not self.ee_frame_id.strip():
+            raise ValueError("base_frame_id and ee_frame_id must be non-empty")
+        if self.base_frame_id == self.ee_frame_id:
+            raise ValueError("base_frame_id and ee_frame_id must differ")
         self.gripper_exist = (
             self.get_parameter("gripper_exist")
             .get_parameter_value()
@@ -113,6 +138,9 @@ class PiperSingleControlNode(Node):
 
         self.get_logger().info(
             f"can_port = {self.can_port}, "
+            f"base_frame_id = {self.base_frame_id}, "
+            f"ee_frame_id = {self.ee_frame_id}, "
+            f"publish_ee_tf = {self.publish_ee_tf}, "
             f"auto_enable_arm_ctrl = {self.auto_enable_arm_ctrl}, "  # noqa: E501
             f"gripper_exist = {self.gripper_exist}, "
             f"gripper_val_mutiple = {self.gripper_val_mutiple}, "
@@ -142,6 +170,9 @@ class PiperSingleControlNode(Node):
             PiperStatusMsg, "status", 1
         )
         self.end_pose_pub = self.create_publisher(PoseStamped, "ee_pose", 1)
+        self._tf_broadcaster: TransformBroadcaster | None = (
+            TransformBroadcaster(self) if self.publish_ee_tf else None
+        )
 
         # Service
         self.create_service(
@@ -195,7 +226,7 @@ class PiperSingleControlNode(Node):
         self._enable_flag = True
         return True
 
-    def publish_callback(self):
+    def publish_callback(self) -> None:
         arm_status = get_arm_status(self.piper)
         self.arm_status_pub.publish(arm_status)
 
@@ -205,7 +236,17 @@ class PiperSingleControlNode(Node):
 
         ee_pose = get_arm_ee_pose(self.piper)
         ee_pose.header.stamp = self.get_clock().now().to_msg()
+        ee_pose.header.frame_id = self.base_frame_id
         self.end_pose_pub.publish(ee_pose)
+        if self._tf_broadcaster is not None:
+            ee_transform = TransformStamped()
+            ee_transform.header = ee_pose.header
+            ee_transform.child_frame_id = self.ee_frame_id
+            ee_transform.transform.translation.x = ee_pose.pose.position.x
+            ee_transform.transform.translation.y = ee_pose.pose.position.y
+            ee_transform.transform.translation.z = ee_pose.pose.position.z
+            ee_transform.transform.rotation = ee_pose.pose.orientation
+            self._tf_broadcaster.sendTransform(ee_transform)
 
     def joint_callback(self, joint_data):
         """Callback function for joint angles."""

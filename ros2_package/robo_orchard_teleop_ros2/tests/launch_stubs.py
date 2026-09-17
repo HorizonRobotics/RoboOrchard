@@ -67,6 +67,12 @@ class FindPackageShare:
         self.package = package
 
 
+class ParameterValue:
+    def __init__(self, value, value_type=None):
+        self.value = value
+        self.value_type = value_type
+
+
 class Node:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -83,6 +89,9 @@ def load_launch_module(path: Path, module_name: str):
         "launch.substitutions": types.ModuleType("launch.substitutions"),
         "launch_ros": types.ModuleType("launch_ros"),
         "launch_ros.actions": types.ModuleType("launch_ros.actions"),
+        "launch_ros.parameter_descriptions": types.ModuleType(
+            "launch_ros.parameter_descriptions"
+        ),
         "launch_ros.substitutions": types.ModuleType(
             "launch_ros.substitutions"
         ),
@@ -99,6 +108,9 @@ def load_launch_module(path: Path, module_name: str):
     modules["launch.substitutions"].LaunchConfiguration = LaunchConfiguration
     modules["launch.substitutions"].PathJoinSubstitution = PathJoinSubstitution
     modules["launch_ros.actions"].Node = Node
+    modules[
+        "launch_ros.parameter_descriptions"
+    ].ParameterValue = ParameterValue
     modules["launch_ros.substitutions"].FindPackageShare = FindPackageShare
 
     helper_name = "robo_orchard_teleop_ros2.wuji_teleop_launch"

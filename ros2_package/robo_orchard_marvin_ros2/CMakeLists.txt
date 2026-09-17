@@ -13,6 +13,7 @@ find_package(robo_orchard_marvin_msg_ros2 REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
 set(MARVIN_SDK_REVISION 2d219b3697381d169b61574086d22979c33d58ff)
@@ -112,6 +113,7 @@ target_link_libraries(marvin_kinematics_sdk PUBLIC Threads::Threads rt)
 
 add_executable(marvin_driver_node
   src/marvin_driver_node.cpp
+  src/marvin_end_effector_publisher.cpp
   src/marvin_forward_kinematics.cpp
 )
 target_compile_features(marvin_driver_node PUBLIC cxx_std_17)
@@ -130,6 +132,7 @@ ament_target_dependencies(
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_ros
 )
 target_link_libraries(
   marvin_driver_node
@@ -150,6 +153,7 @@ install(FILES third_party/marvin_sdk/LICENSE
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  find_package(tf2_msgs REQUIRED)
   # third_party/AMENT_IGNORE keeps the vendored SDK out of the linters that
   # honour that marker. Two do not, so they are dropped from the automatic hook:
   #   pep257  crawls via pydocstyle, which ignores AMENT_IGNORE, and its CMake
@@ -188,6 +192,27 @@ if(BUILD_TESTING)
       MARVIN_KINEMATICS_CONFIG="${MARVIN_KINEMATICS_CONFIG}")
     target_link_libraries(
       marvin_forward_kinematics_test
+      marvin_kinematics_sdk)
+  endif()
+  ament_add_gtest(
+    marvin_end_effector_publisher_test
+    tests/marvin_end_effector_publisher_test.cpp
+    src/marvin_end_effector_publisher.cpp
+    src/marvin_forward_kinematics.cpp)
+  if(TARGET marvin_end_effector_publisher_test)
+    target_compile_features(marvin_end_effector_publisher_test PUBLIC cxx_std_17)
+    target_compile_options(
+      marvin_end_effector_publisher_test PRIVATE ${MARVIN_DRIVER_WARNING_FLAGS})
+    target_include_directories(marvin_end_effector_publisher_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+      ${MARVIN_KINEMATICS_SDK_ROOT})
+    target_compile_definitions(
+      marvin_end_effector_publisher_test PRIVATE
+      MARVIN_KINEMATICS_CONFIG="${MARVIN_KINEMATICS_CONFIG}")
+    ament_target_dependencies(
+      marvin_end_effector_publisher_test geometry_msgs rclcpp tf2_msgs tf2_ros)
+    target_link_libraries(
+      marvin_end_effector_publisher_test
       marvin_kinematics_sdk)
   endif()
 endif()

@@ -14,6 +14,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
+#include "marvin_end_effector_publisher.hpp"
 #include "marvin_forward_kinematics.hpp"
 #include "marvin_reset_timing.hpp"
 
@@ -39,7 +40,6 @@
 #include <vector>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <robo_orchard_marvin_msg_ros2/srv/set_control_mode.hpp>
@@ -60,7 +60,6 @@ constexpr std::size_t kToolDynamicsCount = 10;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kToolParameterTolerance = 1e-4;
 constexpr std::array<unsigned char, 4> kMarvinControllerIp{192, 168, 1, 190};
-constexpr char kEndEffectorPoseFrame[] = "robot_stand";
 constexpr std::int64_t kVersionFamilyDivisor = 1000;
 constexpr int kControllerVersionReadAttempts = 5;
 
@@ -296,6 +295,8 @@ public:
 
     validate_parameters();
     configure_arms();
+    end_effector_publisher_ =
+      std::make_unique<robo_orchard_marvin_ros2::MarvinEndEffectorPublisher>(*this);
     const auto package_share =
       ament_index_cpp::get_package_share_directory("robo_orchard_marvin_ros2");
     forward_kinematics_ =
@@ -360,7 +361,6 @@ private:
     std::uint64_t sent_sequence{0};
 
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr ee_pose_pub;
     rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr control_mode_pub;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr controller_state_pub;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr impedance_type_pub;
@@ -510,8 +510,6 @@ private:
       const std::string prefix = "/robot/" + arm.side;
       arm.joint_state_pub = create_publisher<sensor_msgs::msg::JointState>(
         prefix + "/joint_state", 10);
-      arm.ee_pose_pub = create_publisher<geometry_msgs::msg::PoseStamped>(
-        prefix + "/ee_pose", 10);
       arm.control_mode_pub = create_publisher<std_msgs::msg::UInt8>(
         prefix + "/control_mode", 10);
       arm.controller_state_pub = create_publisher<std_msgs::msg::Int32>(
@@ -1116,19 +1114,8 @@ private:
 
       if (arm.feedback_valid) {
         const auto pose = forward_kinematics_->forward(arm.sdk_index, arm.position);
-        if (pose.has_value()) {
-          geometry_msgs::msg::PoseStamped ee_pose;
-          ee_pose.header.stamp = stamp;
-          ee_pose.header.frame_id = kEndEffectorPoseFrame;
-          ee_pose.pose.position.x = pose->position_m[0];
-          ee_pose.pose.position.y = pose->position_m[1];
-          ee_pose.pose.position.z = pose->position_m[2];
-          ee_pose.pose.orientation.x = pose->orientation_xyzw[0];
-          ee_pose.pose.orientation.y = pose->orientation_xyzw[1];
-          ee_pose.pose.orientation.z = pose->orientation_xyzw[2];
-          ee_pose.pose.orientation.w = pose->orientation_xyzw[3];
-          arm.ee_pose_pub->publish(ee_pose);
-        } else {
+        end_effector_publisher_->publish(arm.sdk_index, pose, stamp);
+        if (!pose.has_value()) {
           RCLCPP_WARN_THROTTLE(
             get_logger(), *get_clock(), 2000,
             "Marvin FK failed for %s feedback", arm.side.c_str());
@@ -1713,6 +1700,8 @@ private:
   std::condition_variable reset_condition_;
   std::unique_ptr<robo_orchard_marvin_ros2::MarvinForwardKinematics>
   forward_kinematics_;
+  std::unique_ptr<robo_orchard_marvin_ros2::MarvinEndEffectorPublisher>
+  end_effector_publisher_;
 
   rclcpp::CallbackGroup::SharedPtr control_callback_group_;
   rclcpp::CallbackGroup::SharedPtr reset_callback_group_;

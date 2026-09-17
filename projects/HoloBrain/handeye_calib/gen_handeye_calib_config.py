@@ -20,7 +20,7 @@ import os
 from robo_orchard_handeye_calib_ros2.config import HandEyeCalibrationConfig
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate Hand-Eye Calibration Config"
     )
@@ -60,11 +60,16 @@ def main():
         help="End effector pose topic name",
         required=True,
     )
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument(
         "--result_file",
         type=str,
-        help="Result file name",
-        required=True,
+        help="Exact result file; must not already exist",
+    )
+    output.add_argument(
+        "--output_root",
+        type=str,
+        help="Root directory for per-save UTC timestamp directories",
     )
     args = parser.parse_args()
     config = HandEyeCalibrationConfig(
@@ -76,12 +81,13 @@ def main():
         aruco_marker_pose_topic_name="/handeye_calib/aruco_single_node/pose",
         end_effector_pose_topic_name=args.end_effector_pose_topic_name,
         result_file=args.result_file,
+        output_root=args.output_root,
     )
     with open(
         os.path.join(os.path.dirname(__file__), "handeye_calib_config.json"),
         "w",
     ) as f:
-        f.write(config.model_dump_json(indent=4))
+        f.write(config.model_dump_json(indent=4, exclude_none=True))
 
 
 if __name__ == "__main__":

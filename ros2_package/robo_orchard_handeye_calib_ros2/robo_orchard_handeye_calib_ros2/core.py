@@ -72,7 +72,7 @@ def run_eye_in_hand_calibration(aruco_poses_list, ee_poses_list, cnt):
         gripper2base_t,
         aruco_pose_r,
         aruco_pose_t,
-        cv2.CALIB_HAND_EYE_TSAI,
+        method=cv2.CALIB_HAND_EYE_TSAI,
     )
     is_identity_rot = np.allclose(cam2ee_r, np.eye(3), atol=1e-6)
     is_zero_trans = np.allclose(cam2ee_t, np.zeros((3, 1)), atol=1e-6)
@@ -124,7 +124,7 @@ def run_eye_to_hand_calibration(aruco_poses_list, ee_poses_list, cnt):
         base2gripper_t,
         aruco_pose_r,
         aruco_pose_t,
-        cv2.CALIB_HAND_EYE_DANIILIDIS,
+        method=cv2.CALIB_HAND_EYE_DANIILIDIS,
     )
     is_identity_rot = np.allclose(cam2base_r, np.eye(3), atol=1e-6)
     is_zero_trans = np.allclose(cam2base_t, np.zeros((3, 1)), atol=1e-6)

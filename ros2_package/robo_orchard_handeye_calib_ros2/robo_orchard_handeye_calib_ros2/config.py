@@ -16,7 +16,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HandEyeCalibrationConfig(BaseModel):
@@ -37,4 +37,23 @@ class HandEyeCalibrationConfig(BaseModel):
     end_effector_pose_topic_name: str = Field(
         ..., description="Topic name for the end effector pose"
     )
-    result_file: str = Field(..., description="File path to record result.")
+    result_file: str | None = Field(
+        None, min_length=1, description="Exact result file; must not exist."
+    )
+    output_root: str | None = Field(
+        None,
+        min_length=1,
+        description="Root for UTC timestamp directories allocated on Save.",
+    )
+    publish_tf: bool = Field(
+        False, description="Publish the calibration result to the TF tree."
+    )
+
+    @model_validator(mode="after")
+    def validate_output_location(self) -> "HandEyeCalibrationConfig":
+        """Require exactly one explicit output location mode."""
+        if (self.result_file is None) == (self.output_root is None):
+            raise ValueError(
+                "Specify exactly one of result_file or output_root"
+            )
+        return self

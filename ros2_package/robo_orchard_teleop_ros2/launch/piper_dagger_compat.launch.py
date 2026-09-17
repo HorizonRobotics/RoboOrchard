@@ -53,6 +53,56 @@ def generate_launch_description():
         default_value="can_left",
         description="CAN port for the left slave arm.",
     )
+    left_base_frame_id_arg = DeclareLaunchArgument(
+        "left_base_frame_id",
+        default_value="left_base_link",
+        description="Base frame of the left follower arm.",
+    )
+    left_ee_frame_id_arg = DeclareLaunchArgument(
+        "left_ee_frame_id",
+        default_value="left_end_effector",
+        description="End-effector frame of the left follower arm.",
+    )
+    right_base_frame_id_arg = DeclareLaunchArgument(
+        "right_base_frame_id",
+        default_value="right_base_link",
+        description="Base frame of the right follower arm.",
+    )
+    right_ee_frame_id_arg = DeclareLaunchArgument(
+        "right_ee_frame_id",
+        default_value="right_end_effector",
+        description="End-effector frame of the right follower arm.",
+    )
+    left_master_base_frame_id_arg = DeclareLaunchArgument(
+        "left_master_base_frame_id",
+        default_value="left_master_base_link",
+        description="Base frame of the left master arm.",
+    )
+    left_master_ee_frame_id_arg = DeclareLaunchArgument(
+        "left_master_ee_frame_id",
+        default_value="left_master_end_effector",
+        description="End-effector frame of the left master arm.",
+    )
+    right_master_base_frame_id_arg = DeclareLaunchArgument(
+        "right_master_base_frame_id",
+        default_value="right_master_base_link",
+        description="Base frame of the right master arm.",
+    )
+    right_master_ee_frame_id_arg = DeclareLaunchArgument(
+        "right_master_ee_frame_id",
+        default_value="right_master_end_effector",
+        description="End-effector frame of the right master arm.",
+    )
+    publish_ee_tf_arg = DeclareLaunchArgument(
+        "publish_ee_tf",
+        default_value="true",
+        description="Publish dynamic end-effector TF for follower arms.",
+    )
+    publish_master_ee_tf_arg = DeclareLaunchArgument(
+        "publish_master_ee_tf",
+        default_value="false",
+        description="Publish dynamic end-effector TF for master arms.",
+    )
 
     right_algo_topic_arg = DeclareLaunchArgument(
         "right_algo_topic",
@@ -195,6 +245,18 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("left_master_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("left_master_base_frame_id"),
+                    value_type=str,
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("left_master_ee_frame_id"),
+                    value_type=str,
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_master_ee_tf"),
+                    value_type=bool,
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -223,6 +285,15 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("left_slave_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("left_base_frame_id"), value_type=str
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("left_ee_frame_id"), value_type=str
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_ee_tf"), value_type=bool
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -254,6 +325,18 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("right_master_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("right_master_base_frame_id"),
+                    value_type=str,
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("right_master_ee_frame_id"),
+                    value_type=str,
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_master_ee_tf"),
+                    value_type=bool,
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -282,6 +365,15 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "can_port": LaunchConfiguration("right_slave_can_port"),
+                "base_frame_id": ParameterValue(
+                    LaunchConfiguration("right_base_frame_id"), value_type=str
+                ),
+                "ee_frame_id": ParameterValue(
+                    LaunchConfiguration("right_ee_frame_id"), value_type=str
+                ),
+                "publish_ee_tf": ParameterValue(
+                    LaunchConfiguration("publish_ee_tf"), value_type=bool
+                ),
                 "auto_enable_arm_ctrl": True,
                 "gripper_exist": True,
                 "enable_mit_ctrl": LaunchConfiguration(
@@ -312,6 +404,16 @@ def generate_launch_description():
             right_algo_topic_arg,
             right_master_can_port_arg,
             right_slave_can_port_arg,
+            left_base_frame_id_arg,
+            left_ee_frame_id_arg,
+            right_base_frame_id_arg,
+            right_ee_frame_id_arg,
+            left_master_base_frame_id_arg,
+            left_master_ee_frame_id_arg,
+            right_master_base_frame_id_arg,
+            right_master_ee_frame_id_arg,
+            publish_ee_tf_arg,
+            publish_master_ee_tf_arg,
             enable_mit_control_mode_arg,
             enable_master_mit_control_mode_arg,
             replay_time_s_arg,

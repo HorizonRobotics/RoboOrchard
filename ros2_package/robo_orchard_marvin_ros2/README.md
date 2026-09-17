@@ -79,7 +79,7 @@ ros2 service call /robot/right/set_mode \
 Each arm uses `/robot/<side>/joint_cmd` and `/robot/<side>/joint_state` with
 `sensor_msgs/msg/JointState`. The measured joint feedback is also converted by
 the official kinematics SDK and published on `/robot/<side>/ee_pose` as
-`geometry_msgs/msg/PoseStamped` in the fixed `robot_stand` frame. Driver state
+`geometry_msgs/msg/PoseStamped` in the `robot_stand` frame by default. Driver state
 is published on `control_mode`, `controller_state`, `impedance_type`, and
 `error_code`. The services `reset_ctrl`, `clear_error`, and `emergency_stop`
 are also provided per arm.
@@ -91,6 +91,49 @@ previously selected Tool when it connects, so its displayed Cartesian pose can
 differ from `ee_pose` by that Tool transform. Clear and apply a zero Tool before
 comparing flange poses, or account for the configured Tool transform when
 comparing against a TCP pose.
+
+### End-effector TF
+
+By default, each valid measured-joint FK result also produces a dynamic
+`geometry_msgs/msg/TransformStamped` on `/tf`. The pose topic and TF use exactly
+the same position, orientation, parent frame, and node-clock timestamp from the
+existing feedback callback (`control_frequency_hz`, 200 Hz by default). Invalid
+or stale joint feedback and failed FK produce neither an end-effector pose nor
+a transform for that arm. No commanded pose or separate FK/timer is used.
+
+Configure these startup parameters in either driver YAML, selected with the
+existing `config_file` launch argument:
+
+| Node parameter | Default | Meaning |
+| --- | --- | --- |
+| `left_base_frame_id` | `robot_stand` | Left pose reference frame and TF parent. |
+| `left_ee_frame_id` | `TCP_Link_L` | Left SDK flange frame and TF child. |
+| `right_base_frame_id` | `robot_stand` | Right pose reference frame and TF parent. |
+| `right_ee_frame_id` | `TCP_Link_R` | Right SDK flange frame and TF child. |
+| `publish_ee_tf` | `true` | Broadcast dynamic end-effector TF for both arms. |
+
+Frame IDs must be non-empty, each parent must differ from its child, and the
+two children must differ. Validation also applies when `publish_ee_tf: false`.
+Disabling TF preserves both pose feedback topics, including the configured
+reference frames, and does not change joint feedback or control behavior.
+ROS namespaces and topic remappings do not prefix frame IDs.
+
+The default edges are `robot_stand -> TCP_Link_L` and
+`robot_stand -> TCP_Link_R`. In the supplied Marvin URDF, these TCP-named links
+match the SDK's bare flange frames, not `Link7_L`/`Link7_R`. They connect the
+existing wrist-camera calibration children to the common `robot_stand` frame
+and the middle-camera calibration branch. The driver publishes only the two
+dynamic robot edges, not camera calibration transforms.
+
+Frame parameters only label the physical SDK frames; they do not transform
+coordinates, select a different physical base, or apply Tool/TCP offsets. Add
+separate transforms for genuinely different physical frames. Avoid duplicate
+TF publishers: set `publish_ee_tf: false` if another node (for example,
+`robot_state_publisher` with the full Marvin URDF) already publishes these
+children. A TF child must have only one publisher/parent, even if another
+publisher uses a different parent link.
+
+### Reset services
 
 The per-arm `reset_ctrl` services block until the requested arm reaches its
 configured reset position or the operation fails. Left and right requests may

@@ -3,6 +3,11 @@ marvin_driver_node:
     auto_enable_side: none
     auto_enable_mode: ""
     control_frequency_hz: 200.0
+    publish_ee_tf: true
+    left_base_frame_id: robot_stand
+    left_ee_frame_id: TCP_Link_L
+    right_base_frame_id: robot_stand
+    right_ee_frame_id: TCP_Link_R
     feedback_stale_timeout_s: 0.1
     mode_switch_timeout_s: 2.0
     sdk_log_enabled: false
