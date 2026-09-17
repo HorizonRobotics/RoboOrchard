@@ -17,7 +17,6 @@
 import atexit
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
@@ -79,6 +78,11 @@ class RosServiceHelper:
                     "recorder",
                     f"{self.cfg.recorder_name}/status",
                     "robo_orchard_data_msg_ros2/msg/RecorderStatus",
+                ),
+                (
+                    "control",
+                    self.cfg.control_status_topic,
+                    "robo_orchard_teleop_msg_ros2/msg/ControlMode",
                 ),
             )
         ]
@@ -150,7 +154,15 @@ class RosServiceHelper:
             return deepcopy(message)
 
     def refresh_runtime_state(self) -> None:
-        """Project the latest inference snapshot into the UI-owned model."""
+        """Project control and inference snapshots into the UI-owned model."""
+        control = self.status_snapshot("control")
+        mode = control.get("data") if control is not None else None
+        self.state.control_mode = (
+            mode
+            if isinstance(mode, str)
+            and mode in {"auto", "takeover", "stop", "resetting"}
+            else None
+        )
         inference = self.status_snapshot("inference")
         value = inference.get("data") if inference is not None else None
         self.state.is_inference_service_running = (
@@ -228,57 +240,6 @@ class RosServiceHelper:
                 service_type=service_type,
                 request_data=request_data,
             ):
-                return False
-
-        self.logger.info(success_msg)
-        if success_callback:
-            success_callback()
-        return True
-
-    def _call_services_parallel(
-        self,
-        service_names: str | list[str],
-        success_msg: str,
-        success_callback: Callable[[], None] | None = None,
-        timeout: float = 5.0,
-        service_type: str = "std_srvs/srv/Trigger",
-        request_data: dict | None = None,
-    ) -> bool:
-        """Call independent ROS services concurrently and await all results."""
-        if not self._check_client_connected():
-            return False
-
-        if isinstance(service_names, str):
-            service_names = [service_names]
-
-        available_services = set(self.ros_client.get_services())
-        missing_services = [
-            name for name in service_names if name not in available_services
-        ]
-        if missing_services:
-            for service_name in missing_services:
-                self.logger.error(f"Service {service_name} not found!")
-            return False
-
-        if service_names:
-            with ThreadPoolExecutor(
-                max_workers=len(service_names)
-            ) as executor:
-                futures = [
-                    executor.submit(
-                        self._call_service_result,
-                        service_name=service_name,
-                        timeout=timeout,
-                        service_type=service_type,
-                        request_data=request_data,
-                    )
-                    for service_name in service_names
-                ]
-                results = [future.result() for future in futures]
-            for _success, error_msg in results:
-                if error_msg:
-                    self.logger.error(error_msg)
-            if not all(success for success, _ in results):
                 return False
 
         self.logger.info(success_msg)
@@ -473,22 +434,12 @@ class RosServiceHelper:
             self._synced_tf_fingerprint = fingerprint
         return success
 
-    def enable_arm(self) -> bool:
-        """Sends a request to enable the robot arm."""
-        return self._call_services(
-            service_names=self.cfg.enable_arm_service_name,
-            success_msg="/EnableArm command sent successfully!",
-            success_callback=lambda: setattr(
-                self.state, "arm_ctrl_status", "enabled"
-            ),
-            timeout=25.0,
-        )
-
     def reset_arm(self) -> bool:
-        """Sends a request to reset the robot arm controllers to zero."""
-        return self._call_services_parallel(
-            service_names=self.cfg.reset_arm_service_name,
-            success_msg="Robot arm controllers reset successfully!",
+        """Request the Control Manager-owned reset sequence."""
+        return self._call_services(
+            service_names=self.cfg.reset_service_name,
+            success_msg="Robot reset completed successfully!",
+            timeout=self.cfg.reset_timeout_s,
         )
 
     def enable_inference(self, episode_meta) -> bool:
@@ -564,19 +515,18 @@ class RosServiceHelper:
     ) -> bool:
         """Sets the robot's control mode."""
         service_map = {
-            "auto": self.cfg.release_service_name,
+            "auto": self.cfg.auto_service_name,
             "takeover": self.cfg.takeover_service_name,
             "stop": self.cfg.stop_service_name,
         }
         message_map = {
-            "auto": "/Release command sent successfully!",
-            "takeover": "/TakeOver command sent! Use the hardware teach button to enter teach mode.",  # noqa: E501
+            "auto": "/Auto command sent successfully!",
+            "takeover": "/TakeOver command sent successfully!",
             "stop": "/Stop command sent successfully!",
         }
         return self._call_services(
             service_names=service_map[mode],
             success_msg=message_map[mode],
-            success_callback=lambda: setattr(self.state, "control_mode", mode),
             timeout=30.0,
         )
 

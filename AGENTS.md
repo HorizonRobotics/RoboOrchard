@@ -89,6 +89,12 @@
 - Before performing Git operations or preparing commit or MR/PR content, read
   `.agents/instructions/git.md`.
 
+## Runtime and Inference App
+
+- For changes to Control Manager, Deploy, Recorder, or Inference App, read
+  [.agents/references/runtime-node-boundary.md](.agents/references/runtime-node-boundary.md)
+  first for runtime and frontend responsibilities.
+
 ## Deploy Node
 
 - For changes to `ros2_package/robo_orchard_deploy_ros2/`, read

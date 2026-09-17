@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,17 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from typing import List
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
+    """Launch Aloha teleoperation through one Control Manager."""
     joint_names_args = [
         DeclareLaunchArgument(
             f"{side}_joint_names",
@@ -37,122 +35,143 @@ def generate_launch_description():
         )
         for side in ("left", "right")
     ]
-    # --- Declare Launch Arguments ---
-    left_master_can_port_arg = DeclareLaunchArgument(
-        "left_master_can_port",
-        default_value="can_left_mst",
-        description="CAN port for the left master arm.",
-    )
-    left_slave_can_port_arg = DeclareLaunchArgument(
-        "left_slave_can_port",
-        default_value="can_left",
-        description="CAN port for the left slave arm.",
-    )
-    right_master_can_port_arg = DeclareLaunchArgument(
-        "right_master_can_port",
-        default_value="can_right_mst",
-        description="CAN port for the right master arm.",
-    )
-    right_slave_can_port_arg = DeclareLaunchArgument(
-        "right_slave_can_port",
-        default_value="can_right",
-        description="CAN port for the right slave arm.",
-    )
-    enable_mit_ctrl_arg = DeclareLaunchArgument(
-        "enable_mit_ctrl",
-        default_value="true",
-        description="Whether enable mit control mode or not.",
-    )
-    enable_master_mit_ctrl_arg = DeclareLaunchArgument(
-        "enable_master_mit_ctrl",
-        default_value="false",
-        description="Whether enable mit control mode or not.",
-    )
+    arguments = [
+        DeclareLaunchArgument(
+            "left_master_can_port",
+            default_value="can_left_mst",
+            description="CAN port for the left master arm.",
+        ),
+        DeclareLaunchArgument(
+            "left_slave_can_port",
+            default_value="can_left",
+            description="CAN port for the left slave arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_master_can_port",
+            default_value="can_right_mst",
+            description="CAN port for the right master arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_slave_can_port",
+            default_value="can_right",
+            description="CAN port for the right slave arm.",
+        ),
+        DeclareLaunchArgument(
+            "enable_mit_ctrl",
+            default_value="true",
+            description="Whether to enable MIT control on follower arms.",
+        ),
+        DeclareLaunchArgument(
+            "enable_master_mit_ctrl",
+            default_value="false",
+            description="Whether to enable MIT control on master arms.",
+        ),
+        DeclareLaunchArgument(
+            "control_manager_config_file",
+            description="Control Manager configuration file.",
+        ),
+        DeclareLaunchArgument(
+            "left_base_frame_id",
+            default_value="left_base_link",
+            description="Base frame of the left follower arm.",
+        ),
+        DeclareLaunchArgument(
+            "left_ee_frame_id",
+            default_value="left_end_effector",
+            description="End-effector frame of the left follower arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_base_frame_id",
+            default_value="right_base_link",
+            description="Base frame of the right follower arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_ee_frame_id",
+            default_value="right_end_effector",
+            description="End-effector frame of the right follower arm.",
+        ),
+        DeclareLaunchArgument(
+            "left_master_base_frame_id",
+            default_value="left_master_base_link",
+            description="Base frame of the left master arm.",
+        ),
+        DeclareLaunchArgument(
+            "left_master_ee_frame_id",
+            default_value="left_master_end_effector",
+            description="End-effector frame of the left master arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_master_base_frame_id",
+            default_value="right_master_base_link",
+            description="Base frame of the right master arm.",
+        ),
+        DeclareLaunchArgument(
+            "right_master_ee_frame_id",
+            default_value="right_master_end_effector",
+            description="End-effector frame of the right master arm.",
+        ),
+        DeclareLaunchArgument(
+            "publish_ee_tf",
+            default_value="true",
+            description="Publish dynamic end-effector TF for follower arms.",
+        ),
+        DeclareLaunchArgument(
+            "publish_master_ee_tf",
+            default_value="false",
+            description="Publish dynamic end-effector TF for master arms.",
+        ),
+    ]
 
-    # --- Node Definitions ---
-    left_aloha_controller_node = Node(
-        package="robo_orchard_piper_ros2",
-        executable="aloha_ctrl",
-        name="robot_left_aloha_controller",
-        namespace="/robot/left",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "joint_names": ParameterValue(
-                    LaunchConfiguration("left_joint_names"),
-                    value_type=List[str],
-                ),
-                "master_can_port": LaunchConfiguration("left_master_can_port"),
-                "slave_can_port": LaunchConfiguration("left_slave_can_port"),
-                "gripper_exist": True,
-                "sync_frequency": 200.0,
-                "enable_mit_ctrl": LaunchConfiguration("enable_mit_ctrl"),
-                "enable_master_ctrl": True,
-                "enable_master_mit_ctrl": LaunchConfiguration(
-                    "enable_master_mit_ctrl"
-                ),
-            }
-        ],
-        remappings=[
-            ("/robot/left/ee_pose", "/puppet/end_pose_left"),
-            ("/robot/left/joint_state", "/puppet/joint_left"),
-            ("/robot/left/status", "/puppet/status_left"),
-            ("/robot/left/master/ee_pose", "/master/end_pose_left"),
-            ("/robot/left/master/joint_state", "/master/joint_left"),
-            ("/robot/left/master/status", "/master/status_left"),
-        ],
+    managed_aloha = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("robo_orchard_teleop_ros2"),
+                    "launch",
+                    "piper_dagger_compat.launch.py",
+                ]
+            )
+        ),
+        launch_arguments={
+            "left_joint_names": LaunchConfiguration("left_joint_names"),
+            "right_joint_names": LaunchConfiguration("right_joint_names"),
+            "left_master_can_port": LaunchConfiguration(
+                "left_master_can_port"
+            ),
+            "left_slave_can_port": LaunchConfiguration("left_slave_can_port"),
+            "right_master_can_port": LaunchConfiguration(
+                "right_master_can_port"
+            ),
+            "right_slave_can_port": LaunchConfiguration(
+                "right_slave_can_port"
+            ),
+            "enable_mit_control_mode": LaunchConfiguration("enable_mit_ctrl"),
+            "enable_master_mit_control_mode": LaunchConfiguration(
+                "enable_master_mit_ctrl"
+            ),
+            "control_manager_config_file": LaunchConfiguration(
+                "control_manager_config_file"
+            ),
+            "left_base_frame_id": LaunchConfiguration("left_base_frame_id"),
+            "left_ee_frame_id": LaunchConfiguration("left_ee_frame_id"),
+            "right_base_frame_id": LaunchConfiguration("right_base_frame_id"),
+            "right_ee_frame_id": LaunchConfiguration("right_ee_frame_id"),
+            "left_master_base_frame_id": LaunchConfiguration(
+                "left_master_base_frame_id"
+            ),
+            "left_master_ee_frame_id": LaunchConfiguration(
+                "left_master_ee_frame_id"
+            ),
+            "right_master_base_frame_id": LaunchConfiguration(
+                "right_master_base_frame_id"
+            ),
+            "right_master_ee_frame_id": LaunchConfiguration(
+                "right_master_ee_frame_id"
+            ),
+            "publish_ee_tf": LaunchConfiguration("publish_ee_tf"),
+            "publish_master_ee_tf": LaunchConfiguration(
+                "publish_master_ee_tf"
+            ),
+        }.items(),
     )
-    right_aloha_controller_node = Node(
-        package="robo_orchard_piper_ros2",
-        executable="aloha_ctrl",
-        name="robot_right_aloha_controller",
-        namespace="/robot/right",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "joint_names": ParameterValue(
-                    LaunchConfiguration("right_joint_names"),
-                    value_type=List[str],
-                ),
-                "master_can_port": LaunchConfiguration(
-                    "right_master_can_port"
-                ),
-                "slave_can_port": LaunchConfiguration("right_slave_can_port"),
-                "gripper_exist": True,
-                "sync_frequency": 200.0,
-                "enable_mit_ctrl": LaunchConfiguration("enable_mit_ctrl"),
-                "enable_master_ctrl": True,
-                "enable_master_mit_ctrl": LaunchConfiguration(
-                    "enable_master_mit_ctrl"
-                ),
-            }
-        ],
-        remappings=[
-            ("/robot/right/ee_pose", "/puppet/end_pose_right"),
-            ("/robot/right/joint_state", "/puppet/joint_right"),
-            ("/robot/right/status", "/puppet/status_right"),
-            ("/robot/right/master/ee_pose", "/master/end_pose_right"),
-            ("/robot/right/master/joint_state", "/master/joint_right"),
-            ("/robot/right/master/status", "/master/status_right"),
-        ],
-    )
-
-    # --- Create the Launch Description ---
-    # The launch description is a container for all the actions to be executed.
-    return LaunchDescription(
-        [
-            *joint_names_args,
-            # Add the declared arguments
-            left_master_can_port_arg,
-            left_slave_can_port_arg,
-            right_master_can_port_arg,
-            right_slave_can_port_arg,
-            enable_mit_ctrl_arg,
-            enable_master_mit_ctrl_arg,
-            # Add the nodes to be launched
-            left_aloha_controller_node,
-            right_aloha_controller_node,
-        ]
-    )
+    return LaunchDescription([*joint_names_args, *arguments, managed_aloha])

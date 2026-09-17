@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,6 +105,11 @@ class _Node:
         publisher = _Publisher()
         self.publishers.append(publisher)
         return publisher
+
+    def create_client(self, *args, **kwargs):
+        return types.SimpleNamespace(
+            wait_for_service=lambda timeout_sec: True,
+        )
 
     def create_timer(self, period_s, callback):
         timer = types.SimpleNamespace(
@@ -277,6 +282,16 @@ if "robo_orchard_teleop_msg_ros2" not in sys.modules:
     teleop_msgs = types.ModuleType("robo_orchard_teleop_msg_ros2")
     teleop_msgs_msg = types.ModuleType("robo_orchard_teleop_msg_ros2.msg")
     teleop_msgs_msg.TeleopActivationState = _TeleopActivationState
+    teleop_msgs_msg.ControlMode = type(
+        "ControlMode",
+        (),
+        {
+            "AUTO": "auto",
+            "TAKEOVER": "takeover",
+            "STOP": "stop",
+            "RESETTING": "resetting",
+        },
+    )
     teleop_msgs.msg = teleop_msgs_msg
     sys.modules["robo_orchard_teleop_msg_ros2"] = teleop_msgs
     sys.modules["robo_orchard_teleop_msg_ros2.msg"] = teleop_msgs_msg
@@ -373,6 +388,10 @@ class _VRTeleOp:
 
     def finish_reset(self):
         self.finish_reset_count = getattr(self, "finish_reset_count", 0) + 1
+
+    def begin_reset(self):
+        self.reset_session()
+        return True
 
     def recapture_baseline(self):
         self.recapture_count += 1

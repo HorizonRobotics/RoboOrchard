@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,10 @@ from typing import List
 
 import pytest
 import yaml
+from launch_stubs import (
+    IncludeLaunchDescription as _IncludeLaunchDescription,
+    PythonLaunchDescriptionSource as _PythonLaunchDescriptionSource,
+)
 
 LAUNCH_PATH = (
     Path(__file__).resolve().parents[1]
@@ -49,6 +53,16 @@ class _LaunchConfiguration:
         self.name = name
 
 
+class _PathJoinSubstitution:
+    def __init__(self, substitutions):
+        self.substitutions = list(substitutions)
+
+
+class _FindPackageShare:
+    def __init__(self, package):
+        self.package = package
+
+
 class _ParameterValue:
     def __init__(self, value, value_type=None):
         self.value = value
@@ -65,11 +79,19 @@ def _load_module(launch_path=LAUNCH_PATH):
     launch_module.LaunchDescription = _LaunchDescription
     launch_actions = types.ModuleType("launch.actions")
     launch_actions.DeclareLaunchArgument = _DeclareLaunchArgument
+    launch_actions.IncludeLaunchDescription = _IncludeLaunchDescription
+    launch_sources = types.ModuleType("launch.launch_description_sources")
+    launch_sources.PythonLaunchDescriptionSource = (
+        _PythonLaunchDescriptionSource
+    )
     launch_substitutions = types.ModuleType("launch.substitutions")
     launch_substitutions.LaunchConfiguration = _LaunchConfiguration
+    launch_substitutions.PathJoinSubstitution = _PathJoinSubstitution
     launch_ros_module = types.ModuleType("launch_ros")
     launch_ros_actions = types.ModuleType("launch_ros.actions")
     launch_ros_actions.Node = _Node
+    launch_ros_substitutions = types.ModuleType("launch_ros.substitutions")
+    launch_ros_substitutions.FindPackageShare = _FindPackageShare
     launch_ros_param_desc = types.ModuleType(
         "launch_ros.parameter_descriptions"
     )
@@ -80,17 +102,21 @@ def _load_module(launch_path=LAUNCH_PATH):
         for name in (
             "launch",
             "launch.actions",
+            "launch.launch_description_sources",
             "launch.substitutions",
             "launch_ros",
             "launch_ros.actions",
+            "launch_ros.substitutions",
             "launch_ros.parameter_descriptions",
         )
     }
     sys.modules["launch"] = launch_module
     sys.modules["launch.actions"] = launch_actions
+    sys.modules["launch.launch_description_sources"] = launch_sources
     sys.modules["launch.substitutions"] = launch_substitutions
     sys.modules["launch_ros"] = launch_ros_module
     sys.modules["launch_ros.actions"] = launch_ros_actions
+    sys.modules["launch_ros.substitutions"] = launch_ros_substitutions
     sys.modules["launch_ros.parameter_descriptions"] = launch_ros_param_desc
 
     spec = importlib.util.spec_from_file_location(
@@ -134,6 +160,24 @@ def test_all_piper_launches_share_each_sides_joint_names(launch_name):
         assert names == [f"{side}_joint{index}" for index in range(1, 7)] + [
             f"{side}_gripper"
         ]
+    includes = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, _IncludeLaunchDescription)
+    ]
+    if launch_name == "piper_aloha_compat.launch.py":
+        assert len(includes) == 1
+        assert includes[0].source.location.substitutions[-1] == (
+            "piper_dagger_compat.launch.py"
+        )
+        forwarded = dict(includes[0].launch_arguments)
+        for side in ("left", "right"):
+            assert forwarded[f"{side}_joint_names"].name == (
+                f"{side}_joint_names"
+            )
+        description = _load_module(
+            LAUNCH_PATH.with_name("piper_dagger_compat.launch.py")
+        ).generate_launch_description()
     drivers = [
         entity
         for entity in description.entities
@@ -197,6 +241,7 @@ def test_launch_starts_bridge_teleop_and_both_arm_controllers():
     assert "piper_pico_vr_teleop" in names
     assert "robot_right_single_controller" in names
     assert "robot_left_single_controller" in names
+    assert names.count("control_manager") == 1
 
     arguments = {
         entity.name: entity
@@ -210,6 +255,7 @@ def test_launch_starts_bridge_teleop_and_both_arm_controllers():
     )
     assert arguments["keyboard_reset_topic"].default_value == "/teleop/reset"
     assert arguments["keyboard_activation_timeout_s"].default_value == "0.2"
+    assert "control_manager_config_file" in arguments
 
 
 def test_launch_wires_reset_joint_position_to_controllers():
@@ -239,7 +285,7 @@ def test_launch_wires_reset_joint_position_to_controllers():
     assert right_reset.value_type == List[float]
 
 
-def test_launch_routes_pico_joint_outputs_to_algo_topics():
+def test_launch_routes_pico_override_through_control_manager():
     module = _load_module()
 
     description = module.generate_launch_description()
@@ -259,27 +305,30 @@ def test_launch_routes_pico_joint_outputs_to_algo_topics():
         for node in nodes
         if node.kwargs["name"] == "robot_left_single_controller"
     )
+    manager = next(
+        node for node in nodes if node.kwargs["name"] == "control_manager"
+    )
 
     assert (
         "/robot/left/joint_cmd",
-        "/left_algo_cmd",
+        "/pico_teleop/joint_left",
     ) in teleop_node.kwargs["remappings"]
     assert (
         "/robot/right/joint_cmd",
-        "/right_algo_cmd",
+        "/pico_teleop/joint_right",
     ) in teleop_node.kwargs["remappings"]
-    assert (
-        "/robot/right/joint_cmd",
-        "/right_algo_cmd",
-    ) in right_controller.kwargs["remappings"]
-    assert (
-        "/robot/left/joint_cmd",
-        "/left_algo_cmd",
-    ) in left_controller.kwargs["remappings"]
+    assert not any(
+        source == "/robot/right/joint_cmd"
+        for source, _ in right_controller.kwargs["remappings"]
+    )
+    assert not any(
+        source == "/robot/left/joint_cmd"
+        for source, _ in left_controller.kwargs["remappings"]
+    )
+    assert manager.kwargs["package"] == ("robo_orchard_control_manager_ros2")
     parameters = teleop_node.kwargs["parameters"]
     assert parameters[0]["ee_link_name"] == "link6"
-    assert parameters[0]["left_reset_service"] == "/robot/left/reset_ctrl"
-    assert parameters[0]["right_reset_service"] == "/robot/right/reset_ctrl"
+    assert parameters[0]["reset_service"] == "/robot/control/reset"
     assert parameters[0]["operator_input_source"].name == (
         "operator_input_source"
     )

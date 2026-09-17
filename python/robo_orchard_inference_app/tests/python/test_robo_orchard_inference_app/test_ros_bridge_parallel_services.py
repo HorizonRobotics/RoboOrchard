@@ -15,7 +15,6 @@
 # permissions and limitations under the License.
 
 import sys
-import threading
 import types
 
 roslibpy = types.SimpleNamespace(
@@ -79,7 +78,7 @@ def _make_helper(service_names):
     helper = RosServiceHelper(
         ros_client=DummyRosClient(service_names),
         ros_bridge_cfg=ROSBridgeCfg(
-            reset_arm_service_name=service_names,
+            reset_service_name=service_names,
         ),
         inference_state=InferenceState(),
         logger=logger,
@@ -87,22 +86,18 @@ def _make_helper(service_names):
     return helper, logger
 
 
-def test_reset_arm_calls_services_concurrently(monkeypatch):
+def test_reset_calls_global_manager_service(monkeypatch):
     import robo_orchard_inference_app.ros_bridge as ros_bridge_module
 
-    service_names = ["/robot/left/reset_ctrl", "/robot/right/reset_ctrl"]
-    barrier = threading.Barrier(len(service_names))
+    service_names = ["/robot/control/reset"]
     calls = []
-    calls_lock = threading.Lock()
 
     class DummyService:
         def __init__(self, ros_client, service_name, service_type):
             self.service_name = service_name
 
         def call(self, request, timeout):
-            with calls_lock:
-                calls.append(self.service_name)
-            barrier.wait(timeout=1.0)
+            calls.append(self.service_name)
             return {"success": True, "message": "ok"}
 
     monkeypatch.setattr(ros_bridge_module.roslibpy, "Service", DummyService)
@@ -110,28 +105,24 @@ def test_reset_arm_calls_services_concurrently(monkeypatch):
 
     assert helper.reset_arm() is True
     assert set(calls) == set(service_names)
-    assert logger.infos == ["Robot arm controllers reset successfully!"]
+    assert logger.infos == ["Robot reset completed successfully!"]
     assert logger.errors == []
 
 
-def test_parallel_calls_wait_for_all_services_when_one_fails(monkeypatch):
+def test_global_manager_reset_failure_is_reported(monkeypatch):
     import robo_orchard_inference_app.ros_bridge as ros_bridge_module
 
-    service_names = ["/robot/left/reset_ctrl", "/robot/right/reset_ctrl"]
-    barrier = threading.Barrier(len(service_names))
+    service_names = ["/robot/control/reset"]
     calls = []
-    calls_lock = threading.Lock()
 
     class DummyService:
         def __init__(self, ros_client, service_name, service_type):
             self.service_name = service_name
 
         def call(self, request, timeout):
-            with calls_lock:
-                calls.append(self.service_name)
-            barrier.wait(timeout=1.0)
+            calls.append(self.service_name)
             return {
-                "success": self.service_name != service_names[0],
+                "success": False,
                 "message": "reset failed",
             }
 
@@ -142,17 +133,14 @@ def test_parallel_calls_wait_for_all_services_when_one_fails(monkeypatch):
     assert set(calls) == set(service_names)
     assert logger.infos == []
     assert logger.errors == [
-        "Service /robot/left/reset_ctrl failed: reset failed"
+        "Service /robot/control/reset failed: reset failed"
     ]
 
 
-def test_parallel_calls_preflight_all_services(monkeypatch):
+def test_global_manager_reset_requires_service(monkeypatch):
     import robo_orchard_inference_app.ros_bridge as ros_bridge_module
 
-    configured_services = [
-        "/robot/left/reset_ctrl",
-        "/robot/right/reset_ctrl",
-    ]
+    configured_services = ["/robot/control/reset"]
     calls = []
 
     class DummyService:
@@ -161,8 +149,8 @@ def test_parallel_calls_preflight_all_services(monkeypatch):
 
     monkeypatch.setattr(ros_bridge_module.roslibpy, "Service", DummyService)
     helper, logger = _make_helper(configured_services)
-    helper.ros_client.services = [configured_services[0]]
+    helper.ros_client.services = []
 
     assert helper.reset_arm() is False
     assert calls == []
-    assert logger.errors == ["Service /robot/right/reset_ctrl not found!"]
+    assert logger.errors == ["Service /robot/control/reset not found!"]

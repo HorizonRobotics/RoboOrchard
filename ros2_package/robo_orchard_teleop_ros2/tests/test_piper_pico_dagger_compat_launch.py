@@ -43,6 +43,16 @@ class _LaunchConfiguration:
         self.name = name
 
 
+class _PathJoinSubstitution:
+    def __init__(self, substitutions):
+        self.substitutions = list(substitutions)
+
+
+class _FindPackageShare:
+    def __init__(self, package):
+        self.package = package
+
+
 class _ParameterValue:
     def __init__(self, value, value_type=None):
         self.value = value
@@ -61,9 +71,12 @@ def _load_module():
     launch_actions.DeclareLaunchArgument = _DeclareLaunchArgument
     launch_substitutions = types.ModuleType("launch.substitutions")
     launch_substitutions.LaunchConfiguration = _LaunchConfiguration
+    launch_substitutions.PathJoinSubstitution = _PathJoinSubstitution
     launch_ros_module = types.ModuleType("launch_ros")
     launch_ros_actions = types.ModuleType("launch_ros.actions")
     launch_ros_actions.Node = _Node
+    launch_ros_substitutions = types.ModuleType("launch_ros.substitutions")
+    launch_ros_substitutions.FindPackageShare = _FindPackageShare
     launch_ros_param_desc = types.ModuleType(
         "launch_ros.parameter_descriptions"
     )
@@ -77,6 +90,7 @@ def _load_module():
             "launch.substitutions",
             "launch_ros",
             "launch_ros.actions",
+            "launch_ros.substitutions",
             "launch_ros.parameter_descriptions",
         )
     }
@@ -85,6 +99,7 @@ def _load_module():
     sys.modules["launch.substitutions"] = launch_substitutions
     sys.modules["launch_ros"] = launch_ros_module
     sys.modules["launch_ros.actions"] = launch_ros_actions
+    sys.modules["launch_ros.substitutions"] = launch_ros_substitutions
     sys.modules["launch_ros.parameter_descriptions"] = launch_ros_param_desc
 
     spec = importlib.util.spec_from_file_location(
@@ -131,14 +146,14 @@ def _launch_argument_by_name(description, name):
     )
 
 
-def test_setup_registers_vr_orchestrator_console_script():
-    assert (
-        '"vr_orchestrator = '
-        'robo_orchard_teleop_ros2.take_over.orchestrator.vr:main",'
-    ) in SETUP_PATH.read_text()
+def test_setup_does_not_register_legacy_control_owners():
+    setup_source = SETUP_PATH.read_text()
+
+    assert "take_over.node:main" not in setup_source
+    assert "take_over.orchestrator" not in setup_source
 
 
-def test_launch_declares_arguments_and_eight_nodes() -> None:
+def test_launch_declares_arguments_and_one_manager() -> None:
     module = _load_module()
 
     description = module.generate_launch_description()
@@ -156,7 +171,7 @@ def test_launch_declares_arguments_and_eight_nodes() -> None:
         "right_ee_frame_id",
         "publish_ee_tf",
         "enable_mit_control_mode",
-        "replay_time_s",
+        "control_manager_config_file",
         "urdf_path",
         "match_tolerance",
         "operator_input_source",
@@ -196,46 +211,28 @@ def test_launch_declares_arguments_and_eight_nodes() -> None:
         == "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"
     )
     assert [node.kwargs["name"] for node in _nodes(description)] == [
-        "robot_left_takeover_muxer",
-        "robot_right_takeover_muxer",
+        "control_manager",
         "robot_left_controller",
         "robot_right_controller",
-        "robot_left_vr_orchestrator",
-        "robot_right_vr_orchestrator",
         "pico_bridge",
         "piper_pico_vr_teleop",
     ]
 
 
-def test_launch_wires_muxers_to_pico_override_topics():
+def test_launch_wires_one_manager_between_inputs_and_drivers():
     module = _load_module()
     description = module.generate_launch_description()
 
-    left_muxer = _node_by_name(description, "robot_left_takeover_muxer")
-    right_muxer = _node_by_name(description, "robot_right_takeover_muxer")
-
-    assert left_muxer.kwargs["executable"] == "take_over"
-    assert left_muxer.kwargs["namespace"] == "/robot/left/takeover_muxer"
-    assert left_muxer.kwargs["parameters"][0]["algo_topic"].name == (
-        "left_algo_topic"
-    )
-    assert left_muxer.kwargs["parameters"][0]["override_topic"] == (
-        "/pico_teleop/joint_left"
-    )
-    assert left_muxer.kwargs["parameters"][0]["output_topic"] == (
-        "/robot/left/joint_cmd"
-    )
-
-    assert right_muxer.kwargs["executable"] == "take_over"
-    assert right_muxer.kwargs["namespace"] == "/robot/right/takeover_muxer"
-    assert right_muxer.kwargs["parameters"][0]["algo_topic"].name == (
-        "right_algo_topic"
-    )
-    assert right_muxer.kwargs["parameters"][0]["override_topic"] == (
-        "/pico_teleop/joint_right"
-    )
-    assert right_muxer.kwargs["parameters"][0]["output_topic"] == (
-        "/robot/right/joint_cmd"
+    manager = _node_by_name(description, "control_manager")
+    assert manager.kwargs["package"] == "robo_orchard_control_manager_ros2"
+    assert manager.kwargs["executable"] == "control_manager_node"
+    assert manager.kwargs["remappings"][0][0] == "/left_algo_cmd"
+    assert manager.kwargs["remappings"][0][1].name == "left_algo_topic"
+    assert manager.kwargs["remappings"][1][0] == "/right_algo_cmd"
+    assert manager.kwargs["remappings"][1][1].name == "right_algo_topic"
+    assert not any(
+        node.kwargs["executable"] in {"take_over", "vr_orchestrator"}
+        for node in _nodes(description)
     )
 
 
@@ -258,40 +255,13 @@ def test_launch_wires_reset_joint_position_to_controllers():
     assert right_reset.value_type == List[float]
 
 
-def test_launch_wires_vr_orchestrators_to_slave_enable_and_muxer_services():
+def test_launch_uses_manager_config_instead_of_per_side_orchestrators():
     module = _load_module()
     description = module.generate_launch_description()
 
-    left_orchestrator = _node_by_name(
-        description, "robot_left_vr_orchestrator"
-    )
-    right_orchestrator = _node_by_name(
-        description, "robot_right_vr_orchestrator"
-    )
-
-    assert left_orchestrator.kwargs["executable"] == "vr_orchestrator"
-    assert (
-        left_orchestrator.kwargs["namespace"] == "/robot/left/vr_orchestrator"
-    )
-    assert left_orchestrator.kwargs["parameters"][0] == {
-        "enable_services": ["/robot/left/enable_ctrl"],
-        "muxer_release_service": "/robot/left/takeover_muxer/release_control",
-        "muxer_takeover_service": (
-            "/robot/left/takeover_muxer/trigger_takeover"
-        ),
-    }
-
-    assert right_orchestrator.kwargs["executable"] == "vr_orchestrator"
-    assert right_orchestrator.kwargs["namespace"] == (
-        "/robot/right/vr_orchestrator"
-    )
-    assert right_orchestrator.kwargs["parameters"][0] == {
-        "enable_services": ["/robot/right/enable_ctrl"],
-        "muxer_release_service": "/robot/right/takeover_muxer/release_control",
-        "muxer_takeover_service": (
-            "/robot/right/takeover_muxer/trigger_takeover"
-        ),
-    }
+    manager = _node_by_name(description, "control_manager")
+    config_value = manager.kwargs["parameters"][0]["config_file"]
+    assert config_value.name == "control_manager_config_file"
 
 
 def test_launch_routes_vr_teleop_outputs_and_feedback_topics():
@@ -305,8 +275,7 @@ def test_launch_routes_vr_teleop_outputs_and_feedback_topics():
     assert teleop.kwargs["parameters"][0]["urdf_path"].name == "urdf_path"
     assert teleop.kwargs["parameters"][0]["ee_link_name"] == "link6"
     assert teleop.kwargs["parameters"][0]["base_link_name"] == "base_link"
-    # DAgger mode switching stays on the frontend -> vr_orchestrator path.
-    # The Pico teleop node only gates local VR command output.
+    # All takeover/release mode switching now targets the global Manager.
     for service_param in (
         "left_takeover_service",
         "left_auto_service",
@@ -314,12 +283,8 @@ def test_launch_routes_vr_teleop_outputs_and_feedback_topics():
         "right_auto_service",
     ):
         assert service_param not in teleop.kwargs["parameters"][0]
-    # RESET chain service:
-    assert teleop.kwargs["parameters"][0]["left_reset_service"] == (
-        "/robot/left/reset_ctrl"
-    )
-    assert teleop.kwargs["parameters"][0]["right_reset_service"] == (
-        "/robot/right/reset_ctrl"
+    assert teleop.kwargs["parameters"][0]["reset_service"] == (
+        "/robot/control/reset"
     )
     assert (
         teleop.kwargs["parameters"][0]["match_tolerance"].name

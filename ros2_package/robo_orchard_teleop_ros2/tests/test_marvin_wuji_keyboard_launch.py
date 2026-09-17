@@ -109,7 +109,7 @@ def test_launch_adds_one_hand_and_glove_pair_per_side():
         dict(action.launch_arguments).get("command_topic")
         for action in actions
         if "command_topic" in dict(action.launch_arguments)
-    ] == ["/hand_left/joint_commands", "/hand_right/joint_commands"]
+    ] == ["/hand_left/control/override", "/hand_right/control/override"]
 
 
 def test_activation_source_is_pinned_to_keyboard():
@@ -117,6 +117,10 @@ def test_activation_source_is_pinned_to_keyboard():
     # A literal, not a LaunchConfiguration: the operator wears gloves and
     # cannot reach the Pico grip button, so this must not be overridable.
     assert dict(marvin.launch_arguments)["operator_input_source"] == "keyboard"
+    manager_config = dict(marvin.launch_arguments)[
+        "control_manager_config_file"
+    ]
+    assert manager_config.name == "control_manager_config_file"
 
 
 def test_keyboard_config_comes_from_dedicated_argument():

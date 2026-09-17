@@ -160,7 +160,7 @@ def _build_component(
     return component
 
 
-def test_reset_disables_inference_then_resets_when_node_active():
+def test_reset_delegates_to_manager_when_inference_node_active():
     component = _build_component(
         is_inference_service_running=True,
         inference_node_active=True,
@@ -168,10 +168,10 @@ def test_reset_disables_inference_then_resets_when_node_active():
 
     component.reset_arm_ctrl_callback()
 
-    assert component.ros_helper.calls == ["disable_inference", "reset_arm"]
+    assert component.ros_helper.calls == ["reset_arm"]
 
 
-def test_reset_skips_disable_when_no_inference_node():
+def test_reset_delegates_to_manager_without_inference_node():
     component = _build_component(
         is_inference_service_running=False,
         inference_node_active=False,
@@ -182,7 +182,7 @@ def test_reset_skips_disable_when_no_inference_node():
     assert component.ros_helper.calls == ["reset_arm"]
 
 
-def test_reset_aborts_when_disable_inference_fails():
+def test_reset_does_not_orchestrate_frontend_inference_disable():
     component = _build_component(
         is_inference_service_running=True,
         inference_node_active=True,
@@ -191,17 +191,17 @@ def test_reset_aborts_when_disable_inference_fails():
 
     component.reset_arm_ctrl_callback()
 
-    assert component.ros_helper.calls == ["disable_inference"]
-    assert len(component.logger.warnings) == 1
+    assert component.ros_helper.calls == ["reset_arm"]
+    assert component.logger.warnings == []
 
 
-def test_reset_is_disabled_in_takeover_mode():
+def test_reset_is_available_in_takeover_mode():
     component = _build_component(
         is_inference_service_running=False,
         control_mode="takeover",
     )
 
-    assert component._is_reset_disabled() is True
+    assert component._is_reset_disabled() is False
 
 
 def test_reset_remains_disabled_while_recording():
@@ -976,13 +976,13 @@ def test_recorder_panel_projects_status_without_runtime_or_file_polling(
     assert component.collecting_state.episode_counter.current() == 0
 
 
-def test_reset_is_disabled_in_stop_mode():
+def test_reset_is_available_in_stop_mode():
     component = _build_component(
         is_inference_service_running=False,
         control_mode="stop",
     )
 
-    assert component._is_reset_disabled() is True
+    assert component._is_reset_disabled() is False
 
 
 @pytest.fixture
@@ -1231,8 +1231,10 @@ def test_matching_status_hands_start_guard_over_to_node_state(
     [
         ("auto", True, False),
         ("auto", False, True),
-        ("takeover", False, False),
-        ("stop", False, False),
+        ("takeover", True, False),
+        ("takeover", False, True),
+        ("stop", True, False),
+        ("stop", False, True),
     ],
 )
 def test_reset_callback_rechecks_controls(

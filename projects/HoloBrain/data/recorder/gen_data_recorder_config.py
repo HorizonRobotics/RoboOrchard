@@ -26,7 +26,8 @@ from robo_orchard_data_ros2.mcap.config import (
 )
 
 
-def main():
+def build_config() -> RecordConfig:
+    """Build the HoloBrain recorder topic contract."""
     camera_namespace = "/agilex"
 
     config = RecordConfig(
@@ -64,10 +65,8 @@ def main():
             "/puppet/end_pose_right",
             "/puppet/status_right",
             # trigger events
-            "/robot/left/takeover_muxer/control_mode",
-            "/robot/left/takeover_muxer/events",
-            "/robot/right/takeover_muxer/control_mode",
-            "/robot/right/takeover_muxer/events",
+            "/robot/control/status",
+            "/robot/control/events",
             # others
             "/tf_static",
             "/tf",
@@ -233,10 +232,14 @@ def main():
         max_timestamp_difference_ns=0.5 * 1e9,  # 1s
     )
 
+    return config
+
+
+def main():
     with open(
         os.path.join(os.path.dirname(__file__), "data_recorder.json"), "w"
     ) as f:
-        f.write(config.model_dump_json(indent=4))
+        f.write(build_config().model_dump_json(indent=4))
 
 
 if __name__ == "__main__":

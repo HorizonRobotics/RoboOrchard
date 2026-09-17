@@ -87,10 +87,9 @@ def generate_launch_description():
         default_value="true",
         description="Whether enable mit control mode or not.",
     )
-    replay_time_s_arg = DeclareLaunchArgument(
-        "replay_time_s",
-        default_value="0.0",
-        description="Replay time (in seconds).",
+    control_manager_config_file_arg = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description="Control Manager configuration file.",
     )
     urdf_path_arg = DeclareLaunchArgument(
         "urdf_path",
@@ -132,9 +131,8 @@ def generate_launch_description():
         default_value="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]",
         description=(
             "Left arm reset target: 6 joint angles (rad) + gripper. "
-            "All reset sources (VR reset gesture, frontend button) "
-            "resolve to the single_ctrl reset_ctrl service, which uses "
-            "this value."
+            "The driver uses this value when Control Manager requests "
+            "a complete reset."
         ),
     )
     right_reset_joint_position_arg = DeclareLaunchArgument(
@@ -146,40 +144,19 @@ def generate_launch_description():
         ),
     )
 
-    left_takeover_muxer_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="take_over",
-        name="robot_left_takeover_muxer",
-        namespace="/robot/left/takeover_muxer",
+    control_manager_node = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
         output="screen",
         emulate_tty=True,
         parameters=[
-            {
-                "message_type": "sensor_msgs/msg/JointState",
-                "algo_topic": LaunchConfiguration("left_algo_topic"),
-                "override_topic": "/pico_teleop/joint_left",
-                "output_topic": "/robot/left/joint_cmd",
-                "override_mode_behavior": "forward",
-                "replay_time_s": LaunchConfiguration("replay_time_s"),
-            }
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
         ],
-    )
-    right_takeover_muxer_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="take_over",
-        name="robot_right_takeover_muxer",
-        namespace="/robot/right/takeover_muxer",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "message_type": "sensor_msgs/msg/JointState",
-                "algo_topic": LaunchConfiguration("right_algo_topic"),
-                "override_topic": "/pico_teleop/joint_right",
-                "output_topic": "/robot/right/joint_cmd",
-                "override_mode_behavior": "forward",
-                "replay_time_s": LaunchConfiguration("replay_time_s"),
-            }
+        remappings=[
+            ("/left_algo_cmd", LaunchConfiguration("left_algo_topic")),
+            ("/right_algo_cmd", LaunchConfiguration("right_algo_topic")),
         ],
     )
 
@@ -264,45 +241,6 @@ def generate_launch_description():
         ],
     )
 
-    left_vr_orchestrator_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="vr_orchestrator",
-        name="robot_left_vr_orchestrator",
-        namespace="/robot/left/vr_orchestrator",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "enable_services": ["/robot/left/enable_ctrl"],
-                "muxer_release_service": (
-                    "/robot/left/takeover_muxer/release_control"
-                ),
-                "muxer_takeover_service": (
-                    "/robot/left/takeover_muxer/trigger_takeover"
-                ),
-            }
-        ],
-    )
-    right_vr_orchestrator_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="vr_orchestrator",
-        name="robot_right_vr_orchestrator",
-        namespace="/robot/right/vr_orchestrator",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "enable_services": ["/robot/right/enable_ctrl"],
-                "muxer_release_service": (
-                    "/robot/right/takeover_muxer/release_control"
-                ),
-                "muxer_takeover_service": (
-                    "/robot/right/takeover_muxer/trigger_takeover"
-                ),
-            }
-        ],
-    )
-
     pico_bridge_node = Node(
         package="robo_orchard_teleop_ros2",
         executable="pico_bridge",
@@ -332,8 +270,7 @@ def generate_launch_description():
                 "urdf_path": LaunchConfiguration("urdf_path"),
                 "ee_link_name": "link6",
                 "base_link_name": "base_link",
-                "left_reset_service": "/robot/left/reset_ctrl",
-                "right_reset_service": "/robot/right/reset_ctrl",
+                "reset_service": "/robot/control/reset",
                 "match_tolerance": LaunchConfiguration("match_tolerance"),
                 "operator_input_source": LaunchConfiguration(
                     "operator_input_source"
@@ -376,7 +313,7 @@ def generate_launch_description():
             right_ee_frame_id_arg,
             publish_ee_tf_arg,
             enable_mit_control_mode_arg,
-            replay_time_s_arg,
+            control_manager_config_file_arg,
             urdf_path_arg,
             match_tolerance_arg,
             operator_input_source_arg,
@@ -386,12 +323,9 @@ def generate_launch_description():
             keyboard_activation_timeout_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
-            left_takeover_muxer_node,
-            right_takeover_muxer_node,
+            control_manager_node,
             left_controller_node,
             right_controller_node,
-            left_vr_orchestrator_node,
-            right_vr_orchestrator_node,
             pico_bridge_node,
             piper_pico_vr_teleop_node,
         ]

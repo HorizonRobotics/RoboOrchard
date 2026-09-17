@@ -28,7 +28,7 @@ from std_msgs.msg import Empty, Header
 from std_srvs.srv import Trigger
 
 from robo_orchard_pico_msg_ros2.msg import VRState
-from robo_orchard_teleop_msg_ros2.msg import TeleopActivationState
+from robo_orchard_teleop_msg_ros2.msg import ControlMode, TeleopActivationState
 from robo_orchard_teleop_ros2.bridge.pico.intent import (
     DisabledResetIntent,
     InactiveActivationIntent,
@@ -90,6 +90,7 @@ class MarvinPicoVRTeleOpNode(Node):
             "keyboard_activation_topic", "/teleop/activation/state"
         )
         self.declare_parameter("keyboard_reset_topic", "/teleop/reset")
+        self.declare_parameter("reset_service", "/robot/control/reset")
         self.declare_parameter("keyboard_activation_timeout_s", 0.2)
 
         self.urdf_path = str(self.get_parameter("urdf_path").value)
@@ -124,6 +125,7 @@ class MarvinPicoVRTeleOpNode(Node):
         self._keyboard_reset_topic = str(
             self.get_parameter("keyboard_reset_topic").value
         )
+        self._reset_service = str(self.get_parameter("reset_service").value)
         self._keyboard_activation_timeout_s = float(
             self.get_parameter("keyboard_activation_timeout_s").value
         )
@@ -158,6 +160,8 @@ class MarvinPicoVRTeleOpNode(Node):
             raise ValueError("keyboard_activation_topic must not be empty")
         if not self._keyboard_reset_topic:
             raise ValueError("keyboard_reset_topic must not be empty")
+        if not self._reset_service:
+            raise ValueError("reset_service must not be empty")
         if (
             not math.isfinite(self._keyboard_activation_timeout_s)
             or self._keyboard_activation_timeout_s <= 0.0
@@ -197,13 +201,13 @@ class MarvinPicoVRTeleOpNode(Node):
             "left": None,
             "right": None,
         }
-        self.reset_futures = {"left": None, "right": None}
+        self.reset_future = None
+        self._manager_resetting = False
+        self._reset_generation = 0
         self.last_joint_warning_ns = {"left": 0, "right": 0}
 
-        self.reset_clients = {
-            side: self.create_client(Trigger, f"/robot/{side}/reset_ctrl")
-            for side in ("left", "right")
-        }
+        self.reset_client = self.create_client(Trigger, self._reset_service)
+        self._destroying = False
         self.command_publishers = {
             side: self.create_publisher(
                 JointState, f"/robot/{side}/joint_cmd", 1
@@ -222,6 +226,12 @@ class MarvinPicoVRTeleOpNode(Node):
             "vr_state",
             self._vr_state_callback,
             1,
+        )
+        self.create_subscription(
+            ControlMode,
+            "/robot/control/status",
+            self._on_control_status,
+            10,
         )
         self.keyboard_activation_sub = None
         self.keyboard_reset_sub = None
@@ -293,25 +303,41 @@ class MarvinPicoVRTeleOpNode(Node):
         )
 
     def _on_keyboard_activation(self, message: TeleopActivationState) -> None:
-        if self._topic_activation_intent is not None:
-            self._topic_activation_intent.update(message)
+        if self._topic_activation_intent is None:
+            return
+        self._topic_activation_intent.update(message)
 
     def _on_keyboard_reset(self, _message: Empty) -> None:
         if self._topic_activation_intent is None:
             return
         self._topic_activation_intent.require_rearm()
-        for side in self._keyboard_sides():
-            if self.teleops[side].begin_reset():
-                self._request_reset(side)
+        self._request_reset()
+
+    def _on_control_status(self, message: ControlMode) -> None:
+        resetting = message.data == ControlMode.RESETTING
+        if resetting == self._manager_resetting:
+            return
+        self._manager_resetting = resetting
+        if resetting:
+            if self._topic_activation_intent is not None:
+                self._topic_activation_intent.require_rearm()
+            for teleop in self.teleops.values():
+                teleop.begin_reset()
+        elif self.reset_future is None:
+            self._finish_reset_state()
 
     def _vr_state_callback(self, message: VRState):
+        reset_requested = False
         for side in ("left", "right"):
             action = self.teleops[side].update_vr_state(message)
             if action == Action.RESET:
                 self.get_logger().info(
                     f"Marvin {side} reset gesture received."
                 )
-                self._request_reset(side)
+                reset_requested = True
+        if reset_requested:
+            self._request_reset()
+            return
 
     def _joint_state_callback(
         self, side: ArmSide, message: JointState
@@ -341,7 +367,7 @@ class MarvinPicoVRTeleOpNode(Node):
     def _control_callback(self) -> None:
         for side in ("left", "right"):
             if (
-                self.reset_futures[side] is not None
+                self.reset_future is not None
                 or self.current_joint_positions[side] is None
             ):
                 continue
@@ -373,56 +399,61 @@ class MarvinPicoVRTeleOpNode(Node):
                 )
             )
 
-    def _request_reset(self, side: ArmSide) -> None:
-        if self.reset_futures[side] is not None:
-            self.get_logger().warning(
-                f"Marvin {side} reset is already in progress."
-            )
+    def _request_reset(self) -> None:
+        if self.reset_future is not None or self._manager_resetting:
+            self.get_logger().warning("Marvin reset is already in progress.")
             return
-        client = self.reset_clients[side]
-        if not client.service_is_ready():
-            self.get_logger().warning(
-                f"Marvin {side} reset service is unavailable."
-            )
-            self._finish_reset_state(side)
+        for teleop in self.teleops.values():
+            teleop.begin_reset()
+        if not self.reset_client.service_is_ready():
+            self.get_logger().warning("Marvin reset service is unavailable.")
+            self._finish_reset_state()
             return
 
-        self.get_logger().info(f"Requesting Marvin {side} reset.")
+        self.get_logger().info("Requesting Marvin aggregate reset.")
         try:
-            future = client.call_async(Trigger.Request())
+            future = self.reset_client.call_async(Trigger.Request())
         except Exception as error:
-            self.get_logger().error(
-                f"Marvin {side} reset request failed: {error}"
-            )
-            self._finish_reset_state(side)
+            self.get_logger().error(f"Marvin reset request failed: {error}")
+            self._finish_reset_state()
             return
-        self.reset_futures[side] = future
-        future.add_done_callback(partial(self._reset_result, side))
+        self._reset_generation += 1
+        generation = self._reset_generation
+        self.reset_future = future
+        future.add_done_callback(partial(self._reset_result, generation))
 
-    def _reset_result(self, side: ArmSide, future) -> None:
+    def _reset_result(self, generation: int, future) -> None:
+        if self._destroying or generation != self._reset_generation:
+            return
         try:
             response = future.result()
             if response.success:
-                self.get_logger().info(
-                    f"Marvin {side} reset completed successfully."
-                )
+                self.get_logger().info("Marvin reset completed successfully.")
             else:
                 self.get_logger().warning(
-                    f"Marvin {side} reset failed: {response.message}"
+                    f"Marvin reset failed: {response.message}"
                 )
         except Exception as error:
-            self.get_logger().error(
-                f"Marvin {side} reset service failed: {error}"
-            )
+            self.get_logger().error(f"Marvin reset service failed: {error}")
         finally:
-            self._finish_reset_state(side)
-            self.reset_futures[side] = None
+            self._finish_reset_state()
+            self.reset_future = None
 
-    def _finish_reset_state(self, side: ArmSide) -> None:
-        positions = self.current_joint_positions[side]
-        if positions is not None:
-            self.teleops[side].update_robot_joint_state(positions)
-        self.teleops[side].finish_reset()
+    def _finish_reset_state(self) -> None:
+        if self._manager_resetting:
+            return
+        for side in ("left", "right"):
+            positions = self.current_joint_positions[side]
+            if positions is not None:
+                self.teleops[side].update_robot_joint_state(positions)
+            self.teleops[side].finish_reset()
+
+    def destroy_node(self) -> bool:
+        """Invalidate pending reset callbacks before node teardown."""
+        self._destroying = True
+        self._reset_generation += 1
+        self.reset_future = None
+        return super().destroy_node()
 
 
 def main(args=None):

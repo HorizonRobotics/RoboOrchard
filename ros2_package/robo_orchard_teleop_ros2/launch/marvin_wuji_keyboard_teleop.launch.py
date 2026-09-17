@@ -42,8 +42,8 @@ def _launch_source(package: str, launch_file: str):
 def _launch_instances(context):
     actions = []
     for instance in resolve_wuji_launch_instances(context, dagger=False):
-        hand_command_topic = f"/{instance.hand_name}/joint_commands"
-        actions.extend(build_wuji_pair_actions(instance, hand_command_topic))
+        override_topic = f"/{instance.hand_name}/control/override"
+        actions.extend(build_wuji_pair_actions(instance, override_topic))
     return actions
 
 
@@ -57,6 +57,9 @@ def generate_launch_description():
             "driver_config_file": LaunchConfiguration("driver_config_file"),
             "auto_enable_side": LaunchConfiguration("auto_enable_side"),
             "auto_enable_mode": LaunchConfiguration("auto_enable_mode"),
+            "control_manager_config_file": LaunchConfiguration(
+                "control_manager_config_file"
+            ),
             "keyboard_control_side": LaunchConfiguration(
                 "keyboard_control_side"
             ),
@@ -121,6 +124,13 @@ def generate_launch_description():
                     "Keyboard device and key mapping configuration. Required: "
                     "create it from config/teleop_keyboard.example.yaml and "
                     "fill in the device IDs of the intended interface."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "control_manager_config_file",
+                description=(
+                    "Control Manager configuration. Custom hand names need "
+                    "a matching channel configuration."
                 ),
             ),
             *declare_wuji_teleop_arguments(dagger=False),

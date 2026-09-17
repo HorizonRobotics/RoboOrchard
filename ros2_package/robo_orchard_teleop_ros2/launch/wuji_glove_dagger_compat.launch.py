@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 from launch import LaunchDescription
-from launch.actions import OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -29,35 +29,35 @@ from robo_orchard_teleop_ros2.wuji_teleop_launch import (
 def _launch_instances(context):
     actions = []
     for instance in resolve_wuji_launch_instances(context, dagger=True):
-        hand_command_topic = f"/{instance.hand_name}/joint_commands"
-        glove_command_topic = (
-            f"{instance.glove_namespace.rstrip('/')}/retargeted_joint_commands"
-        )
-        hand, glove = build_wuji_pair_actions(instance, glove_command_topic)
-        mux = Node(
-            package="robo_orchard_teleop_ros2",
-            executable="take_over",
-            name="wuji_hand_takeover_muxer",
-            namespace=f"/{instance.hand_name}/takeover_muxer",
-            output="screen",
-            emulate_tty=True,
-            parameters=[
-                {
-                    "message_type": "sensor_msgs/msg/JointState",
-                    "algo_topic": instance.algo_topic,
-                    "override_topic": glove_command_topic,
-                    "output_topic": hand_command_topic,
-                    "override_mode_behavior": "forward",
-                    "replay_time_s": LaunchConfiguration("replay_time_s"),
-                }
-            ],
-        )
-        actions.extend((hand, glove, mux))
+        override_topic = f"/{instance.hand_name}/control/override"
+        actions.extend(build_wuji_pair_actions(instance, override_topic))
     return actions
 
 
 def generate_launch_description():
     arguments = declare_wuji_teleop_arguments(dagger=True)
+    manager_config = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description=(
+            "Control Manager configuration, including replay time. Custom "
+            "hand names or algorithm topics need matching channels."
+        ),
+    )
+    manager = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
+        output="screen",
+        parameters=[
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
+        ],
+    )
     return LaunchDescription(
-        [*arguments, OpaqueFunction(function=_launch_instances)]
+        [
+            *arguments,
+            manager_config,
+            manager,
+            OpaqueFunction(function=_launch_instances),
+        ]
     )

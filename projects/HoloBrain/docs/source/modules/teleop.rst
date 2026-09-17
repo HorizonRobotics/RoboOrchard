@@ -9,31 +9,32 @@ We implement a control mode switching mechanism for robot arms via ROS Bridge, w
 
    Teleoperation Flowchart
 
-The system supports three distinct control modes:
+The system exposes four control states:
 
 - Autonomous Mode: The manipulator is governed by commands generated from high-level algorithms.
 
 - Takeover Mode: Facilitates human-in-the-loop control, supporting teleoperation frameworks such as ALOHA and Pico VR.
 
-- Stop Mode: Ensures the safety of the system by immediately terminating all robotic motions.
+- Stop Mode: Closes command forwarding; it does not stop hardware or issue an emergency stop.
+- Resetting: Closes command forwarding while inference is paused and hardware is reset.
 
 The default HoloBrain launch configuration targets ALOHA hardware. It uses
-``teleop/aloha_dagger.sh`` and app services under
-``/robot/*/aloha_orchestrator``. Pico VR uses ``teleop/pico_dagger.sh`` for
-DAgger workflows. Set ``TELEOP_SOURCE=pico`` so the launch template starts the
-Pico script and the app targets ``/robot/*/vr_orchestrator`` services.
+``teleop/aloha_dagger.sh``. Pico VR uses ``teleop/pico_dagger.sh`` for DAgger
+workflows. Set ``TELEOP_SOURCE=pico`` so the launch template starts the Pico
+script. Both runtimes generate their Control Manager configuration from the
+same command-channel definitions used by Deploy and expose the global
+``/robot/control/auto``, ``takeover``, ``stop``, and ``reset`` services.
 
 .. note::
 
-   In ALOHA mode, the application guards control mode transitions with the status of the master arms:
+   The inference Start and Stop buttons still call the Deploy enable and
+   disable services directly. Switching the Manager to Autonomous Mode does
+   not start Deploy.
 
-   - Before switching to Takeover Mode, both master arms must be in a valid teach state for takeover.
-   - Before switching back to Autonomous Mode, the system checks the master arm status again and recovers the master control mode first when needed.
-   - When a master arm is re-enabled from teach mode, the control chain no longer forces an extra reset step.
-
-Reset behavior is defined by the inference app launch configuration. In the
-default ALOHA setup, it resets both master and puppet arms. In Pico mode, it
-resets only the puppet arms.
+Reset ordering is owned by the Control Manager. It disables inference before
+resetting hardware; ALOHA resets both master and puppet arms, while Pico resets
+only the puppet arms. The inference app issues one global reset request and
+does not repeat that orchestration itself.
 
 .. figure:: ../_static/images/takeover.gif
    :alt: teleoperation

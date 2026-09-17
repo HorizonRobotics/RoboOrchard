@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
+    """Launch Aloha DAgger control through one Control Manager."""
     joint_names_args = [
         DeclareLaunchArgument(
             f"{side}_joint_names",
@@ -52,6 +52,21 @@ def generate_launch_description():
         "left_slave_can_port",
         default_value="can_left",
         description="CAN port for the left slave arm.",
+    )
+    right_algo_topic_arg = DeclareLaunchArgument(
+        "right_algo_topic",
+        default_value="/right_algo_cmd",
+        description="Algorithm command topic for the right arm.",
+    )
+    right_master_can_port_arg = DeclareLaunchArgument(
+        "right_master_can_port",
+        default_value="can_right_mst",
+        description="CAN port for the right master arm.",
+    )
+    right_slave_can_port_arg = DeclareLaunchArgument(
+        "right_slave_can_port",
+        default_value="can_right",
+        description="CAN port for the right slave arm.",
     )
     left_base_frame_id_arg = DeclareLaunchArgument(
         "left_base_frame_id",
@@ -104,22 +119,6 @@ def generate_launch_description():
         description="Publish dynamic end-effector TF for master arms.",
     )
 
-    right_algo_topic_arg = DeclareLaunchArgument(
-        "right_algo_topic",
-        default_value="/right_algo_cmd",
-        description="Algorithm command topic for the right arm.",
-    )
-    right_master_can_port_arg = DeclareLaunchArgument(
-        "right_master_can_port",
-        default_value="can_right_mst",
-        description="CAN port for the right master arm.",
-    )
-    right_slave_can_port_arg = DeclareLaunchArgument(
-        "right_slave_can_port",
-        default_value="can_right",
-        description="CAN port for the right slave arm.",
-    )
-
     enable_mit_control_mode_arg = DeclareLaunchArgument(
         "enable_mit_control_mode",
         default_value="true",
@@ -148,85 +147,26 @@ def generate_launch_description():
         ),
     )
 
-    replay_time_s_arg = DeclareLaunchArgument(
-        "replay_time_s",
-        default_value="0.0",
-        description="Replay time (in seconds)",
+    control_manager_config_file_arg = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description="Control Manager configuration file.",
     )
 
     # --- Node Definitions ---
 
-    # 1. Takeover Muxer Node
-    left_takeover_muxer_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="take_over",
-        name="robot_left_takeover_muxer",
-        namespace="/robot/left/takeover_muxer",
-        output="screen",
-        emulate_tty=True,  # Ensures logs are displayed properly
-        parameters=[
-            {
-                "message_type": "sensor_msgs/msg/JointState",
-                "algo_topic": LaunchConfiguration("left_algo_topic"),
-                "override_topic": "/master/joint_left",
-                "output_topic": "/robot/left/joint_cmd",
-                "override_mode_behavior": "forward",
-                "replay_time_s": LaunchConfiguration("replay_time_s"),
-            }
-        ],
-    )
-    right_takeover_muxer_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="take_over",
-        name="robot_right_takeover_muxer",
-        namespace="/robot/right/takeover_muxer",
-        output="screen",
-        emulate_tty=True,  # Ensures logs are displayed properly
-        parameters=[
-            {
-                "message_type": "sensor_msgs/msg/JointState",
-                "algo_topic": LaunchConfiguration("right_algo_topic"),
-                "override_topic": "/master/joint_right",
-                "output_topic": "/robot/right/joint_cmd",
-                "override_mode_behavior": "forward",
-                "replay_time_s": LaunchConfiguration("replay_time_s"),
-            }
-        ],
-    )
-    left_aloha_orchestrator_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="aloha_orchestrator",
-        name="robot_left_aloha_orchestrator",
-        namespace="/robot/left/aloha_orchestrator",
+    control_manager_node = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
         output="screen",
         emulate_tty=True,
         parameters=[
-            {
-                "enable_services": [
-                    "/robot/left/enable_ctrl",
-                    "/robot/left_master/enable_ctrl",
-                ],
-                "muxer_release_service": "/robot/left/takeover_muxer/release_control",  # noqa: E501
-                "muxer_takeover_service": "/robot/left/takeover_muxer/trigger_takeover",  # noqa: E501
-            }
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
         ],
-    )
-    right_aloha_orchestrator_node = Node(
-        package="robo_orchard_teleop_ros2",
-        executable="aloha_orchestrator",
-        name="robot_right_aloha_orchestrator",
-        namespace="/robot/right/aloha_orchestrator",
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            {
-                "enable_services": [
-                    "/robot/right/enable_ctrl",
-                    "/robot/right_master/enable_ctrl",
-                ],
-                "muxer_release_service": "/robot/right/takeover_muxer/release_control",  # noqa: E501
-                "muxer_takeover_service": "/robot/right/takeover_muxer/trigger_takeover",  # noqa: E501
-            }
+        remappings=[
+            ("/left_algo_cmd", LaunchConfiguration("left_algo_topic")),
+            ("/right_algo_cmd", LaunchConfiguration("right_algo_topic")),
         ],
     )
 
@@ -416,17 +356,14 @@ def generate_launch_description():
             publish_master_ee_tf_arg,
             enable_mit_control_mode_arg,
             enable_master_mit_control_mode_arg,
-            replay_time_s_arg,
+            control_manager_config_file_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
             # Add the nodes to be launched
-            left_takeover_muxer_node,
+            control_manager_node,
             left_master_controller_node,
             left_controller_node,
-            right_takeover_muxer_node,
             right_master_controller_node,
             right_controller_node,
-            left_aloha_orchestrator_node,
-            right_aloha_orchestrator_node,
         ]
     )

@@ -97,8 +97,12 @@ class ROSBridgeCfg(pydantic.BaseModel):
 
     # take over
     takeover_service_name: list[str] = pydantic.Field(default_factory=list)
-    release_service_name: list[str] = pydantic.Field(default_factory=list)
+    auto_service_name: list[str] = pydantic.Field(default_factory=list)
     stop_service_name: list[str] = pydantic.Field(default_factory=list)
+    reset_service_name: list[str] = pydantic.Field(default_factory=list)
+
+    control_status_topic: str = "/robot/control/status"
+    reset_timeout_s: float = pydantic.Field(default=180.0, gt=0.0)
 
     # inference
     enable_inference_service_name: list[str] = pydantic.Field(
@@ -113,10 +117,6 @@ class ROSBridgeCfg(pydantic.BaseModel):
     status_timeout_s: float = pydantic.Field(
         default=5.0, gt=0, allow_inf_nan=False
     )
-
-    # arm control
-    enable_arm_service_name: list[str] = pydantic.Field(default_factory=list)
-    reset_arm_service_name: list[str] = pydantic.Field(default_factory=list)
 
     # recorder
     recorder_name: str = "/mcap_recorder_service"

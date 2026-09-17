@@ -24,14 +24,14 @@ from robo_orchard_inference_app.config import (
 )
 
 
-def _make_ros_bridge_config(teleop_source: str) -> ROSBridgeCfg:
-    common_kwargs = dict(
+def _make_ros_bridge_config() -> ROSBridgeCfg:
+    return ROSBridgeCfg(
         host="localhost",
         port=9090,
-        stop_service_name=[
-            "/robot/left/takeover_muxer/stop",
-            "/robot/right/takeover_muxer/stop",
-        ],
+        takeover_service_name=["/robot/control/takeover"],
+        auto_service_name=["/robot/control/auto"],
+        stop_service_name=["/robot/control/stop"],
+        reset_service_name=["/robot/control/reset"],
         enable_inference_service_name=[
             "/robot/inference_service/enable",
         ],
@@ -47,58 +47,8 @@ def _make_ros_bridge_config(teleop_source: str) -> ROSBridgeCfg:
         static_transform_service_name="/set_static_transforms",
     )
 
-    if teleop_source == "aloha":
-        return ROSBridgeCfg(
-            **common_kwargs,
-            takeover_service_name=[
-                "/robot/left/aloha_orchestrator/takeover",
-                "/robot/right/aloha_orchestrator/takeover",
-            ],
-            release_service_name=[
-                "/robot/left/aloha_orchestrator/auto",
-                "/robot/right/aloha_orchestrator/auto",
-            ],
-            enable_arm_service_name=[
-                "/robot/left_master/enable_ctrl",
-                "/robot/right_master/enable_ctrl",
-            ],
-            reset_arm_service_name=[
-                "/robot/left_master/reset_ctrl",
-                "/robot/left/reset_ctrl",
-                "/robot/right_master/reset_ctrl",
-                "/robot/right/reset_ctrl",
-            ],
-        )
-
-    if teleop_source == "pico":
-        return ROSBridgeCfg(
-            **common_kwargs,
-            takeover_service_name=[
-                "/robot/left/vr_orchestrator/takeover",
-                "/robot/right/vr_orchestrator/takeover",
-            ],
-            release_service_name=[
-                "/robot/left/vr_orchestrator/auto",
-                "/robot/right/vr_orchestrator/auto",
-            ],
-            enable_arm_service_name=[
-                "/robot/left/enable_ctrl",
-                "/robot/right/enable_ctrl",
-            ],
-            reset_arm_service_name=[
-                "/robot/left/reset_ctrl",
-                "/robot/right/reset_ctrl",
-            ],
-        )
-
-    raise ValueError(
-        "Unsupported TELEOP_SOURCE: "
-        f"{teleop_source!r}. Expected 'aloha' or 'pico'."
-    )
-
 
 def main():
-    teleop_source = os.environ.get("TELEOP_SOURCE", "aloha").strip().lower()
     config = LaunchCfg(
         workspace="/data/holobrain/",
         foxglove=FoxgloveCfg(
@@ -109,7 +59,7 @@ def main():
             websocket_url="ws://localhost:8765",
             display_type="link_button",
         ),
-        ros_bridge=_make_ros_bridge_config(teleop_source),
+        ros_bridge=_make_ros_bridge_config(),
         ui_control=UIControlCfg(
             start_keyboard="s",
             stop_keyboard="f",

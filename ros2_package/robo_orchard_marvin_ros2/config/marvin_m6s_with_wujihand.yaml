@@ -2,6 +2,7 @@ marvin_driver_node:
   ros__parameters:
     auto_enable_side: none
     auto_enable_mode: ""
+    enable_ctrl_mode: joint_impedance
     control_frequency_hz: 200.0
     publish_ee_tf: true
     left_base_frame_id: robot_stand

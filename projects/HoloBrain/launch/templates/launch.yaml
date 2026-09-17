@@ -12,7 +12,7 @@ environment:
   RIGHT_WRIST_CAMERA_SERIAL_NO: "243322074840"
   ENV_CENTER_CAMERA_SERIAL_NO: "242222071855"
   # Default HoloBrain launch scripts target ALOHA. Set to "pico" to use
-  # teleop/pico_dagger.sh and vr_orchestrator services.
+  # teleop/pico_dagger.sh and global Control Manager services.
   TELEOP_SOURCE: "aloha"
   # Required by teleop/pico_dagger.sh.
   PIPER_URDF_PATH: ""

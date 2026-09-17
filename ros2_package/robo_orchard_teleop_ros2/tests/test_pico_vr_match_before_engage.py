@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
 import test_pico_vr_node as pico_stubs
 
 import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
@@ -159,10 +160,8 @@ def _build_node(
             ),
         ]
     )
-    node._left_reset_service = "/robot/left/reset_ctrl"
-    node._right_reset_service = "/robot/right/reset_ctrl"
-    node._left_reset_client = _FakeClient()
-    node._right_reset_client = _FakeClient()
+    node._reset_service = "/robot/control/reset"
+    node._reset_client = _FakeClient()
     return node
 
 
@@ -331,37 +330,50 @@ def test_keyboard_unselected_side_stays_inactive():
 def test_keyboard_reset_rearms_and_uses_existing_reset_chain():
     node = _build_node(operator_input_source="keyboard")
     node._arm_state["left"] = ArmEngageState.ACTIVE
-    node._left_reset_client.response = _trigger_response(success=True)
+    node._reset_client.response = _trigger_response(success=True)
     empty = sys.modules["std_msgs.msg"].Empty()
 
     node._on_keyboard_reset(empty)
 
     assert node._topic_activation_intent.require_rearm_count == 1
     assert VRTeleOp.instances[0].reset_session_count == 1
-    assert len(node._left_reset_client.calls) == 1
+    assert len(node._reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
 
 
 # ---------------------------------------------------------------------------
-# RESET chain: state-aware reset_ctrl dispatch
+# RESET chain: state-aware global Manager dispatch
 # ---------------------------------------------------------------------------
 
 
-def test_reset_from_deactive_calls_reset_ctrl():
+def test_reset_from_deactive_calls_global_manager():
     node = _build_node()
-    node._left_reset_client.response = _trigger_response(success=True)
+    node._reset_client.response = _trigger_response(success=True)
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
-    assert len(node._left_reset_client.calls) == 1
+    assert len(node._reset_client.calls) == 1
     assert VRTeleOp.instances[0].finish_reset_count == 1
+
+
+def test_both_reset_gestures_call_the_same_global_manager_service():
+    node = _build_node()
+    node._reset_client.response = _trigger_response(success=True)
+
+    node._on_vr_state_side("left", Action.RESET, _vr_state())
+    node._on_vr_state_side("right", Action.RESET, _vr_state())
+
+    assert node._reset_service == "/robot/control/reset"
+    assert len(node._reset_client.calls) == 2
+    assert VRTeleOp.instances[0].finish_reset_count == 2
+    assert VRTeleOp.instances[1].finish_reset_count == 2
 
 
 def test_reset_refused_when_no_reset_service_configured():
     node = _build_node()
-    node._left_reset_service = ""
-    node._left_reset_client = None
+    node._reset_service = ""
+    node._reset_client = None
     node._arm_state["left"] = ArmEngageState.ACTIVE
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
@@ -382,35 +394,35 @@ def test_reset_idempotent_in_arm_resetting():
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
     assert node._arm_state["left"] == ArmEngageState.ARM_RESETTING
-    assert node._left_reset_client.calls == []
+    assert node._reset_client.calls == []
 
 
-def test_reset_from_active_calls_reset_ctrl_only():
-    # ACTIVE -> ARM_RESETTING -> reset_ctrl -> DEACTIVE.
-    # DAgger mode is controlled by the frontend and is not changed here.
+def test_reset_from_active_calls_manager_only():
+    # ACTIVE -> ARM_RESETTING -> global reset -> DEACTIVE.
     node = _build_node()
     node._arm_state["left"] = ArmEngageState.ACTIVE
-    node._left_reset_client.response = _trigger_response(success=True)
+    node._reset_client.response = _trigger_response(success=True)
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
-    assert len(node._left_reset_client.calls) == 1
+    assert len(node._reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
     assert VRTeleOp.instances[0].finish_reset_count == 1
     assert any(
-        "DAgger mode unchanged" in msg for msg in _messages(node, "info")
+        "global Control Manager reset" in msg
+        for msg in _messages(node, "info")
     )
 
 
-def test_reset_from_waiting_calls_reset_ctrl_only():
-    # WAITING_FOR_MATCH -> ARM_RESETTING -> reset_ctrl -> DEACTIVE.
+def test_reset_from_waiting_calls_manager_only():
+    # WAITING_FOR_MATCH -> ARM_RESETTING -> global reset -> DEACTIVE.
     node = _build_node()
     node._arm_state["left"] = ArmEngageState.WAITING_FOR_MATCH
-    node._left_reset_client.response = _trigger_response(success=True)
+    node._reset_client.response = _trigger_response(success=True)
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
-    assert len(node._left_reset_client.calls) == 1
+    assert len(node._reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
     assert VRTeleOp.instances[0].finish_reset_count == 1
 
@@ -418,13 +430,13 @@ def test_reset_from_waiting_calls_reset_ctrl_only():
 def test_reset_failure_returns_deactive_without_mode_switch():
     node = _build_node()
     node._arm_state["left"] = ArmEngageState.ACTIVE
-    node._left_reset_client.response = _trigger_response(
+    node._reset_client.response = _trigger_response(
         success=False, message="busy"
     )
 
     node._on_vr_state_side("left", Action.RESET, _vr_state())
 
-    assert len(node._left_reset_client.calls) == 1
+    assert len(node._reset_client.calls) == 1
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
     assert VRTeleOp.instances[0].finish_reset_count == 1
 
@@ -438,18 +450,96 @@ def test_reset_stays_blocked_until_async_service_completes():
     assert node._arm_state["left"] == ArmEngageState.ARM_RESETTING
     assert not hasattr(VRTeleOp.instances[0], "finish_reset_count")
 
-    node._left_reset_client.futures[0].set_result(
-        _trigger_response(success=True)
-    )
+    node._reset_client.futures[0].set_result(_trigger_response(success=True))
 
     assert node._arm_state["left"] == ArmEngageState.DEACTIVE
     assert VRTeleOp.instances[0].finish_reset_count == 1
 
 
+def test_single_gesture_invalidates_both_active_sessions():
+    node = _build_node()
+    node._arm_state = dict.fromkeys(("left", "right"), ArmEngageState.ACTIVE)
+
+    node._on_vr_state_side("left", Action.RESET, _vr_state())
+
+    assert len(node._reset_client.calls) == 1
+    for side, teleop in zip(
+        ("left", "right"), VRTeleOp.instances, strict=True
+    ):
+        assert node._arm_state[side] == ArmEngageState.ARM_RESETTING
+        assert not node._should_drive_side(side)
+        assert teleop.reset_session_count == 1
+
+    node._reset_client.futures[0].set_result(_trigger_response(success=True))
+
+    for side, teleop in zip(
+        ("left", "right"), VRTeleOp.instances, strict=True
+    ):
+        assert node._arm_state[side] == ArmEngageState.DEACTIVE
+        assert not node._should_drive_side(side)
+        assert teleop.finish_reset_count == 1
+
+
+@pytest.mark.parametrize("response_success", [True, False])
+@pytest.mark.parametrize(
+    "response_order", ["before_status", "during", "after"]
+)
+def test_reset_response_does_not_override_manager_reset(
+    response_success, response_order
+):
+    node = _build_node()
+    node._on_vr_state_side("left", Action.RESET, _vr_state())
+    future = node._reset_client.futures[0]
+    response = _trigger_response(success=response_success)
+    if response_order == "before_status":
+        future.set_result(response)
+    node._on_control_status(types.SimpleNamespace(data="resetting"))
+    if response_order == "during":
+        future.set_result(response)
+    assert all(
+        state == ArmEngageState.ARM_RESETTING
+        for state in node._arm_state.values()
+    )
+    node._on_control_status(types.SimpleNamespace(data="stop"))
+    if response_order == "after":
+        assert all(
+            state == ArmEngageState.ARM_RESETTING
+            for state in node._arm_state.values()
+        )
+        future.set_result(response)
+    assert all(
+        state == ArmEngageState.DEACTIVE for state in node._arm_state.values()
+    )
+
+
+def test_external_reset_uses_status_subscription_without_service_request():
+    node = _build_node(operator_input_source="keyboard")
+    subscriptions = [
+        args
+        for args, _ in node.subscriptions
+        if args[1] == "/robot/control/status"
+    ]
+    assert len(subscriptions) == 1
+    assert subscriptions[0][3] == 10
+    callback = subscriptions[0][2]
+    callback(types.SimpleNamespace(data="resetting"))
+    callback(types.SimpleNamespace(data="resetting"))
+    assert node._reset_client.calls == []
+    assert all(
+        teleop.reset_session_count == 1 for teleop in VRTeleOp.instances
+    )
+    assert all(
+        state == ArmEngageState.ARM_RESETTING
+        for state in node._arm_state.values()
+    )
+    callback(types.SimpleNamespace(data="stop"))
+    callback(types.SimpleNamespace(data="stop"))
+    assert all(teleop.finish_reset_count == 1 for teleop in VRTeleOp.instances)
+
+
 def test_timer_suppresses_publish_during_arm_resetting():
     # While the reset chain runs, the VR-rate timer must not push joint
-    # cmds (they would either be dropped by the muxer or race the SDK
-    # path inside reset_ctrl).
+    # cmds while the Manager reset is in flight.
     node = _build_node()
     node._arm_state["left"] = ArmEngageState.ARM_RESETTING
     left_teleop = VRTeleOp.instances[0]

@@ -34,25 +34,55 @@ node. Append `--show-args` to any launch file to list its parameters.
 Aloha, Piper:
 
 ```bash
-ros2 launch robo_orchard_teleop_ros2 piper_aloha_compat.launch.py
+ros2 launch robo_orchard_teleop_ros2 piper_aloha_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json
 ```
+
+Piper runtimes start in the global `STOP` state. Request takeover before
+moving an Aloha leader, or request auto before starting autonomous output:
+
+```bash
+ros2 service call /robot/control/takeover std_srvs/srv/Trigger '{}'
+```
+
+The Piper drivers intentionally start with `auto_enable_arm_ctrl` enabled.
+This establishes their hardware-side ready state; it does not open a command
+route. In particular, takeover and reset may be requested directly from
+`STOP`, and neither transition runs the Manager's Auto enable sequence. While
+the Manager remains in `STOP`, it publishes no driver commands even though
+the drivers are ready. A later Auto request still calls every configured
+`enable_ctrl` service, which returns success when a driver is already ready.
+
+Mainline Piper launches also broadcast follower end-effector TF by default:
+`left_base_link -> left_end_effector` and
+`right_base_link -> right_end_effector`. Override the frames with
+`left_base_frame_id`, `left_ee_frame_id`, `right_base_frame_id`, and
+`right_ee_frame_id`, or set `publish_ee_tf:=false` to keep only pose topics.
+In four-arm Aloha/Dagger launches, master TF is disabled by default; the
+`left_master_*` / `right_master_*` frame arguments and `publish_master_ee_tf`
+configure it separately. Match these frame names to the hand-eye calibration
+configuration. See the [Piper package README](../robo_orchard_piper_ros2/README.md)
+for the complete parameter contract. The separate Raw Aloha launch is unchanged.
 
 Pico VR, Piper:
 
 ```bash
-ros2 launch robo_orchard_teleop_ros2 piper_pico_teleop_compat.launch.py
+ros2 launch robo_orchard_teleop_ros2 piper_pico_teleop_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json
 ```
 
 Pico VR, Marvin:
 
 ```bash
-ros2 launch robo_orchard_teleop_ros2 marvin_pico_teleop.launch.py
+ros2 launch robo_orchard_teleop_ros2 marvin_pico_teleop.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json
 ```
 
 Wuji glove and hand:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 wuji_glove_teleop_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   hand_side:=left,right \
   hand_name:=hand_left,hand_right \
   hand_serial_number:=<left-hand-serial>,<right-hand-serial> \
@@ -63,10 +93,17 @@ Every glove argument takes one comma-separated entry per instance. Serial
 numbers are required once both sides are connected, because handedness alone
 no longer identifies a device.
 
+The launch starts one Control Manager. Glove commands enter its override
+channels and only Manager output reaches each Wuji Hand command topic. The
+project must supply a matching
+`control_manager_config_file` with its hand names
+and algorithm topics. No Wuji Hand reset service is assumed.
+
 Marvin with the Wuji hand:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 marvin_wuji_keyboard_teleop.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   keyboard_config_file:=$HOME/teleop_keyboard.yaml \
   hand_side:=left,right \
   hand_name:=hand_left,hand_right \
@@ -84,7 +121,8 @@ Prefix any of these with `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 taskset -c
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 taskset -c 0-7 \
-  ros2 launch robo_orchard_teleop_ros2 marvin_pico_teleop.launch.py
+  ros2 launch robo_orchard_teleop_ros2 marvin_pico_teleop.launch.py \
+    control_manager_config_file:=/path/to/project/control_manager.json
 ```
 
 `taskset` keeps the stack on the performance cores. The control loop is
@@ -109,9 +147,11 @@ by default; the `left_master_*` / `right_master_*` frame arguments and
 `publish_master_ee_tf` configure it separately. Match these frame names to
 the hand-eye calibration configuration. See the
 [Piper package README](../robo_orchard_piper_ros2/README.md) for the complete
-parameter contract. The existing Aloha and Raw Aloha launches still use their
-separate drivers and are unchanged; control routing and reset behavior remain
-with the existing nodes.
+parameter contract. Ordinary Aloha (`piper_aloha_compat.launch.py`) delegates
+to the managed four-arm DAgger launch, requires `control_manager_config_file`,
+and starts in `STOP`; explicitly select `TAKEOVER` to route master commands.
+Only Raw Aloha retains its separate low-level drivers and existing control
+and reset behavior without a Control Manager.
 
 ## Engaging teleop
 
@@ -119,8 +159,9 @@ Teleop drives the robot only while the operator engages it. Two input sources
 are available, selected with `operator_input_source`:
 
 - `pico` (default) — hold the grip button on the Pico controller.
-- `keyboard` — hold `T` for one second to engage, release to stop; hold `R`
-  for one second to request a reset.
+- `keyboard` — hold `T` for one second to enable local arm command output and
+  release it to stop that output; hold `R` for one second to request a global
+  reset.
 
 Keyboard input replaces engage and reset only. The pose source is unchanged,
 so the Pico headset still has to be running.
@@ -150,6 +191,7 @@ ros2 launch robo_orchard_teleop_ros2 teleop_keyboard.launch.py \
   config_file:=$HOME/teleop_keyboard.yaml
 
 ros2 launch robo_orchard_teleop_ros2 marvin_pico_teleop.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   operator_input_source:=keyboard \
   keyboard_control_side:=both
 ```
@@ -166,9 +208,23 @@ vendor, product and interface numbers.
 
 ## DAgger take-over
 
-The `*_dagger_compat.launch.py` files add a mux that lets a policy drive the
-robot and hands control to the operator mid-episode. Piper and the glove have
-one; Marvin does not yet.
+The Piper and Wuji `*_dagger_compat.launch.py` files start one Control Manager
+that routes policy commands as autonomous input and teleoperation commands as
+override input. Pico grips, triggers, and keyboard or pedal activation only
+gate local teleoperation output; they do not change the Control Manager mode.
+Callers such as the frontend switch the global mode explicitly through the
+Control Manager services. Pico reset gestures still request the global reset.
+Piper and Marvin Pico nodes also subscribe to `/robot/control/status` with a
+reliable queue of depth 10. Every observed `resetting` transition invalidates
+both local teleop sessions and their pose baselines, including resets requested
+by the App or another service client. Repeated reset heartbeats do not restart
+the local reset. Output stays blocked until the Manager leaves `resetting`
+and any locally requested reset returns, including failure responses. Held
+Pico or keyboard activation cannot resume the old session: release and
+re-activate to capture a new baseline. Reset leaves the Manager in `stop`;
+hardware enablement and selecting `takeover` remain separate operations.
+Wuji replay time is configured in the project Manager configuration; the old
+`replay_time_s` launch argument is no longer used.
 
 Handing over a gripper needs care, because the policy leaves it at an
 arbitrary opening. On Piper the VR trigger drives the gripper — released is
@@ -184,3 +240,15 @@ another robot paired with the gloves, or keyboard activation for a stack that
 does not start the keyboard node itself — is not provided. Either start the
 extra launch files alongside each other as shown above, or copy the closest
 launch file and add the nodes you need.
+
+
+## Project-owned control configuration
+
+Managed robot launches require `control_manager_config_file:=<path>`.
+The Control Manager package provides validation and routing, not robot
+profiles. HoloBrain's `teleop/aloha_dagger.sh` and `teleop/pico_dagger.sh`
+already generate and pass the Piper configuration using
+`projects/HoloBrain/teleop/gen_control_manager_config.py`.
+Other projects supply their own command topics and lifecycle services.
+Pure collection configurations must omit inference disable services when
+Deploy is not launched.

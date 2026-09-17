@@ -251,6 +251,8 @@ public:
       declare_parameter<std::string>("auto_enable_side", "none");
     auto_enable_mode_name_ =
       declare_parameter<std::string>("auto_enable_mode", "");
+    enable_ctrl_mode_name_ =
+      declare_parameter<std::string>("enable_ctrl_mode", "joint_impedance");
     control_frequency_hz_ =
       declare_parameter<double>("control_frequency_hz", 200.0);
     feedback_stale_timeout_s_ =
@@ -367,6 +369,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr error_code_pub;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_command_sub;
     rclcpp::Service<SetControlMode>::SharedPtr set_mode_service;
+    rclcpp::Service<Trigger>::SharedPtr enable_service;
     rclcpp::Service<Trigger>::SharedPtr reset_service;
     rclcpp::Service<Trigger>::SharedPtr clear_error_service;
     rclcpp::Service<Trigger>::SharedPtr emergency_stop_service;
@@ -476,6 +479,11 @@ private:
       RCLCPP_WARN(
         get_logger(), "auto_enable_mode is ignored because auto_enable_side is none");
     }
+    enable_ctrl_mode_ = mode_from_parameter(enable_ctrl_mode_name_);
+    if (!enable_ctrl_mode_.has_value()) {
+      throw std::invalid_argument(
+              "enable_ctrl_mode must be position, joint_impedance, or joint_drag");
+    }
   }
 
   void configure_arms()
@@ -530,6 +538,13 @@ private:
           SetControlMode::Response::SharedPtr response)
         {
           set_mode_service_callback(index, *request, *response);
+        });
+      arm.enable_service = create_service<Trigger>(
+        prefix + "/enable_ctrl",
+        [this, index](
+          const Trigger::Request::SharedPtr, Trigger::Response::SharedPtr response)
+        {
+          enable_ctrl_service_callback(index, *response);
         });
       arm.reset_service = create_service<Trigger>(
         prefix + "/reset_ctrl",
@@ -1256,6 +1271,14 @@ private:
     response.current_mode = static_cast<std::uint8_t>(inferred_mode(arms_[arm_index]));
   }
 
+  void enable_ctrl_service_callback(
+    std::size_t arm_index, Trigger::Response & response)
+  {
+    std::lock_guard<std::mutex> lock(sdk_mutex_);
+    response.success =
+      set_mode_unlocked(arm_index, *enable_ctrl_mode_, response.message);
+  }
+
   bool set_mode_unlocked(
     std::size_t arm_index, ControlMode target_mode, std::string & message)
   {
@@ -1678,6 +1701,8 @@ private:
   std::string auto_enable_side_;
   std::string auto_enable_mode_name_;
   std::optional<ControlMode> auto_enable_mode_;
+  std::string enable_ctrl_mode_name_;
+  std::optional<ControlMode> enable_ctrl_mode_;
   double control_frequency_hz_{200.0};
   double feedback_stale_timeout_s_{0.1};
   double mode_switch_timeout_s_{2.0};

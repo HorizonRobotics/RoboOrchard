@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 import math
 import os
 from enum import Enum, unique
-from typing import Any, Literal
+from typing import Literal
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -29,7 +29,7 @@ from std_srvs.srv import Trigger
 from robo_orchard_pico_msg_ros2.msg import (
     VRState,
 )
-from robo_orchard_teleop_msg_ros2.msg import TeleopActivationState
+from robo_orchard_teleop_msg_ros2.msg import ControlMode, TeleopActivationState
 from robo_orchard_teleop_ros2.bridge.pico.intent import (
     DisabledResetIntent,
     InactiveActivationIntent,
@@ -88,7 +88,7 @@ class ArmEngageState(Enum):
     WAITING_FOR_MATCH = "WAITING_FOR_MATCH"
     ACTIVE = "ACTIVE"
     ARM_RESETTING = "ARM_RESETTING"
-    """The reset_ctrl chain is in-flight. VR output is suppressed and new
+    """The Manager reset is in-flight. VR output is suppressed and new
     VRState events are ignored until the chain resolves to DEACTIVE. The
     shared teleop state then requires a gripper release before re-engaging."""
 
@@ -207,82 +207,44 @@ class PiperPicoVRTeleOpNode(Node):
         if self._keyboard_activation_timeout_s <= 0.0:
             raise ValueError("keyboard_activation_timeout_s must be positive")
 
-        # --- Reset service parameters ---
-        # DAgger takeover/auto mode is controlled by the HoloBrain app via
-        # vr_orchestrator services. This node only gates local VR command
-        # output from the Pico controller.
+        # --- Global reset intent ---
         self.declare_parameter(
-            "left_reset_service",
-            "",
+            "reset_service",
+            "/robot/control/reset",
             descriptor=ParameterDescriptor(
                 description=(
-                    "Fully-qualified name of the left-side reset_ctrl "
-                    "(std_srvs/Trigger) provided by piper_ros2. Empty "
-                    "disables RESET for this side."
+                    "Fully-qualified Control Manager reset service. Both "
+                    "Pico reset gestures request this same global reset."
                 )
             ),
         )
-        self.declare_parameter(
-            "right_reset_service",
-            "",
-            descriptor=ParameterDescriptor(
-                description=(
-                    "Fully-qualified name of the right-side reset_ctrl "
-                    "(std_srvs/Trigger) provided by piper_ros2. Empty "
-                    "disables RESET for this side."
-                )
-            ),
-        )
-
-        self._left_reset_service: str = (
-            self.get_parameter("left_reset_service")
-            .get_parameter_value()
-            .string_value
-        )
-        self._right_reset_service: str = (
-            self.get_parameter("right_reset_service")
+        self._reset_service: str = (
+            self.get_parameter("reset_service")
             .get_parameter_value()
             .string_value
         )
 
-        # --- Service clients for reset gesture orchestration ---
-        self._left_reset_client = (
-            self.create_client(Trigger, self._left_reset_service)
-            if self._left_reset_service
-            else None
-        )
-        self._right_reset_client = (
-            self.create_client(Trigger, self._right_reset_service)
-            if self._right_reset_service
+        self._manager_resetting = False
+        self._reset_pending = False
+        self._reset_client = (
+            self.create_client(Trigger, self._reset_service)
+            if self._reset_service
             else None
         )
 
         # Best-effort pre-warm of DDS discovery so the VR-rate callback
         # does not block on it. Runtime falls back to a synthesized failure
         # response if a service stays unavailable.
-        for client, service_name in (
-            (self._left_reset_client, self._left_reset_service),
-            (self._right_reset_client, self._right_reset_service),
-        ):
-            if client is None:
-                continue
-            if not client.wait_for_service(timeout_sec=2.0):
+        if self._reset_client is not None:
+            if not self._reset_client.wait_for_service(timeout_sec=2.0):
                 self.get_logger().warning(
-                    f"Service '{service_name}' not yet discovered; "
+                    f"Service '{self._reset_service}' not yet discovered; "
                     "runtime calls may fail until it appears."
                 )
-
-        # Surface a missing reset_service per side at startup so operators
-        # know RESET will be inert until the param is configured.
-        for side, reset_service in (
-            ("left", self._left_reset_service),
-            ("right", self._right_reset_service),
-        ):
-            if not reset_service:
-                self.get_logger().warning(
-                    f"[{side}] No reset_service configured; RESET gesture "
-                    "will be a no-op for this side."
-                )
+        else:
+            self.get_logger().warning(
+                "No reset_service configured; RESET gestures will be no-op."
+            )
 
         # --- Match-before-engage state machine ---
         self._arm_state: dict[str, ArmEngageState] = {
@@ -343,6 +305,12 @@ class PiperPicoVRTeleOpNode(Node):
         # sub
         self.vr_state_sub = self.create_subscription(
             VRState, "vr_state", self.sub_vr_state_callback, 1
+        )
+        self.create_subscription(
+            ControlMode,
+            "/robot/control/status",
+            self._on_control_status,
+            10,
         )
         self.keyboard_activation_sub = None
         self.keyboard_reset_sub = None
@@ -446,11 +414,8 @@ class PiperPicoVRTeleOpNode(Node):
         if self._topic_activation_intent is None:
             return
         self._topic_activation_intent.require_rearm()
-        for side in self._keyboard_sides():
-            teleop = self.left_teleop if side == "left" else self.right_teleop
-            state = self._arm_state[side]
-            teleop.reset_session()
-            self._handle_reset(side, state)
+        side = self._keyboard_sides()[0]
+        self._handle_reset(side, self._arm_state[side])
 
     def sub_vr_state_callback(self, msg: VRState):
         # The state machine itself gates VR processing during ARM_RESETTING
@@ -487,14 +452,6 @@ class PiperPicoVRTeleOpNode(Node):
             return
         self.right_joint_state_msg = msg
         self.right_teleop.update_robot_joint_state(msg.position[:-1])
-
-    def _reset_service_pair(
-        self, side: Literal["left", "right"]
-    ) -> tuple[str, Any]:
-        """Return (service_name, client) for the side's reset_ctrl."""
-        if side == "left":
-            return self._left_reset_service, self._left_reset_client
-        return self._right_reset_service, self._right_reset_client
 
     def _get_robot_gripper_value(
         self, side: Literal["left", "right"]
@@ -578,9 +535,8 @@ class PiperPicoVRTeleOpNode(Node):
         """Drive the per-side match-before-engage state machine.
 
         Called from sub_vr_state_callback for each side independently.
-        This state machine only gates Pico VR command output. DAgger
-        takeover/auto mode is switched by the frontend app through the
-        vr_orchestrator services, matching the ALOHA workflow.
+        This state machine only gates Pico VR command output. Control Manager
+        mode transitions are requested explicitly by external callers.
 
         State transitions:
           DEACTIVE --[engage edge]--> WAITING_FOR_MATCH
@@ -591,7 +547,7 @@ class PiperPicoVRTeleOpNode(Node):
           ACTIVE --[release]--> DEACTIVE
 
           {DEACTIVE, WAITING_FOR_MATCH, ACTIVE} --[RESET]--> ARM_RESETTING
-            ARM_RESETTING runs reset_ctrl -> DEACTIVE. See _handle_reset.
+            ARM_RESETTING runs Manager reset -> DEACTIVE. See _handle_reset.
         """
         state = self._arm_state[side]
 
@@ -716,30 +672,59 @@ class PiperPicoVRTeleOpNode(Node):
         self._arm_state[side] = ArmEngageState.ACTIVE
         self.get_logger().info(f"[{side}] {source} -- VR teleop is ACTIVE.")
 
+    def _on_control_status(self, message: ControlMode) -> None:
+        resetting = message.data == ControlMode.RESETTING
+        if resetting == self._manager_resetting:
+            return
+        self._manager_resetting = resetting
+        if resetting:
+            if self._topic_activation_intent is not None:
+                self._topic_activation_intent.require_rearm()
+            self._begin_reset_state()
+        else:
+            self._finish_reset_state()
+
+    def _begin_reset_state(self) -> None:
+        for side, teleop in (
+            ("left", self.left_teleop),
+            ("right", self.right_teleop),
+        ):
+            self._arm_state[side] = ArmEngageState.ARM_RESETTING
+            teleop.begin_reset()
+
+    def _finish_reset_state(self) -> None:
+        if self._manager_resetting or self._reset_pending:
+            return
+        for side, teleop in (
+            ("left", self.left_teleop),
+            ("right", self.right_teleop),
+        ):
+            self._arm_state[side] = ArmEngageState.DEACTIVE
+            teleop.finish_reset()
+
     def _handle_reset(
         self,
         side: Literal["left", "right"],
         state: ArmEngageState,
     ) -> None:
-        """Validate and kick off the RESET chain for one side.
+        """Reset both local sessions before dispatching a global reset.
 
         Refuse-cases (log + no-op):
           ARM_RESETTING             : already in progress (idempotent)
-          reset_service unconfigured: RESET wiring missing for this side
+          reset_service unconfigured: RESET wiring missing
 
         Accept-cases (transition to ARM_RESETTING and dispatch chain):
-          DEACTIVE         : reset_ctrl
-          WAITING_FOR_MATCH: reset_ctrl
-          ACTIVE           : reset_ctrl
+          DEACTIVE         : Manager reset
+          WAITING_FOR_MATCH: Manager reset
+          ACTIVE           : Manager reset
 
-        This gesture does not switch DAgger mode. Operators should use the
-        frontend app's takeover/release services for AUTO/OVERRIDE changes.
+        This gesture does not select the post-reset mode. Control Manager
+        mode transitions are requested explicitly by external callers.
         """
         if state == ArmEngageState.ARM_RESETTING:
             return  # idempotent
 
-        reset_service, _ = self._reset_service_pair(side)
-        if not reset_service:
+        if not self._reset_service:
             self.get_logger().error(
                 f"[{side}] RESET refused: no reset_service configured."
             )
@@ -748,52 +733,42 @@ class PiperPicoVRTeleOpNode(Node):
             teleop.finish_reset()
             return
 
-        self._arm_state[side] = ArmEngageState.ARM_RESETTING
+        self._begin_reset_state()
 
         self.get_logger().info(
             f"[{side}] RESET requested (from {state.value}). "
-            "Plan: reset_ctrl only; DAgger mode unchanged."
+            "Dispatching the global Control Manager reset."
         )
 
-        self._reset_dispatch_reset_ctrl(side)
+        self._reset_dispatch_manager(side)
 
-    def _reset_dispatch_reset_ctrl(
+    def _reset_dispatch_manager(
         self,
         side: Literal["left", "right"],
     ) -> None:
-        """Ask piper_ros2 to drive the arm to its configured home pose.
+        """Ask the Control Manager to reset its complete configured scope."""
+        reset_service = self._reset_service
+        reset_client = self._reset_client
 
-        reset_ctrl bypasses the muxer entirely (writes through SDK) and
-        blocks server-side for ~3 s while running its joint interpolation.
-        This node does not switch muxer mode around it.
-        """
-        reset_service, reset_client = self._reset_service_pair(side)
-
-        # reset_ctrl is dispatched async; the only path back to DEACTIVE is
-        # _on_done. If the downstream service hangs (server crash, CAN bus
-        # lockup) the future never resolves, _on_done never fires, and this
-        # side stays in ARM_RESETTING until the process restarts. Surface
-        # that diagnostic up front so the operator knows what to look for.
+        self._reset_pending = True
         self.get_logger().warning(
-            f"[{side}] RESET dispatched to '{reset_service}' (async, "
-            f"expected ~3 s). If no '[{side}] RESET complete' log follows "
-            "within ~10 s, the downstream service is hung -- restart the "
-            "teleop node to recover this side."
+            f"[{side}] RESET dispatched to '{reset_service}' (async)."
         )
 
         def _on_done(resp, _side=side):
             if not resp.success:
                 self.get_logger().error(
-                    f"[{_side}] RESET: reset_ctrl failed ({resp.message})."
+                    f"[{_side}] RESET: manager reset failed ({resp.message})."
                 )
             else:
-                self.get_logger().info(f"[{_side}] RESET: arm at home.")
-            self._arm_state[_side] = ArmEngageState.DEACTIVE
-            teleop = self.left_teleop if _side == "left" else self.right_teleop
-            teleop.finish_reset()
+                self.get_logger().info(
+                    f"[{_side}] RESET: configured hardware is at home."
+                )
+            self._reset_pending = False
+            self._finish_reset_state()
             self.get_logger().info(
-                f"[{_side}] RESET complete -- DEACTIVE; release the "
-                "activation input before re-engaging."
+                f"[{_side}] RESET response received; re-engagement requires "
+                "Manager reset completion and activation release."
             )
 
         self._call_service_async(reset_client, reset_service, _on_done)

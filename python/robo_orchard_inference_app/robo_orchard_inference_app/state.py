@@ -64,9 +64,10 @@ class EpisodeCounter:
 
 
 class InferenceState(pydantic.BaseModel):
-    control_mode: Literal["auto", "takeover", "stop"] = "auto"
+    control_mode: Literal["auto", "takeover", "stop", "resetting"] | None = (
+        None
+    )
     is_inference_service_running: bool | None = None
-    arm_ctrl_status: Literal["enabled", "disabled"] = "enabled"
 
 
 class NotReadyError(Exception):
@@ -110,10 +111,7 @@ class CollectingState(pydantic.BaseModel):
     """Dictionary of episode counters per user-task pair."""
 
     inference_state: InferenceState = pydantic.Field(
-        default_factory=lambda: InferenceState(
-            control_mode="auto",
-            arm_ctrl_status="enabled",
-        )
+        default_factory=InferenceState
     )
 
     is_recording: bool = False

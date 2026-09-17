@@ -52,7 +52,7 @@ def _context(**overrides):
     return values
 
 
-def test_launch_creates_one_muxed_hand_and_glove_pair_per_side():
+def test_launch_creates_hand_pairs_and_one_manager():
     module = _load_module()
     description = module.generate_launch_description()
     resolver = next(
@@ -68,67 +68,43 @@ def test_launch_creates_one_muxed_hand_and_glove_pair_per_side():
         for action in actions
         if isinstance(action, _IncludeLaunchDescription)
     ]
-    muxes = [action for action in actions if isinstance(action, _Node)]
-
     assert len(includes) == 4
-    assert len(muxes) == 2
-    assert [mux.kwargs["namespace"] for mux in muxes] == [
-        "/hand_left/takeover_muxer",
-        "/hand_right/takeover_muxer",
+    assert not [action for action in actions if isinstance(action, _Node)]
+    managers = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, _Node)
+        and entity.kwargs.get("executable") == "control_manager_node"
     ]
+    assert len(managers) == 1
 
 
-def test_launch_routes_each_instance_through_its_own_mux():
+def test_launch_routes_each_glove_to_manager_override():
     actions = _load_module()._launch_instances(
         _context(hand_side="left,right")
     )
-    gloves = [actions[1], actions[4]]
-    muxes = [actions[2], actions[5]]
+    gloves = [actions[1], actions[3]]
     expected = [
-        (
-            "/left_hand_algo_cmd",
-            "/wuji_glove/left/retargeted_joint_commands",
-            "/hand_left/joint_commands",
-        ),
-        (
-            "/right_hand_algo_cmd",
-            "/wuji_glove/right/retargeted_joint_commands",
-            "/hand_right/joint_commands",
-        ),
+        "/hand_left/control/override",
+        "/hand_right/control/override",
     ]
 
-    for glove, mux, topics in zip(gloves, muxes, expected, strict=True):
+    for glove, override_topic in zip(gloves, expected, strict=True):
         arguments = dict(glove.launch_arguments)
-        parameters = mux.kwargs["parameters"][0]
-        algo_topic, override_topic, output_topic = topics
-
         assert arguments["command_topic"] == override_topic
         assert arguments["sdk_user"] == "default"
         assert arguments["hand_model_path"].name == "glove_hand_model_path"
         assert arguments["stream_profile"].name == "glove_stream_profile"
         assert arguments["frame_prefix"] == "wuji_glove"
-        assert parameters == {
-            "message_type": "sensor_msgs/msg/JointState",
-            "algo_topic": algo_topic,
-            "override_topic": override_topic,
-            "output_topic": output_topic,
-            "override_mode_behavior": "forward",
-            "replay_time_s": parameters["replay_time_s"],
-        }
-        assert parameters["replay_time_s"].name == "replay_time_s"
 
 
-def test_launch_canonicalizes_relative_glove_namespace_for_mux_topic():
+def test_launch_uses_hand_name_for_manager_override_topic():
     actions = _load_module()._launch_instances(
         _context(glove_namespace="custom/glove/")
     )
     glove = dict(actions[1].launch_arguments)
-    mux_parameters = actions[2].kwargs["parameters"][0]
-
-    expected = "/custom/glove/retargeted_joint_commands"
     assert glove["glove_namespace"] == "/custom/glove"
-    assert glove["command_topic"] == expected
-    assert mux_parameters["override_topic"] == expected
+    assert glove["command_topic"] == "/hand_right/control/override"
 
 
 def test_launch_defaults_instance_arguments_to_side_derivation():
@@ -148,3 +124,4 @@ def test_launch_defaults_instance_arguments_to_side_derivation():
     ):
         assert arguments[name].default_value == ""
     assert arguments["glove_stream_profile"].default_value == "teleop_minimal"
+    assert "replay_time_s" not in arguments

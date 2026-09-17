@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
+    """Launch two Piper drivers behind one Control Manager."""
     joint_names_args = [
         DeclareLaunchArgument(
             f"{side}_joint_names",
@@ -94,8 +94,23 @@ def generate_launch_description():
             "left_reset_joint_position."
         ),
     )
+    control_manager_config_file_arg = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description="Control Manager configuration file.",
+    )
 
     # --- Node Definitions ---
+    control_manager_node = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
+        ],
+    )
     left_controller_node = Node(
         package="robo_orchard_piper_ros2",
         executable="single_ctrl",
@@ -131,7 +146,6 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/left/joint_cmd", "/master/joint_left"),
             ("/robot/left/status", "/puppet/status_left"),
             ("/robot/left/ee_pose", "/puppet/end_pose_left"),
             ("/robot/left/joint_state", "/puppet/joint_left"),
@@ -172,7 +186,6 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/right/joint_cmd", "/master/joint_right"),
             ("/robot/right/status", "/puppet/status_right"),
             ("/robot/right/ee_pose", "/puppet/end_pose_right"),
             ("/robot/right/joint_state", "/puppet/joint_right"),
@@ -195,7 +208,9 @@ def generate_launch_description():
             enable_mit_control_mode_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
+            control_manager_config_file_arg,
             # Add the nodes to be launched
+            control_manager_node,
             left_controller_node,
             right_controller_node,
         ]

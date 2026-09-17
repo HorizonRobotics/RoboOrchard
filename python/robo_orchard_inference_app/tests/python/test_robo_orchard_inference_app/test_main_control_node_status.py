@@ -398,6 +398,8 @@ def test_state_panel_projects_status_before_rendering(
         (2, "indicator"),
     ]
     assert indicators[0]["current_status"] == "takeover"
+    assert indicators[0]["status_config"]["resetting"].text == "Resetting"
+    assert indicators[0]["status_config"]["resetting"].color == "orange"
     assert indicators[1]["current_status"] == status
     if status is not None:
         assert indicators[1]["status_config"][status].text == (

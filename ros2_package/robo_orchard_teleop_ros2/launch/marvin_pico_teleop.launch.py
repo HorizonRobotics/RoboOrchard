@@ -39,6 +39,9 @@ def generate_launch_description():
     keyboard_activation_timeout_s = LaunchConfiguration(
         "keyboard_activation_timeout_s"
     )
+    control_manager_config_file = LaunchConfiguration(
+        "control_manager_config_file"
+    )
 
     return LaunchDescription(
         [
@@ -100,6 +103,10 @@ def generate_launch_description():
                 "keyboard_activation_timeout_s",
                 default_value="0.2",
             ),
+            DeclareLaunchArgument(
+                "control_manager_config_file",
+                description="Control Manager configuration file.",
+            ),
             Node(
                 package="robo_orchard_marvin_ros2",
                 executable="marvin_driver_node",
@@ -149,12 +156,25 @@ def generate_launch_description():
                             keyboard_activation_topic
                         ),
                         "keyboard_reset_topic": keyboard_reset_topic,
+                        "reset_service": "/robot/control/reset",
                         "keyboard_activation_timeout_s": ParameterValue(
                             keyboard_activation_timeout_s,
                             value_type=float,
                         ),
                     }
                 ],
+                remappings=[
+                    ("/robot/left/joint_cmd", "/marvin_teleop/joint_left"),
+                    ("/robot/right/joint_cmd", "/marvin_teleop/joint_right"),
+                ],
+            ),
+            Node(
+                package="robo_orchard_control_manager_ros2",
+                executable="control_manager_node",
+                name="control_manager",
+                namespace="/robot/control",
+                output="screen",
+                parameters=[{"config_file": control_manager_config_file}],
             ),
         ]
     )

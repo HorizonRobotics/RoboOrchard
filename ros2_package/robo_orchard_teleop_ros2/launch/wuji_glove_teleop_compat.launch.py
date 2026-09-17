@@ -15,7 +15,9 @@
 # permissions and limitations under the License.
 
 from launch import LaunchDescription
-from launch.actions import OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 from robo_orchard_teleop_ros2.wuji_teleop_launch import (
     build_wuji_pair_actions,
@@ -27,13 +29,35 @@ from robo_orchard_teleop_ros2.wuji_teleop_launch import (
 def _launch_instances(context):
     actions = []
     for instance in resolve_wuji_launch_instances(context, dagger=False):
-        hand_command_topic = f"/{instance.hand_name}/joint_commands"
-        actions.extend(build_wuji_pair_actions(instance, hand_command_topic))
+        override_topic = f"/{instance.hand_name}/control/override"
+        actions.extend(build_wuji_pair_actions(instance, override_topic))
     return actions
 
 
 def generate_launch_description():
     arguments = declare_wuji_teleop_arguments(dagger=False)
+    manager_config = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description=(
+            "Control Manager configuration. Custom hand names need a "
+            "matching channel configuration."
+        ),
+    )
+    manager = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
+        output="screen",
+        parameters=[
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
+        ],
+    )
     return LaunchDescription(
-        [*arguments, OpaqueFunction(function=_launch_instances)]
+        [
+            *arguments,
+            manager_config,
+            manager,
+            OpaqueFunction(function=_launch_instances),
+        ]
     )

@@ -24,7 +24,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    """Launch the complete human takeover system, including the muxer and the hardware controller."""  # noqa: E501
+    """Launch the low-level Aloha leader-follower controllers."""
     joint_names_args = [
         DeclareLaunchArgument(
             f"{side}_joint_names",

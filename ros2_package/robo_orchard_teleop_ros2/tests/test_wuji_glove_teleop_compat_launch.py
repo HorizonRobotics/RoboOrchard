@@ -19,6 +19,7 @@ from pathlib import Path
 
 from launch_stubs import (
     IncludeLaunchDescription as _IncludeLaunchDescription,
+    Node as _Node,
     OpaqueFunction as _OpaqueFunction,
     load_launch_module,
 )
@@ -94,7 +95,7 @@ def test_launch_creates_one_hand_and_glove_pair_per_side():
     ] == ["wuji_glove", "wuji_glove"]
 
 
-def test_launch_routes_each_glove_directly_to_its_hand():
+def test_launch_routes_each_glove_to_manager_override():
     actions = _load_module()._launch_instances(
         _context(hand_side="left,right")
     )
@@ -102,14 +103,26 @@ def test_launch_routes_each_glove_directly_to_its_hand():
     assert [
         dict(item.launch_arguments)["command_topic"] for item in gloves
     ] == [
-        "/hand_left/joint_commands",
-        "/hand_right/joint_commands",
+        "/hand_left/control/override",
+        "/hand_right/control/override",
     ]
     for glove in gloves:
         arguments = dict(glove.launch_arguments)
         assert arguments["sdk_user"] == "default"
         assert arguments["hand_model_path"].name == "glove_hand_model_path"
         assert arguments["stream_profile"].name == "glove_stream_profile"
+
+
+def test_launch_starts_exactly_one_control_manager():
+    description = _load_module().generate_launch_description()
+    managers = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, _Node)
+        and entity.kwargs.get("executable") == "control_manager_node"
+    ]
+    assert len(managers) == 1
+    assert managers[0].kwargs["namespace"] == "/robot/control"
 
 
 def test_launch_forwards_same_side_names_and_serial_numbers():

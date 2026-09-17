@@ -115,13 +115,13 @@ def test_empty_list_positions_keep_per_instance_derivation():
     assert right.algo_topic == "/right_hand_algo_cmd"
 
 
-def test_relative_algo_topics_resolve_in_each_mux_namespace():
+def test_relative_algo_topics_resolve_in_each_control_namespace():
     left, right = resolve_wuji_teleop_instances(
         hand_side="left,right", algo_topic="commands,commands"
     )
 
-    assert left.algo_topic == "/hand_left/takeover_muxer/commands"
-    assert right.algo_topic == "/hand_right/takeover_muxer/commands"
+    assert left.algo_topic == "/hand_left/control/commands"
+    assert right.algo_topic == "/hand_right/control/commands"
 
 
 @pytest.mark.parametrize(
@@ -134,9 +134,9 @@ def test_relative_algo_topics_resolve_in_each_mux_namespace():
         (
             {
                 "hand_side": "right",
-                "algo_topic": ("/wuji_glove/right/retargeted_joint_commands"),
+                "algo_topic": "/hand_right/control/override",
             },
-            "/wuji_glove/right/retargeted_joint_commands",
+            "/hand_right/control/override",
         ),
         (
             {
@@ -149,7 +149,7 @@ def test_relative_algo_topics_resolve_in_each_mux_namespace():
         ),
     ],
 )
-def test_algo_topics_cannot_overlap_mux_command_roles(arguments, conflict):
+def test_algo_topics_cannot_overlap_manager_command_roles(arguments, conflict):
     with pytest.raises(ValueError, match=f"overlap.*{conflict}"):
         resolve_wuji_teleop_instances(**arguments)
 

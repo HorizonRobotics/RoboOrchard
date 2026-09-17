@@ -16,6 +16,8 @@
 
 import os
 
+from control_channels import COMMAND_CHANNELS, PIPER_JOINT_NAMES
+
 from robo_orchard_deploy_ros2.config import (
     CameraInfoChannel,
     ControlConfig,
@@ -23,16 +25,16 @@ from robo_orchard_deploy_ros2.config import (
     ImageChannel,
     JointCommandChannel,
     JointStateChannel,
+    ObsChannel,
     ObservationConfig,
 )
 
 CAMERA_PREFIX = "/agilex"
 CAMERA_SIDES = ("left", "right", "middle")
-ARM_SIDES = ("left", "right")
-PIPER_JOINT_NAMES = [f"joint{index}" for index in range(1, 7)] + ["gripper"]
+ARM_SIDES = tuple(channel.side for channel in COMMAND_CHANNELS)
 
 
-def build_obs_channels():
+def build_obs_channels() -> list[ObsChannel]:
     """Declare the Piper observation channels sent to the model server."""
     channels = []
     for side in CAMERA_SIDES:
@@ -67,22 +69,24 @@ def build_obs_channels():
     return channels
 
 
-def build_action_channels():
+def build_action_channels() -> list[JointCommandChannel]:
     """Declare the Piper action channels driven by the model response."""
     return [
         JointCommandChannel(
-            server_output_key=f"{side}_arm_actions",
-            server_remaining_key=f"{side}_arm_remaining_actions",
-            topic=f"/{side}_algo_cmd",
-            joint_names=[f"{side}_{name}" for name in PIPER_JOINT_NAMES],
+            server_output_key=channel.server_output_key,
+            server_remaining_key=channel.server_remaining_key,
+            topic=channel.autonomous_topic,
+            joint_names=[
+                f"{channel.side}_{name}" for name in PIPER_JOINT_NAMES
+            ],
             velocities=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0],
             efforts=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
         )
-        for side in ARM_SIDES
+        for channel in COMMAND_CHANNELS
     ]
 
 
-def main():
+def main() -> None:
     config = DeployConfig(
         observation_config=ObservationConfig(channels=build_obs_channels()),
         control_config=ControlConfig(

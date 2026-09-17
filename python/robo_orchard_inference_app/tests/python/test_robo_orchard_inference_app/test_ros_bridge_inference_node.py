@@ -142,17 +142,134 @@ def test_initial_inference_state_is_unknown():
     )
 
 
+def test_initial_control_state_is_unknown():
+    assert InferenceState().control_mode is None
+    assert CollectingState().inference_state.control_mode is None
+
+
+@pytest.mark.parametrize("mode", ["auto", "takeover", "stop", "resetting"])
+def test_control_status_tracks_manager_and_expires(monitor, mode):
+    helper, topics, _listeners, clock = monitor
+    topics[2].callback({"data": mode, "header": {"stamp": {"sec": 0}}})
+    clock[0] += helper.cfg.status_timeout_s
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == mode
+
+    topics[0].callback({"data": "enabled"})
+    clock[0] += 0.001
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode is None
+    assert helper.state.is_inference_service_running is True
+
+
+@pytest.mark.parametrize("value", [None, "", "AUTO", "idle", [], {}, True])
+def test_unrecognized_control_status_is_unknown(monitor, value):
+    helper, topics, _listeners, _clock = monitor
+    topics[2].callback({"data": "auto"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == "auto"
+
+    topics[2].callback({"data": value})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode is None
+
+
+def test_control_disconnect_and_reconnect_require_new_status(monitor):
+    helper, topics, listeners, _clock = monitor
+    topics[2].callback({"data": "takeover"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == "takeover"
+
+    helper.ros_client.is_connected = False
+    listeners["close"][0](None)
+    topics[2].callback({"data": "auto"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode is None
+    helper.ros_client.is_connected = True
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode is None
+
+    topics[2].callback({"data": "stop"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == "stop"
+
+
+def test_control_topic_override_and_cleanup(monitor):
+    helper, topics, listeners, _clock = monitor
+    helper.cleanup()
+    helper.cfg.control_status_topic = "/custom/control/status"
+    helper.start_status_monitor()
+    assert topics[-1].name == "/custom/control/status"
+    topics[-1].callback({"data": "auto"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == "auto"
+
+    helper.cleanup()
+    topics[-1].callback({"data": "takeover"})
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode is None
+    assert all(topic.unsubscribed == 1 for topic in topics)
+    assert listeners["close"] == []
+
+
+@pytest.mark.parametrize("mode", ["auto", "takeover", "stop"])
+@pytest.mark.parametrize("success", [True, False])
+def test_control_service_result_does_not_replace_status(
+    monitor, monkeypatch, mode, success
+):
+    helper, topics, _listeners, _clock = monitor
+    setattr(helper.cfg, f"{mode}_service_name", [f"/robot/control/{mode}"])
+    topics[2].callback({"data": "resetting"})
+    helper.refresh_runtime_state()
+    calls = []
+
+    def call_services(**kwargs):
+        calls.append(kwargs)
+        topics[2].callback({"data": "stop"})
+        return success
+
+    monkeypatch.setattr(helper, "_call_services", call_services)
+    assert helper.set_control_mode(mode) is success
+    assert calls[0]["service_names"] == [f"/robot/control/{mode}"]
+    assert "success_callback" not in calls[0]
+    assert helper.state.control_mode == "resetting"
+    helper.refresh_runtime_state()
+    assert helper.state.control_mode == "stop"
+
+
+def test_reset_uses_configured_timeout_without_changing_runtime_state(
+    monitor, monkeypatch
+):
+    helper, topics, _listeners, _clock = monitor
+    assert helper.cfg.reset_timeout_s == 180.0
+    helper.cfg.reset_timeout_s = 240.0
+    helper.cfg.reset_service_name = ["/custom/control/reset"]
+    topics[2].callback({"data": "takeover"})
+    topics[0].callback({"data": "enabled"})
+    helper.refresh_runtime_state()
+    calls = []
+    monkeypatch.setattr(
+        helper, "_call_services", lambda **kwargs: calls.append(kwargs) or True
+    )
+
+    assert helper.reset_arm()
+    assert calls[0]["service_names"] == ["/custom/control/reset"]
+    assert calls[0]["timeout"] == 240.0
+    assert helper.state.control_mode == "takeover"
+    assert helper.state.is_inference_service_running is True
+
+
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
 def test_status_timeout_must_be_positive_and_finite(timeout):
     with pytest.raises(ValidationError):
         ROSBridgeCfg(status_timeout_s=timeout)
 
 
-def test_status_monitor_subscribes_once_to_both_nodes(monitor):
+def test_status_monitor_subscribes_once_to_all_runtime_nodes(monitor):
     helper, topics, listeners, _clock = monitor
     helper.start_status_monitor()
 
-    assert len(topics) == 2
+    assert len(topics) == 3
     assert topics[0].name == "/robot/inference_service/status"
     assert topics[0].message_type == (
         "robo_orchard_deploy_msg_ros2/msg/InferenceStatus"
@@ -160,6 +277,10 @@ def test_status_monitor_subscribes_once_to_both_nodes(monitor):
     assert topics[1].name == "/mcap_recorder_service/status"
     assert topics[1].message_type == (
         "robo_orchard_data_msg_ros2/msg/RecorderStatus"
+    )
+    assert topics[2].name == "/robot/control/status"
+    assert topics[2].message_type == (
+        "robo_orchard_teleop_msg_ros2/msg/ControlMode"
     )
     assert len(listeners["close"]) == 1
     assert set(listeners) == {"close"}
@@ -174,7 +295,7 @@ def test_status_monitor_honors_configured_topic(monitor):
     helper.cfg.inference_status_topic = "/custom/inference/status"
     helper.start_status_monitor()
 
-    assert topics[-2].name == "/custom/inference/status"
+    assert topics[-3].name == "/custom/inference/status"
     assert topics[0].unsubscribed == 1
 
 
@@ -205,30 +326,36 @@ def test_node_status_caches_expire_independently(monitor, monkeypatch):
     assert helper.status_snapshot("recorder") is None
 
 
-def test_second_subscription_failure_releases_both_topics(
-    monitor, monkeypatch
+@pytest.mark.parametrize("failed_key", ["inference", "recorder", "control"])
+def test_subscription_failure_releases_all_attempted_topics(
+    monitor, monkeypatch, failed_key
 ):
     helper, topics, listeners, _clock = monitor
     helper.cleanup()
     topic_type = type(topics[0])
     subscribe = topic_type.subscribe
+    failed_index = {"inference": 0, "recorder": 1, "control": 2}[failed_key]
+    failed_name = topics[failed_index].name
 
     def subscribe_or_fail(topic, callback):
-        if topic.name == f"{helper.cfg.recorder_name}/status":
-            raise RuntimeError("recorder subscription failed")
+        if topic.name == failed_name:
+            raise RuntimeError("subscription failed")
         subscribe(topic, callback)
         callback({"data": "enabled"})
 
     monkeypatch.setattr(topic_type, "subscribe", subscribe_or_fail)
-    with pytest.raises(RuntimeError, match="recorder subscription failed"):
+    with pytest.raises(RuntimeError, match="subscription failed"):
         helper.start_status_monitor()
-    assert all(topic.unsubscribed == 1 for topic in topics)
+    assert all(topic.unsubscribed == 1 for topic in topics[:3])
+    assert [topic.unsubscribed for topic in topics[3:]] == [
+        int(index <= failed_index) for index in range(3)
+    ]
     assert listeners["close"] == []
     assert helper.status_snapshot("inference") is None
     assert helper._status_topics == []
 
 
-@pytest.mark.parametrize("failed_topic", ["inference", "recorder"])
+@pytest.mark.parametrize("failed_topic", ["inference", "recorder", "control"])
 def test_topic_construction_failure_does_not_register_listener(
     monitor, monkeypatch, failed_topic
 ):
@@ -237,11 +364,11 @@ def test_topic_construction_failure_does_not_register_listener(
     helper, topics, listeners, _clock = monitor
     helper.cleanup()
     topic_type = type(topics[0])
-    failed_name = (
-        helper.cfg.inference_status_topic
-        if failed_topic == "inference"
-        else f"{helper.cfg.recorder_name}/status"
-    )
+    failed_name = {
+        "inference": helper.cfg.inference_status_topic,
+        "recorder": f"{helper.cfg.recorder_name}/status",
+        "control": helper.cfg.control_status_topic,
+    }[failed_topic]
 
     def create_topic(client, name, message_type):
         if name == failed_name:
@@ -255,18 +382,17 @@ def test_topic_construction_failure_does_not_register_listener(
     assert helper._status_topics == []
 
 
-def test_callback_caches_only_and_ui_refresh_preserves_legacy_control(monitor):
+def test_callbacks_cache_only_until_ui_refresh(monitor):
     helper, topics, _listeners, _clock = monitor
-    helper.state.control_mode = "takeover"
-    helper.state.arm_ctrl_status = "disabled"
     with ThreadPoolExecutor(max_workers=1) as executor:
         executor.submit(topics[0].callback, {"data": "enabled"}).result()
+        executor.submit(topics[2].callback, {"data": "takeover"}).result()
 
     assert helper.state.is_inference_service_running is None
+    assert helper.state.control_mode is None
     helper.refresh_runtime_state()
     assert helper.state.is_inference_service_running is True
     assert helper.state.control_mode == "takeover"
-    assert helper.state.arm_ctrl_status == "disabled"
 
 
 def test_status_uses_receive_time_and_expires(monitor):
@@ -364,14 +490,15 @@ def test_failed_subscription_releases_resources_and_can_retry(
     monkeypatch.setattr(topic_type, "subscribe", fail_subscribe)
     with pytest.raises(RuntimeError, match="subscription failed"):
         helper.start_status_monitor()
-    assert topics[-2].unsubscribed == 1
+    assert topics[-3].unsubscribed == 1
+    assert topics[-2].unsubscribed == 0
     assert topics[-1].unsubscribed == 0
     assert listeners["close"] == []
     assert helper._status_topics == []
 
     monkeypatch.setattr(topic_type, "subscribe", subscribe)
     helper.start_status_monitor()
-    topics[-2].callback({"data": "enabled"})
+    topics[-3].callback({"data": "enabled"})
     helper.refresh_runtime_state()
     assert helper.state.is_inference_service_running is True
 
@@ -504,9 +631,9 @@ def test_cleanup_uses_real_roslibpy_event_and_topic_apis():
                 assert helper._receive_status.call_count == 1
                 helper._invalidate_status.assert_not_called()
                 call_later.assert_not_called()
-                assert [message["op"] for message in sent] == [
-                    "subscribe", "subscribe", "unsubscribe", "unsubscribe"
-                ]
+                assert [message["op"] for message in sent] == (
+                    ["subscribe"] * 3 + ["unsubscribe"] * 3
+                )
                 helper.start_status_monitor()
                 client.emit(topic, {"data": "disabled"})
                 assert helper._receive_status.call_count == 2

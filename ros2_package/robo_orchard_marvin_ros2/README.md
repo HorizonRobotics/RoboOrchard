@@ -36,10 +36,10 @@ ros2 launch robo_orchard_marvin_ros2 marvin_driver.launch.py
 
 ### Control Modes
 
-The Driver uses the following control modes for both startup auto-enable and
-the per-arm `set_mode` service:
+The Driver uses the following control modes for startup auto-enable, the
+per-arm Trigger enable facade, and the typed `set_mode` service:
 
-| Mode | Value | `auto_enable_mode` |
+| Mode | Value | `auto_enable_mode` / `enable_ctrl_mode` |
 | --- | ---: | --- |
 | Idle / disabled | `0` | Not applicable |
 | Position control | `1` | `position` |
@@ -58,6 +58,10 @@ Optional launch arguments are:
 - `auto_enable_mode`: `position`, `joint_impedance`, or `joint_drag`; required
   when `auto_enable_side` is not `none`.
 
+The driver configuration also accepts `enable_ctrl_mode`, which selects the
+mode used by each per-arm `enable_ctrl` facade and defaults to
+`joint_impedance`.
+
 For example, start with the right arm enabled in joint impedance mode:
 
 ```bash
@@ -74,6 +78,17 @@ ros2 service call /robot/right/set_mode \
   robo_orchard_marvin_msg_ros2/srv/SetControlMode "{mode: 2}"
 ```
 
+Control Manager integrations can use the per-arm Trigger facade. It enters
+the mode selected by the `enable_ctrl_mode` driver parameter, which defaults
+to `joint_impedance`, and returns the underlying mode-switch failure unchanged:
+
+```bash
+ros2 service call /robot/right/enable_ctrl std_srvs/srv/Trigger '{}'
+```
+
+The typed `set_mode` service remains available for callers that select a mode
+per request.
+
 ## Interfaces
 
 Each arm uses `/robot/<side>/joint_cmd` and `/robot/<side>/joint_state` with
@@ -81,8 +96,8 @@ Each arm uses `/robot/<side>/joint_cmd` and `/robot/<side>/joint_state` with
 the official kinematics SDK and published on `/robot/<side>/ee_pose` as
 `geometry_msgs/msg/PoseStamped` in the `robot_stand` frame by default. Driver state
 is published on `control_mode`, `controller_state`, `impedance_type`, and
-`error_code`. The services `reset_ctrl`, `clear_error`, and `emergency_stop`
-are also provided per arm.
+`error_code`. The services `enable_ctrl`, `reset_ctrl`, `clear_error`, and
+`emergency_stop` are also provided per arm.
 
 `ee_pose` represents the bare flange pose from the SDK kinematic model. The
 driver does not configure or apply the controller's active Tool/TCP offset

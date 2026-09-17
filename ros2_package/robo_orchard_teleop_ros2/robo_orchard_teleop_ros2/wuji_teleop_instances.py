@@ -205,7 +205,7 @@ def resolve_wuji_teleop_instances(
             )
         resolved_algo_topic = _canonical_topic(
             algo_topics[index] or f"/{key}_hand_algo_cmd",
-            f"/{resolved_hand_name}/takeover_muxer",
+            f"/{resolved_hand_name}/control",
         )
 
         instances.append(
@@ -234,18 +234,15 @@ def resolve_wuji_teleop_instances(
         "glove_frame_prefix per hand side",
     )
     _require_unique([item.algo_topic for item in instances], "algo_topic")
-    reserved_mux_topics = {
+    reserved_control_topics = {
         f"/{item.hand_name}/joint_commands" for item in instances
-    } | {
-        f"{item.glove_namespace.rstrip('/')}/retargeted_joint_commands"
-        for item in instances
-    }
+    } | {f"/{item.hand_name}/control/override" for item in instances}
     conflicting_topics = sorted(
-        {item.algo_topic for item in instances} & reserved_mux_topics
+        {item.algo_topic for item in instances} & reserved_control_topics
     )
     if conflicting_topics:
         raise ValueError(
-            "algo_topic values must not overlap DAgger mux output or override "
+            "algo_topic values must not overlap Manager output or override "
             f"topics: {', '.join(conflicting_topics)}"
         )
     _require_unique_nonempty(hand_serials, "hand_serial_number")

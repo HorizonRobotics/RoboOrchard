@@ -86,7 +86,7 @@ def test_snapshot_never_reports_a_disconnected_client(monitor):
 def test_monitor_subscribes_once_to_recorder_with_inference(monitor):
     helper, topics, listeners, _clock = monitor
     helper.start_status_monitor()
-    assert len(topics) == 2
+    assert len(topics) == 3
     assert topics[1].name == f"{helper.cfg.recorder_name}/status"
     assert (
         topics[1].message_type
@@ -97,7 +97,7 @@ def test_monitor_subscribes_once_to_recorder_with_inference(monitor):
     helper.cleanup()
     helper.cfg.recorder_name = "/custom_recorder"
     helper.start_status_monitor()
-    assert topics[-1].name == "/custom_recorder/status"
+    assert topics[-2].name == "/custom_recorder/status"
 
 
 def test_recorder_freshness_uses_receive_time_and_disconnect_clears_cache(
@@ -437,14 +437,15 @@ def test_failed_subscription_releases_resources_and_can_retry(
     monkeypatch.setattr(topic_type, "subscribe", fail_subscribe)
     with pytest.raises(RuntimeError, match="subscription failed"):
         helper.start_status_monitor()
-    assert topics[-2].unsubscribed == 1
+    assert topics[-3].unsubscribed == 1
+    assert topics[-2].unsubscribed == 0
     assert topics[-1].unsubscribed == 0
     assert listeners["close"] == []
     assert helper._status_topics == []
 
     monkeypatch.setattr(topic_type, "subscribe", subscribe)
     helper.start_status_monitor()
-    topics[-1].callback({"data": "recording"})
+    topics[-2].callback({"data": "recording"})
     assert helper.status_snapshot("recorder")["data"] == "recording"
 
 
@@ -510,9 +511,9 @@ def test_cleanup_uses_real_roslibpy_event_and_topic_apis():
                 assert helper._receive_status.call_count == 1
                 helper._invalidate_status.assert_not_called()
                 call_later.assert_not_called()
-                assert [message["op"] for message in sent] == [
-                    "subscribe", "subscribe", "unsubscribe", "unsubscribe"
-                ]
+                assert [message["op"] for message in sent] == (
+                    ["subscribe"] * 3 + ["unsubscribe"] * 3
+                )
                 helper.start_status_monitor()
                 client.emit(topic, {"data": "idle"})
                 assert helper._receive_status.call_count == 2

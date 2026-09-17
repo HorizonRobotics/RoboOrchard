@@ -22,6 +22,8 @@ import pathlib
 import sys
 import types
 
+import pytest
+
 
 def _install_stub_modules():
     version = types.ModuleType("robo_orchard_inference_app.version")
@@ -60,6 +62,7 @@ def _install_stub_modules():
             self.service_type = service_type
 
         def call(self, request, timeout=5.0):
+            self.client.called_services.append(self.name)
             return self.client.service_results[self.name]
 
     class FakeServiceRequest(dict):
@@ -98,6 +101,7 @@ class FakeRosClient:
         self.service_results = {
             service: {"success": True, "message": "ok"} for service in services
         }
+        self.called_services = []
 
     def get_services(self):
         return list(self.service_results.keys())
@@ -180,11 +184,10 @@ def _build_helper_from_generated_cfg(monkeypatch):
     cfg = launch_cfg.ros_bridge
     all_services = (
         cfg.takeover_service_name
-        + cfg.release_service_name
+        + cfg.auto_service_name
         + cfg.stop_service_name
-        + cfg.enable_arm_service_name
         + cfg.disable_inference_service_name
-        + cfg.reset_arm_service_name
+        + cfg.reset_service_name
     )
     logger = FakeLogger()
     helper = RosServiceHelper(
@@ -196,13 +199,23 @@ def _build_helper_from_generated_cfg(monkeypatch):
     return launch_cfg, helper, logger
 
 
-def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
+def test_generated_launch_cfg_uses_global_manager_services(monkeypatch):
     _, helper, logger = _build_helper_from_generated_cfg(monkeypatch)
-    disable_service = helper.cfg.disable_inference_service_name[0]
-    helper.ros_client.service_results[disable_service] = {
-        "success": False,
-        "message": "failed",
-    }
+    cfg = helper.cfg
+    assert cfg.takeover_service_name == ["/robot/control/takeover"]
+    assert cfg.auto_service_name == ["/robot/control/auto"]
+    assert cfg.stop_service_name == ["/robot/control/stop"]
+    assert cfg.reset_service_name == ["/robot/control/reset"]
+    assert cfg.enable_inference_service_name == [
+        "/robot/inference_service/enable"
+    ]
+    assert cfg.disable_inference_service_name == [
+        "/robot/inference_service/disable"
+    ]
+
+
+def test_app_reset_calls_only_global_manager_reset(monkeypatch):
+    _, helper, logger = _build_helper_from_generated_cfg(monkeypatch)
 
     reset_calls = []
 
@@ -211,9 +224,6 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
         return True
 
     monkeypatch.setattr(helper, "reset_arm", fake_reset_arm)
-    # The disable gate runs only when an inference node is present; this
-    # test exercises the disable-fails path, so force that precondition.
-    monkeypatch.setattr(helper, "is_inference_node_active", lambda: True)
 
     component = MainControlComponent.__new__(MainControlComponent)
     component.ros_helper = helper
@@ -221,58 +231,6 @@ def test_generated_launch_cfg_reset_blocks_when_disable_fails(monkeypatch):
         inference_state=InferenceState(
             control_mode="auto",
             is_inference_service_running=True,
-        )
-    )
-    # Keep this test isolated from cross-file streamlit stubs by
-    # pinning state-bearing properties directly on the component class.
-    monkeypatch.setattr(
-        MainControlComponent,
-        "collecting_state",
-        property(lambda _self: collecting_state),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        MainControlComponent,
-        "logger",
-        property(lambda _self: logger),
-        raising=False,
-    )
-
-    component.reset_arm_ctrl_callback()
-
-    assert reset_calls == []
-    assert logger.warnings == [
-        "Reset is blocked: failed to disable inference service."
-    ]
-
-
-def test_generated_launch_cfg_reset_proceeds_without_inference_node(
-    monkeypatch,
-):
-    _, helper, logger = _build_helper_from_generated_cfg(monkeypatch)
-    # Rig the disable service to fail; with no inference node the gate
-    # must skip the disable step entirely, so reset still proceeds.
-    disable_service = helper.cfg.disable_inference_service_name[0]
-    helper.ros_client.service_results[disable_service] = {
-        "success": False,
-        "message": "failed",
-    }
-
-    reset_calls = []
-
-    def fake_reset_arm():
-        reset_calls.append("reset_arm")
-        return True
-
-    monkeypatch.setattr(helper, "reset_arm", fake_reset_arm)
-    monkeypatch.setattr(helper, "is_inference_node_active", lambda: False)
-
-    component = MainControlComponent.__new__(MainControlComponent)
-    component.ros_helper = helper
-    collecting_state = CollectingState(
-        inference_state=InferenceState(
-            control_mode="auto",
-            is_inference_service_running=False,
         )
     )
     monkeypatch.setattr(
@@ -292,3 +250,20 @@ def test_generated_launch_cfg_reset_proceeds_without_inference_node(
 
     assert reset_calls == ["reset_arm"]
     assert logger.warnings == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "service"),
+    [
+        ("auto", "/robot/control/auto"),
+        ("takeover", "/robot/control/takeover"),
+        ("stop", "/robot/control/stop"),
+    ],
+)
+def test_control_modes_call_only_global_manager(monkeypatch, mode, service):
+    _, helper, _logger = _build_helper_from_generated_cfg(monkeypatch)
+
+    assert helper.set_control_mode(mode) is True
+
+    assert helper.ros_client.called_services == [service]
+    assert helper.state.control_mode is None

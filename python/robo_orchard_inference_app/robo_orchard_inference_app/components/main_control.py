@@ -98,6 +98,9 @@ class MainControlComponent(ComponentBase):
                         takeover=StatusConfig(text="TakeOver", color="red"),
                         auto=StatusConfig(text="Auto", color="green"),
                         stop=StatusConfig(text="Stop", color="grey"),
+                        resetting=StatusConfig(
+                            text="Resetting", color="orange"
+                        ),
                     ),
                 )
             with recorder_col:
@@ -440,27 +443,15 @@ class MainControlComponent(ComponentBase):
                 )
 
     def _is_reset_disabled(self) -> bool:
-        state = self.collecting_state.inference_state
-        return self.collecting_state.recording_controls_locked or (
-            state.control_mode in {"takeover", "stop"}
-        )
+        return self.collecting_state.recording_controls_locked
 
     def reset_arm_ctrl_callback(self):
-        """Resets the robot arm controllers."""
+        """Request the Manager-owned inference and hardware reset flow."""
         if self._is_reset_disabled():
             self.logger.warning(
-                "Reset is blocked by recording or the current control mode."
+                "Reset is blocked by an active or pending recording."
             )
             return
-        # Disabling inference gates the reset only when an inference node
-        # is running; with none launched nothing can contend with the
-        # reset, so skip the gate instead of blocking on a missing service.
-        if self.ros_helper.is_inference_node_active():
-            if not self.ros_helper.disable_inference():
-                self.logger.warning(
-                    "Reset is blocked: failed to disable inference service."
-                )
-                return
         self.ros_helper.reset_arm()
 
     def _render_handeye_calib_panel(self):

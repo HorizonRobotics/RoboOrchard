@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -104,12 +104,16 @@ def generate_launch_description():
         "keyboard_activation_timeout_s",
         default_value="0.2",
     )
+    control_manager_config_file_arg = DeclareLaunchArgument(
+        "control_manager_config_file",
+        description="Control Manager configuration file.",
+    )
     left_reset_joint_position_arg = DeclareLaunchArgument(
         "left_reset_joint_position",
         default_value="[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]",
         description=(
             "Left arm reset target: 6 joint angles (rad) + gripper. Used "
-            "by the single_ctrl reset_ctrl service."
+            "by the driver when Control Manager requests reset."
         ),
     )
     right_reset_joint_position_arg = DeclareLaunchArgument(
@@ -150,8 +154,7 @@ def generate_launch_description():
                 "urdf_path": LaunchConfiguration("urdf_path"),
                 "ee_link_name": "link6",
                 "base_link_name": "base_link",
-                "left_reset_service": "/robot/left/reset_ctrl",
-                "right_reset_service": "/robot/right/reset_ctrl",
+                "reset_service": "/robot/control/reset",
                 "operator_input_source": LaunchConfiguration(
                     "operator_input_source"
                 ),
@@ -171,12 +174,24 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/left/joint_cmd", "/left_algo_cmd"),
-            ("/robot/right/joint_cmd", "/right_algo_cmd"),
+            ("/robot/left/joint_cmd", "/pico_teleop/joint_left"),
+            ("/robot/right/joint_cmd", "/pico_teleop/joint_right"),
             ("/robot/left/ee_pose", "/puppet/end_pose_left"),
             ("/robot/left/joint_state", "/puppet/joint_left"),
             ("/robot/right/ee_pose", "/puppet/end_pose_right"),
             ("/robot/right/joint_state", "/puppet/joint_right"),
+        ],
+    )
+
+    control_manager_node = Node(
+        package="robo_orchard_control_manager_ros2",
+        executable="control_manager_node",
+        name="control_manager",
+        namespace="/robot/control",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            {"config_file": LaunchConfiguration("control_manager_config_file")}
         ],
     )
 
@@ -215,7 +230,6 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/left/joint_cmd", "/left_algo_cmd"),
             ("/robot/left/status", "/puppet/status_left"),
             ("/robot/left/ee_pose", "/puppet/end_pose_left"),
             ("/robot/left/joint_state", "/puppet/joint_left"),
@@ -257,7 +271,6 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("/robot/right/joint_cmd", "/right_algo_cmd"),
             ("/robot/right/status", "/puppet/status_right"),
             ("/robot/right/ee_pose", "/puppet/end_pose_right"),
             ("/robot/right/joint_state", "/puppet/joint_right"),
@@ -281,10 +294,12 @@ def generate_launch_description():
             keyboard_activation_topic_arg,
             keyboard_reset_topic_arg,
             keyboard_activation_timeout_arg,
+            control_manager_config_file_arg,
             left_reset_joint_position_arg,
             right_reset_joint_position_arg,
             pico_bridge_node,
             pico_teleop_node,
+            control_manager_node,
             left_controller_node,
             right_controller_node,
         ]

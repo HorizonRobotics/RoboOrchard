@@ -122,11 +122,6 @@ def declare_wuji_teleop_arguments(
                         "Empty values derive from hand_name."
                     ),
                 ),
-                DeclareLaunchArgument(
-                    "replay_time_s",
-                    default_value="0.0",
-                    description="Mux algorithm-command replay time.",
-                ),
             ]
         )
     arguments.extend(

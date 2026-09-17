@@ -127,3 +127,31 @@ def test_marvin_launch_wires_keyboard_input_parameters():
     timeout = parameters["keyboard_activation_timeout_s"]
     assert timeout.value.name == "keyboard_activation_timeout_s"
     assert timeout.value_type is float
+    assert parameters["reset_service"] == "/robot/control/reset"
+    assert teleop.kwargs["remappings"] == [
+        ("/robot/left/joint_cmd", "/marvin_teleop/joint_left"),
+        ("/robot/right/joint_cmd", "/marvin_teleop/joint_right"),
+    ]
+
+
+def test_marvin_launch_has_one_manager_without_input_driven_transitions():
+    description = _load_module().generate_launch_description()
+    nodes = [
+        entity for entity in description.entities if "package" in entity.kwargs
+    ]
+    managers = [
+        node
+        for node in nodes
+        if node.kwargs.get("executable") == "control_manager_node"
+    ]
+    assert len(managers) == 1
+    assert managers[0].kwargs["namespace"] == "/robot/control"
+
+    teleop = next(
+        node
+        for node in nodes
+        if node.kwargs.get("executable") == "marvin_pico_vr_teleop"
+    )
+    parameters = teleop.kwargs["parameters"][0]
+    assert "takeover_service" not in parameters
+    assert "auto_service" not in parameters

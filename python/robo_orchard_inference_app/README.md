@@ -2,6 +2,37 @@
 
 Including visualization, inference, dagger and data recording.
 
+## Control Manager integration
+
+The control buttons send Trigger requests to one global Control Manager:
+`/robot/control/auto`, `/robot/control/takeover`, `/robot/control/stop`, and
+`/robot/control/reset`. The App reads `ControlMode` from
+`/robot/control/status` to display Auto, TakeOver, Stop, or Resetting.
+Missing, disconnected, stale, or unrecognized status is shown as Unknown.
+Freshness uses the same local receive-time `status_timeout_s` as inference
+and Recorder, with independent caches. Service replies acknowledge requests;
+they never replace reported control state.
+
+Manager owns command routing and reset sequencing: stop forwarding commands,
+disable configured inference services, reset configured hardware, then remain
+in STOP. The App does not call driver enable/reset services or disable
+inference as part of Reset. Reset is available in AUTO, TAKEOVER and STOP,
+but stays locked during an active or pending recording. STOP gates commands;
+it does not disable hardware, and TAKEOVER is not hardware teaching mode.
+
+Regenerate the HoloBrain launch configuration using the existing project
+scripts. They now start Manager instead of the muxer and select robot wiring
+through `teleop/gen_control_manager_config.py`; the App workflow and buttons
+stay the same. For custom App configurations, replace `release_service_name`
+with `auto_service_name`, configure `reset_service_name` for Manager, and move
+the old `enable_arm_service_name` / `reset_arm_service_name` lists into the
+Manager's `enable_services` / `reset_services`. Robot-specific behavior
+remains in the drivers. `control_status_topic` is configurable, and
+`reset_timeout_s` defaults to 180 seconds for the aggregate reset request.
+Build Manager and the updated `robo_orchard_teleop_msg_ros2` interfaces and
+make those interfaces available to rosbridge. Old per-arm orchestrators are
+not used by this configuration.
+
 ## Inference runtime status
 
 The App reads Deploy's `InferenceStatus` topic to display Enabled, Disabled,
@@ -22,9 +53,9 @@ static-transform synchronization remain unchanged.
 
 Build and deploy `robo_orchard_deploy_msg_ros2` with the updated Deploy node,
 and make its interfaces available to rosbridge. Connecting this App to an
-older Deploy without the status topic shows Unknown, not Disabled. Existing
-control-mode services, node-presence checks, and parallel hardware reset
-remain in use; Control Manager is not required.
+older Deploy without the status topic shows Unknown, not Disabled. Deploy
+still owns inference enable/disable; Manager separately selects whether its
+output or human commands may reach the drivers.
 
 ## Recorder lifecycle
 
@@ -83,6 +114,6 @@ cancelled, failed or externally completed recordings do not subtract successes.
 App cleanup releases subscriptions but does not stop a recording; the Recorder
 continues independently. Use Stop explicitly before exiting if desired.
 This UI requires the upgraded Recorder and generated messages; older nodes are
-shown as unknown rather than using a file-polling fallback. Existing inference,
-control/reset, hand-eye and static-transform behavior is unchanged; no Control
-Manager or Deploy status interface is required for recording.
+shown as unknown rather than using a file-polling fallback. Recorder does not
+depend on Manager or Deploy status to manage its lifecycle. Hand-eye and
+static-transform behavior is unchanged.

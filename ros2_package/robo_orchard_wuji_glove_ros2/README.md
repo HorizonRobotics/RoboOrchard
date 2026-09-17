@@ -1,8 +1,9 @@
 # RoboOrchard Wuji Glove ROS 2
 
 This package publishes Wuji Glove streams and retargets the 21-point hand
-skeleton to the 20-joint `sensor_msgs/msg/JointState` command accepted by
-`wujihandros2` 1.1.0.
+skeleton to a 20-joint `sensor_msgs/msg/JointState` command candidate. The
+teleop runtime sends that candidate through the global Control Manager before
+the selected command reaches `wujihandros2` 1.1.0.
 
 ## Repository Layout
 
@@ -10,10 +11,10 @@ skeleton to the 20-joint `sensor_msgs/msg/JointState` command accepted by
 - `ros2_package/robo_orchard_wuji_glove_ros2`: driver, conversions, retarget
   node, configuration, and standalone glove launch file.
 - `ros2_package/robo_orchard_teleop_ros2/launch/`
-  `wuji_glove_teleop_compat.launch.py`: glove-to-hand direct control.
+  `wuji_glove_teleop_compat.launch.py`: managed glove-to-hand control.
 - `ros2_package/robo_orchard_teleop_ros2/launch/`
-  `wuji_glove_dagger_compat.launch.py`: algorithm/glove selection through the
-  existing `take_over` muxer.
+  `wuji_glove_dagger_compat.launch.py`: global algorithm/glove selection
+  through the Control Manager.
 
 ## Nodes
 
@@ -69,9 +70,10 @@ teleop process also needs the configured observation and TF streams.
 These interfaces have three distinct owners: topics in the table above are
 Glove observations, `retargeted_joint_commands` is the retargeter's candidate
 command, and `/hand_*/joint_commands` plus `/hand_*/joint_states` belong to the
-Wuji Hand driver. Direct teleoperation remaps the candidate command straight to
-the Hand command topic. DAgger keeps the candidate topic visible and publishes
-only the mux-selected command to `/hand_*/joint_commands`.
+Wuji Hand driver. Compatibility launches remap the candidate to
+`/hand_*/control/override`; the Control Manager alone publishes selected
+commands to `/hand_*/joint_commands`. DAgger autonomous candidates use the
+configured `/left_hand_algo_cmd` and `/right_hand_algo_cmd` topics.
 
 ## Vendor SDK
 
@@ -162,6 +164,7 @@ common left/right case needs no additional naming arguments:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 wuji_glove_teleop_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   hand_side:=left,right \
   glove_sdk_user:=<user-id-or-display-name> \
   glove_hand_model_path:=/root/.wuji/sdk/users
@@ -184,6 +187,7 @@ numbers:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 wuji_glove_dagger_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   hand_side:=left,left \
   hand_name:=hand_left_a,hand_left_b \
   hand_serial_number:=HAND_A,HAND_B \
@@ -208,10 +212,11 @@ ros2 launch robo_orchard_wuji_glove_ros2 wuji_glove.launch.py \
   hand_model_path:=/root/.wuji/sdk/users
 ```
 
-Direct glove-to-hand teleoperation with `wujihandros2` 1.1.0:
+Managed glove-to-hand teleoperation with `wujihandros2` 1.1.0:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 wuji_glove_teleop_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   hand_side:=right \
   hand_serial_number:=<hand-serial> glove_serial_number:=<glove-serial> \
   glove_sdk_user:=<user-id-or-display-name> \
@@ -222,18 +227,20 @@ DAgger control selection:
 
 ```bash
 ros2 launch robo_orchard_teleop_ros2 wuji_glove_dagger_compat.launch.py \
+  control_manager_config_file:=/path/to/project/control_manager.json \
   hand_side:=right \
   hand_serial_number:=<hand-serial> glove_serial_number:=<glove-serial> \
   glove_sdk_user:=<user-id-or-display-name> \
   glove_hand_model_path:=/root/.wuji/sdk/users
 ```
 
-The DAgger launch preserves the existing muxer behavior. It starts in
-autonomous mode; `/hand_right/takeover_muxer/trigger_takeover` selects glove
-commands and `/hand_right/takeover_muxer/release_control` selects algorithm
-commands. The Glove candidate is
-`/wuji_glove/right/retargeted_joint_commands`; only the mux output uses
-`/hand_right/joint_commands`.
+Both launches route commands through one global Control Manager, which starts
+in `STOP`. Call `/robot/control/takeover` to select glove commands and
+`/robot/control/auto` to select algorithm commands. The glove publishes its
+candidate to `/hand_right/control/override`; only Manager output uses
+`/hand_right/joint_commands`. The default configuration assumes the standard
+`hand_left` and `hand_right` names. Custom names or algorithm topics require a
+matching `control_manager_config_file`.
 
 ## Wuji References
 
