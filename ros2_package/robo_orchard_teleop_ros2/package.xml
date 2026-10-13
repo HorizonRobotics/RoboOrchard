@@ -15,10 +15,14 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>hex_bridge</exec_depend>
+  <exec_depend>hex_device_msgs</exec_depend>
+  <exec_depend>hex_device_ros_wrapper</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>robo_orchard_control_manager_ros2</exec_depend>
   <exec_depend>robo_orchard_marvin_ros2</exec_depend>
+  <exec_depend>robo_orchard_piper_ros2</exec_depend>
   <exec_depend>robo_orchard_wuji_glove_ros2</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

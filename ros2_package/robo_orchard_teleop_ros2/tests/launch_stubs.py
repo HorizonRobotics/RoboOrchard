@@ -39,6 +39,20 @@ class IncludeLaunchDescription:
         self.launch_arguments = list(launch_arguments or [])
 
 
+class GroupAction:
+    def __init__(self, actions, scoped=True):
+        self.actions = list(actions)
+        self.scoped = scoped
+
+
+class IfCondition:
+    def __init__(self, predicate):
+        self.predicate = predicate
+
+    def evaluate(self, context):
+        return self.predicate.perform(context).lower() == "true"
+
+
 class PythonLaunchDescriptionSource:
     def __init__(self, location):
         self.location = location
@@ -83,6 +97,7 @@ def load_launch_module(path: Path, module_name: str):
     modules = {
         "launch": types.ModuleType("launch"),
         "launch.actions": types.ModuleType("launch.actions"),
+        "launch.conditions": types.ModuleType("launch.conditions"),
         "launch.launch_description_sources": types.ModuleType(
             "launch.launch_description_sources"
         ),
@@ -98,6 +113,8 @@ def load_launch_module(path: Path, module_name: str):
     }
     modules["launch"].LaunchDescription = LaunchDescription
     modules["launch.actions"].DeclareLaunchArgument = DeclareLaunchArgument
+    modules["launch.actions"].GroupAction = GroupAction
+    modules["launch.conditions"].IfCondition = IfCondition
     modules[
         "launch.actions"
     ].IncludeLaunchDescription = IncludeLaunchDescription

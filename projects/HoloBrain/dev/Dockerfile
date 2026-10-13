@@ -19,6 +19,10 @@ RUN apt install -y \
     ethtool \
     iproute2 \
     curl \
+    xdg-utils \
+    clang \
+    libclang-dev \
+    unzip \
     python3.10-venv \
     ros-$ROS_DISTRO-rosbag2-storage-mcap \
     ros-$ROS_DISTRO-foxglove-bridge \
@@ -26,6 +30,27 @@ RUN apt install -y \
     ros-$ROS_DISTRO-realsense2* \
     ros-$ROS_DISTRO-rosbridge-server \
     && rm -rf /var/lib/apt/lists/*
+
+# Build prerequisites for the external Pico and Hexfellow packages (amd64).
+ARG RUST_VERSION=1.99.0
+ENV CARGO_HOME=/opt/rust/cargo
+ENV RUSTUP_HOME=/opt/rust/rustup
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+RUN test "$(dpkg --print-architecture)" = "amd64" && \
+    curl -fsSL https://sh.rustup.rs -o /tmp/holobrain-rustup.sh && \
+    sh /tmp/holobrain-rustup.sh -y --profile minimal \
+        --default-toolchain "$RUST_VERSION" --no-modify-path && \
+    rm /tmp/holobrain-rustup.sh && \
+    rustc --version && cargo --version
+
+ARG PROTOC_VERSION=27.1
+RUN curl -fsSL \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+        -o /tmp/holobrain-protoc.zip && \
+    unzip /tmp/holobrain-protoc.zip -d /usr/local && \
+    rm /tmp/holobrain-protoc.zip && \
+    protoc --version
 
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 

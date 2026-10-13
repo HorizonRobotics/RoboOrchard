@@ -12,9 +12,6 @@ Please refer to the [docs](https://horizonrobotics.github.io/robot_lab/holobrain
 
 ```bash
 docker pull horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0
-
-# if teleop source is pico
-docker pull horizonrobotics/holobrain:v0-ubuntu22.04-py3.10-ros-humble-torch2.8.0-with-pico
 ```
 
 ## Launch scripts
@@ -83,9 +80,15 @@ make ros2-dev-env
 
 # install python packages
 make install-editable
+```
 
-# install ros2 packages
-make ros2-build
+For Pico or Hexfellow, complete the [teleoperation dependency setup](teleop/README.md#dependency-setup)
+before building ROS2 packages:
+
+```bash
+cd "$ROBO_ORCHARD_PATH"
+make -B ros2-build
+source ros2_package/install/setup.bash
 ```
 
 ### [Host] One-Click Start
@@ -106,6 +109,10 @@ cp launch/templates/launch.yaml launch/
 > Ensure `DOCKER_ROBO_ORCHARD_PATH` and `DOCKER_VENV_PATH` in `launch/launch.yaml` point to locations visible inside your container.
 > Update the camera serial numbers to match your hardware.
 > The default launch uses `TELEOP_SOURCE: "aloha"`; for Pico VR, update `launch/launch.yaml` and see the [teleoperation docs](docs/source/modules/teleop.rst).
+> To add Hexfellow chassis/lift to dual Piper Pico teleop, set
+> `TELEOP_SOURCE: "pico"`, `WITH_HEXFELLOW: "true"`, and provide
+> `PIPER_URDF_PATH`, `CHASSIS_URL`, and `LIFT_URL`. The default
+> `WITH_HEXFELLOW: "false"` preserves the existing launches.
 
 3. Execute the launch script:
 

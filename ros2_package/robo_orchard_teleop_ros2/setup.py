@@ -128,6 +128,10 @@ setup(
     entry_points={
         "console_scripts": [
             "pico_bridge = robo_orchard_teleop_ros2.bridge.pico.node:main",  # noqa: E501
+            "hexfellow_chassis_pico_vr_teleop = "
+            "robo_orchard_teleop_ros2.robot.hexfellow.chassis.pico_vr:main",
+            "hexfellow_lift_pico_vr_teleop = "
+            "robo_orchard_teleop_ros2.robot.hexfellow.lift.pico_vr:main",
             "keyboard_trigger = robo_orchard_teleop_ros2.take_over.trigger.keyboard:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
             "marvin_pico_vr_teleop = robo_orchard_teleop_ros2.robot.marvin.pico_vr:main",  # noqa: E501

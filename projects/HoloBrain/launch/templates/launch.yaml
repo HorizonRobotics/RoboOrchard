@@ -14,8 +14,13 @@ environment:
   # Default HoloBrain launch scripts target ALOHA. Set to "pico" to use
   # teleop/pico_dagger.sh and global Control Manager services.
   TELEOP_SOURCE: "aloha"
-  # Required by teleop/pico_dagger.sh.
+  # Set to "true" with TELEOP_SOURCE: "pico" to launch Piper + Hexfellow.
+  WITH_HEXFELLOW: "false"
+  # Required by both Pico teleop scripts.
   PIPER_URDF_PATH: ""
+  # Required when WITH_HEXFELLOW is "true" (vendor device addresses).
+  CHASSIS_URL: ""
+  LIFT_URL: ""
 
 shell_command_before:
   - docker exec -it
@@ -26,7 +31,10 @@ shell_command_before:
     -e RIGHT_WRIST_CAMERA_SERIAL_NO="$RIGHT_WRIST_CAMERA_SERIAL_NO"
     -e ENV_CENTER_CAMERA_SERIAL_NO="$ENV_CENTER_CAMERA_SERIAL_NO"
     -e TELEOP_SOURCE="$TELEOP_SOURCE"
+    -e WITH_HEXFELLOW="$WITH_HEXFELLOW"
     -e PIPER_URDF_PATH="$PIPER_URDF_PATH"
+    -e CHASSIS_URL="$CHASSIS_URL"
+    -e LIFT_URL="$LIFT_URL"
     $DOCKER_NAME /bin/bash
   - source $DOCKER_VENV_PATH/bin/activate && source $DOCKER_ROBO_ORCHARD_PATH/ros2_package/install/setup.bash
   - git config --global --add safe.directory $DOCKER_ROBO_ORCHARD_PATH
@@ -91,7 +99,8 @@ windows:
       - cd $DOCKER_ROBO_ORCHARD_PATH/projects/HoloBrain
     panes:
       - shell_command:  # robot teleop
-        - CMD='if [ "$TELEOP_SOURCE" = "pico" ]; then bash teleop/rename-can.sh && bash teleop/pico_dagger.sh; else bash teleop/rename-can.sh && bash teleop/aloha_dagger.sh; fi'
+        - 'if [ "$TELEOP_SOURCE" = "pico" ]; then bash /opt/apps/roboticsservice/runService.sh; fi'
+        - CMD='case "$TELEOP_SOURCE:$WITH_HEXFELLOW" in pico:true) SCRIPT=hexfellow_pico_dagger.sh ;; pico:false) SCRIPT=pico_dagger.sh ;; aloha:false) SCRIPT=aloha_dagger.sh ;; *) echo "Unsupported TELEOP_SOURCE/WITH_HEXFELLOW combination" >&2; false ;; esac && bash teleop/rename-can.sh && bash "teleop/$SCRIPT"'
         - history -s "$CMD"
         - eval "$CMD"
 

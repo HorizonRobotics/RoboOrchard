@@ -9,7 +9,8 @@ collection.
 - **Aloha leader-follower** — a leader arm drives the follower over CAN.
   Piper only.
 - **Pico VR** — a Pico headset streams controller poses and the arm follows
-  through IK. Piper and Marvin. The bridge reads the raw device message, which
+  through IK for Piper and Marvin; Hexfellow uses the controller sticks for
+  chassis velocity and lift position. The bridge reads raw device messages, which
   the upstream `xrobotoolkit_sdk` does not expose, so build
   [XRoboToolkit-PC-Service-Pybind](https://github.com/XR-Robotics/XRoboToolkit-PC-Service-Pybind)
   with [`patches/py_bindings.cpp`](patches/py_bindings.cpp) in place of
@@ -23,10 +24,145 @@ collection.
 | ------------------ | :---: | :-----: | :--------: |
 | Piper              |   ✅   |    ✅    |     —      |
 | Marvin             |   —   |    ✅    |     —      |
+| Hexfellow chassis/lift | — |    ✅    |     —      |
 | Wuji hand          |   —   |    —    |     ✅      |
 | Marvin + Wuji hand |   —   |    ✅    |     ✅      |
 
 ## Quick start
+
+### Hexfellow managed teleoperation
+
+Install the official external packages `hex_bridge`, `hex_device_msgs`, and
+`hex_device_ros_wrapper`, along with the vendor SDK/build prerequisites. Build
+their sources in `ros2_package/third_party/` with the workspace; the driver
+sources are not bundled in this repository. Pico also requires the patched
+XRoboToolkit SDK described above. Replace the example device addresses below
+with the actual chassis and lift addresses.
+
+```bash
+ros2 launch robo_orchard_teleop_ros2 hexfellow_pico_teleop.launch.py \
+  chassis_url:=192.0.2.10:8439 \
+  lift_url:=192.0.2.11:8439 \
+  control_manager_config_file:=/path/to/project/control_manager.json
+```
+
+This includes the vendor's `launch/ros2/multi_bringup.launch.py`, starting the
+chassis and lift drivers and their communication bridges. It also starts one
+Pico bridge under `/pico_bridge`, both teleop adapters, and one Control Manager
+under `/robot/control`. Stop any separately launched Hexfellow drivers before
+using this combined launch to avoid duplicate connections and nodes. It does
+not automatically enter TAKEOVER or supply a Manager config. The caller owns
+the configuration and hardware output topic mapping:
+
+| Channel | ROS message type | Default override topic |
+| --- | --- | --- |
+| Chassis | `geometry_msgs/msg/Twist` | `/hexfellow_teleop/cmd_vel` |
+| Lift | `sensor_msgs/msg/JointState` | `/hexfellow_teleop/lift_joint_cmd` |
+
+Use the existing `joint_command` channel kind and configure each channel's
+`autonomous_topic`, `override_topic`, and `output_topic` in the supplied
+Manager file. The included driver launch uses `/chassis/cmd_vel` and
+`/lift/joint_cmd` as command inputs and `/lift/motor_states` for lift feedback.
+Chassis `simple_mode` is fixed to `true` to match the adapter's Twist output.
+
+`chassis_url` and `lift_url` are required and forwarded to the vendor launch.
+`enable_chassis_bridge` and `enable_lift_bridge` default to `true`;
+`chassis_is_kcp` and `lift_is_kcp` also default to `true`. Both
+`chassis_read_only` and `lift_read_only` default to `false`. These options use
+the vendor's names and are passed through without reinterpretation. Disabling
+a bridge does not disable its driver adapter; it is intended for an already
+running external communication bridge.
+
+`start_pico_bridge` and `start_control_manager` default to `true`. Set them
+to `false` when composing this launch with an existing bridge and Manager;
+the Hexfellow drivers and teleop adapters still start.
+
+Both `hexfellow_pico_teleop.launch.py` and
+`hexfellow_piper_pico_teleop_compat.launch.py` accept these speed arguments:
+
+| Launch argument | Default | Meaning |
+| --- | --- | --- |
+| `max_linear_x` | `0.2` | Maximum chassis forward/backward speed, m/s |
+| `max_angular_z` | `0.2` | Maximum chassis yaw rate, rad/s |
+| `position_rate` | `0.08` | Lift target position change rate, m/s |
+
+For example, append `max_linear_x:=0.1 max_angular_z:=0.15 position_rate:=0.04`
+to either launch command. These are teleop node startup parameters, not
+Control Manager settings; restart the launch to apply changes. Lift
+`position_rate` sets the target integration rate, not a hardware velocity
+command; feedback lead limits and the driver also constrain actual motion.
+
+Set `replay_time_s: 0` in the caller's Manager config for this initial velocity
+control setup. Omitting it enables the Manager's default replay; replay is
+currently global, not per channel. No Manager behavior is changed here.
+
+Request global takeover before operating the sticks:
+
+```bash
+ros2 service call /robot/control/takeover std_srvs/srv/Trigger '{}'
+```
+
+Launch arguments `vr_topic`, `chassis_override_topic`, `lift_override_topic`,
+`lift_state_topic`, and `publish_hz` customize the wiring. `vr_topic` remaps
+both the bridge output and adapter inputs together. If another robot stack
+already provides the bridge and Manager, do not start this whole launch a
+second time: run only the two adapter executables below and add their channels
+to the existing Manager configuration.
+
+### Hexfellow chassis adapter
+
+`hexfellow_chassis_pico_vr_teleop` reads `/pico_bridge/vr_state` and publishes
+`geometry_msgs/msg/Twist` candidates on `/hexfellow_teleop/cmd_vel`. Configure
+that topic as a Control Manager channel's `override_topic`; only the Manager
+output should reach the hardware driver. `vr_topic` and `cmd_vel_topic` are
+ROS parameters. The adapter does not change the Manager mode or start drivers.
+
+```bash
+ros2 run robo_orchard_teleop_ros2 hexfellow_chassis_pico_vr_teleop
+```
+
+Hold the left stick button for one second to toggle local control, then use
+stick Y for forward/backward motion and stick X for yaw. Defaults are 30 Hz,
+0.2 m/s maximum linear speed, 0.2 rad/s maximum yaw rate, and a 0.08 deadzone.
+`max_linear_x`, `max_angular_z`, `axis_y_sign` (1), `axis_x_sign` (-1),
+`publish_hz`, `deadzone`, `toggle_hold_time_s`, and `stale_timeout_s` are
+configurable parameters. Inactive control, an invalid left controller, or
+0.3 seconds without VR messages produces zero-velocity candidates. Input loss
+also clears local activation, requiring another long press.
+
+Manager STOP suppresses forwarding, including zero candidates. The hardware
+driver must implement command-timeout stopping; this adapter cannot stop a
+robot after the downstream driver or communication process has failed.
+
+### Hexfellow lift adapter
+
+`hexfellow_lift_pico_vr_teleop` shares `/pico_bridge/vr_state` and publishes
+`sensor_msgs/msg/JointState` candidates on `/hexfellow_teleop/lift_joint_cmd`.
+It reads measured position from `/lift/motor_states`, selecting `joint1` by
+name (or the sole position in an unnamed single-joint message). Configure
+`joint_cmd_topic` and `state_topic` when using different topic layouts.
+
+```bash
+ros2 run robo_orchard_teleop_ros2 hexfellow_lift_pico_vr_teleop
+```
+
+Right-stick Y integrates the target at up to `position_rate` (0.08 m/s).
+The default `axis_y_sign=-1` makes pushing up decrease position, lifting up.
+Targets stay within `min_position=0` and `max_position=0.6` meters and at most
+`target_lead_limit=0.015` meters from measured position. Control starts from
+feedback, never from a fixed initial target. The lift has no local long-press
+activation: input is effective when feedback is valid and Manager is in
+TAKEOVER. The adapter itself does not request that mode.
+
+Returning to the deadzone, losing VR input, or an invalid right controller
+publishes one hold candidate at the latest measured position after motion.
+Missing or stale feedback suppresses all output until fresh feedback arrives,
+then reseeds the target. `stale_timeout_s` (0.3 s) applies to both VR and valid
+feedback; `publish_hz` (30) and `deadzone` (0.08) are also configurable. The
+downstream lift controller remains responsible for safe holding on command or
+communication loss.
+
+### Other robots
 
 Each command starts a complete stack: robot driver, input bridge and teleop
 node. Append `--show-args` to any launch file to list its parameters.
@@ -63,6 +199,40 @@ In four-arm Aloha/Dagger launches, master TF is disabled by default; the
 configure it separately. Match these frame names to the hand-eye calibration
 configuration. See the [Piper package README](../robo_orchard_piper_ros2/README.md)
 for the complete parameter contract. The separate Raw Aloha launch is unchanged.
+
+Pico VR, Hexfellow with dual Piper:
+
+```bash
+ros2 launch robo_orchard_teleop_ros2 hexfellow_piper_pico_teleop_compat.launch.py \
+  left_can_port:=can_left \
+  right_can_port:=can_right \
+  chassis_url:=192.0.2.10:8439 \
+  lift_url:=192.0.2.11:8439 \
+  control_manager_config_file:=/path/to/project/control_manager.json
+```
+
+This replaces the former `hexfellow_dual_piper_pico_teleop.launch.py`
+entrypoint; update startup commands to the new name. Launch arguments and
+behavior are unchanged, and no alias for the former name is provided.
+
+This composes the existing dual Piper Pico launch and Hexfellow launch,
+including the lift. The Piper launch owns the single Pico bridge and Control
+Manager; the Hexfellow copy of these two nodes is disabled. Do not also run
+either standalone launch or separately started drivers. Both included
+launches inherit caller arguments, including CAN ports, device connection
+options, `urdf_path`, joint names, reset positions, and frame settings.
+`vr_topic` defaults to `/pico_bridge/vr_state` and rewires the shared bridge
+and all three teleop adapters together.
+
+Supply one Manager configuration covering all four channels. In addition to
+the Hexfellow mappings above, map `/pico_teleop/joint_left` and
+`/pico_teleop/joint_right` (`sensor_msgs/msg/JointState`) to
+`/robot/left/joint_cmd` and `/robot/right/joint_cmd`, respectively. Keep
+`replay_time_s: 0` for the chassis velocity setup. Startup remains in STOP;
+request TAKEOVER explicitly. Piper reset gestures address the same global
+Manager reset service; configure reset participants in the caller's file.
+Piper controller poses/triggers operate the arms/grippers, while the sticks
+operate the chassis/lift; the existing activation rules remain unchanged.
 
 Pico VR, Piper:
 

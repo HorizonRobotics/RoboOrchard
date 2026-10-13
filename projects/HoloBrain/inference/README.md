@@ -53,26 +53,26 @@
 
 These generators are editable project examples, not a robot-discovery layer.
 Start with the explicit left and right arm entries in `control_channels.py`.
-The synchronous, asynchronous, and Control Manager generators share those
-entries so Deploy's command topic stays aligned with Manager's input topic.
+The synchronous and asynchronous generators share those entries. The Control
+Manager config is defined separately in `../teleop/gen_control_manager_config.py`;
+keep its autonomous inputs aligned with Deploy's published topics.
 
 | Setting to change | Where to edit |
 | --- | --- |
 | Model response action keys | `server_output_key` in `control_channels.py` |
 | Request keys for unpublished action steps (async only) | `server_remaining_key` in `control_channels.py` |
-| Deploy output / Manager autonomous input topics | `autonomous_topic` in `control_channels.py` |
-| Manager output topics connected to the drivers | `output_topic` in `control_channels.py` |
-| ALOHA / Pico operator input topics | `override_topic()` in `control_channels.py` |
+| Deploy output / Manager autonomous input topics | `autonomous_topic` in `control_channels.py`; match it in the Manager generator |
+| Manager output topics connected to the drivers | `../teleop/gen_control_manager_config.py` |
+| ALOHA / Pico operator input topics | `../teleop/gen_control_manager_config.py` |
 | Camera topics, image encoding, and model observation keys | `build_obs_channels()` in the selected `gen_*_config.py` |
 | Joint order, velocity, and effort fields | `PIPER_JOINT_NAMES` in `control_channels.py` and `build_action_channels()` in the selected generator |
 | Model URL, inference rate, control rate, and delay horizon | `main()` in the selected generator |
 | Hardware enable/reset services and replay time | `../teleop/gen_control_manager_config.py` |
 
-`name` is only the Manager channel label, for example `left_arm`. Renaming
-it does not rename model fields or ROS topics. `side`, for example `left`,
-is used by the example's joint-name and observation/teleop topic patterns.
-If your robot does not use these patterns, replace the relevant expressions
-with your actual joint lists and topics rather than encoding them in `name`.
+`side`, for example `left`, is used by Deploy's joint-name and observation
+topic patterns. If your robot does not use these patterns, replace the relevant
+expressions with your actual joint lists and topics. Manager channel labels
+are configured independently and do not name model fields or ROS topics.
 
 `server_remaining_key` names a request field containing the channel's action
 steps not yet published, not a remaining-action count. Change it to match

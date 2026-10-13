@@ -3,6 +3,27 @@ Data Collection
 
 We developed an mcap-based (`mcap.dev <https://mcap.dev/>`_) data collection system that records both expert demonstrations and on-policy model rollouts.
 
+The recorder configuration generator reads ``TELEOP_SOURCE`` and
+``WITH_HEXFELLOW`` from the launch template when the recorder service
+starts. The default ALOHA topic contract is unchanged. For Pico it also
+records ``/pico_bridge/vr_state`` and both
+``/robot/{left,right}/joint_cmd`` arm outputs. With Pico plus Hexfellow it
+additionally records ``/chassis/motor_states``, ``/chassis/odom``,
+``/lift/motor_states``, ``/chassis/cmd_vel``, and ``/lift/joint_cmd``. Recording
+waits for the three Hexfellow state streams as well as its existing camera
+and Piper state prerequisites. ``/chassis/cmd_vel`` is a headerless ``Twist``
+and uses the recorder clock; the other added streams use message header
+timestamps. Restart the recorder service after changing launch settings.
+
+MCAP topic names follow the existing robot-state layout: chassis motor
+states and odometry are stored under ``/observation/robot_state/chassis/``
+as ``joint`` and ``odom``, and lift state as
+``/observation/robot_state/lift/joint``. Routed commands are stored as
+``/action/{left,right}/joint``, ``/action/chassis/cmd_vel``, and
+``/action/lift/joint``. These recording-only renames leave live ROS topics,
+readiness checks, and Pico VR input unchanged. Existing recordings are not
+renamed.
+
 .. figure:: ../_static/flowcharts/data_recorder.jpeg
    :alt: data collection flowchart
    :align: center

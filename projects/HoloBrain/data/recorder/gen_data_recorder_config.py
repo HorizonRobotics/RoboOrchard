@@ -26,8 +26,14 @@ from robo_orchard_data_ros2.mcap.config import (
 )
 
 
-def build_config() -> RecordConfig:
-    """Build the HoloBrain recorder topic contract."""
+def build_config(
+    teleop_source: str = "aloha", with_hexfellow: bool = False
+) -> RecordConfig:
+    """Build recorder topics for ALOHA or Pico with optional Hexfellow."""
+    if teleop_source not in ("aloha", "pico"):
+        raise ValueError(f"Unsupported teleop source {teleop_source!r}")
+    if with_hexfellow and teleop_source != "pico":
+        raise ValueError("WITH_HEXFELLOW requires TELEOP_SOURCE=pico")
     camera_namespace = "/agilex"
 
     config = RecordConfig(
@@ -232,14 +238,77 @@ def build_config() -> RecordConfig:
         max_timestamp_difference_ns=0.5 * 1e9,  # 1s
     )
 
+    if teleop_source == "pico":
+        config.include_patterns.extend(
+            [
+                "/pico_bridge/vr_state",
+                "/robot/left/joint_cmd",
+                "/robot/right/joint_cmd",
+            ]
+        )
+        for side in ("left", "right"):
+            config.topic_spec[f"/robot/{side}/joint_cmd"] = TopicSpec(
+                qos_profile=config.default_topic_spec.qos_profile,
+                stamp_type="msg_header_stamp",
+                rename_topic=f"/action/{side}/joint",
+            )
+
+    if with_hexfellow:
+        states = (
+            "/chassis/motor_states",
+            "/chassis/odom",
+            "/lift/motor_states",
+        )
+        config.include_patterns.extend(
+            [
+                *states,
+                "/chassis/cmd_vel",
+                "/lift/joint_cmd",
+            ]
+        )
+        config.wait_for_topics.update(states)
+        config.topic_spec.update(
+            {
+                "/chassis/motor_states": TopicSpec(
+                    qos_profile=config.default_topic_spec.qos_profile,
+                    stamp_type="msg_header_stamp",
+                    rename_topic="/observation/robot_state/chassis/joint",
+                ),
+                "/chassis/odom": TopicSpec(
+                    qos_profile=config.default_topic_spec.qos_profile,
+                    stamp_type="msg_header_stamp",
+                    rename_topic="/observation/robot_state/chassis/odom",
+                ),
+                "/lift/motor_states": TopicSpec(
+                    qos_profile=config.default_topic_spec.qos_profile,
+                    stamp_type="msg_header_stamp",
+                    rename_topic="/observation/robot_state/lift/joint",
+                ),
+                "/chassis/cmd_vel": TopicSpec(
+                    stamp_type="recorder_clock",
+                    rename_topic="/action/chassis/cmd_vel",
+                ),
+                "/lift/joint_cmd": TopicSpec(
+                    qos_profile=config.default_topic_spec.qos_profile,
+                    stamp_type="msg_header_stamp",
+                    rename_topic="/action/lift/joint",
+                ),
+            }
+        )
+
     return config
 
 
-def main():
+def main() -> None:
+    teleop_source = os.environ.get("TELEOP_SOURCE", "aloha").strip().lower()
+    hexfellow = os.environ.get("WITH_HEXFELLOW", "false").strip().lower()
+    if hexfellow not in ("true", "false"):
+        raise ValueError("WITH_HEXFELLOW must be true or false")
+    config = build_config(teleop_source, with_hexfellow=hexfellow == "true")
     with open(
         os.path.join(os.path.dirname(__file__), "data_recorder.json"), "w"
     ) as f:
-        f.write(build_config().model_dump_json(indent=4))
+        f.write(config.model_dump_json(indent=4))
 
 
 if __name__ == "__main__":

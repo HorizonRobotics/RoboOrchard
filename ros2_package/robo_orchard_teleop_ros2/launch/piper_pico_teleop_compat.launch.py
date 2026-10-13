@@ -132,6 +132,7 @@ def generate_launch_description():
         namespace="/pico_bridge",
         output="screen",
         emulate_tty=True,
+        remappings=[("vr_state", LaunchConfiguration("vr_topic"))],
     )
 
     pico_teleop_node = Node(
@@ -174,6 +175,7 @@ def generate_launch_description():
             }
         ],
         remappings=[
+            ("vr_state", LaunchConfiguration("vr_topic")),
             ("/robot/left/joint_cmd", "/pico_teleop/joint_left"),
             ("/robot/right/joint_cmd", "/pico_teleop/joint_right"),
             ("/robot/left/ee_pose", "/puppet/end_pose_left"),
@@ -279,6 +281,9 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "vr_topic", default_value="/pico_bridge/vr_state"
+            ),
             *joint_names_args,
             left_can_port_arg,
             right_can_port_arg,

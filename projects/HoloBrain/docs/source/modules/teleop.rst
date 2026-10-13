@@ -21,9 +21,21 @@ The system exposes four control states:
 The default HoloBrain launch configuration targets ALOHA hardware. It uses
 ``teleop/aloha_dagger.sh``. Pico VR uses ``teleop/pico_dagger.sh`` for DAgger
 workflows. Set ``TELEOP_SOURCE=pico`` so the launch template starts the Pico
-script. Both runtimes generate their Control Manager configuration from the
-same command-channel definitions used by Deploy and expose the global
-``/robot/control/auto``, ``takeover``, ``stop``, and ``reset`` services.
+script. Both runtimes generate their Control Manager configuration
+independently of Deploy's action-channel configuration. Keep the Manager's
+autonomous input topics aligned with Deploy's output topics. The Manager
+exposes the global ``/robot/control/auto``, ``takeover``, ``stop``, and
+``reset`` services.
+
+For dual Piper arms plus Hexfellow chassis/lift, set
+``TELEOP_SOURCE=pico`` and ``WITH_HEXFELLOW=true`` in
+``launch/launch.yaml``. Set ``PIPER_URDF_PATH``, ``CHASSIS_URL``, and
+``LIFT_URL`` to your hardware values. The template then starts
+``teleop/hexfellow_pico_dagger.sh`` with one Pico bridge and one Control
+Manager; ``WITH_HEXFELLOW=false`` keeps the original Pico or ALOHA path.
+ALOHA combined with Hexfellow is rejected. Install the external Hexfellow
+drivers before using this launch. See ``teleop/README.md`` for the four
+command topics; Deploy still generates only the two arm commands.
 
 .. note::
 

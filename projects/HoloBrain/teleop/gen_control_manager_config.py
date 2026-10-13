@@ -16,32 +16,62 @@
 
 from __future__ import annotations
 import os
-import sys
 from pathlib import Path
 
-INFERENCE_DIR = Path(__file__).resolve().parents[1] / "inference"
-sys.path.insert(0, str(INFERENCE_DIR))
-
-from control_channels import COMMAND_CHANNELS, override_topic  # noqa: E402
-
-from robo_orchard_control_manager_ros2.config import (  # noqa: E402
+from robo_orchard_control_manager_ros2.config import (
     CommandChannel,
     ControlManagerConfig,
 )
 
 
-def build_config(teleop_source: str) -> ControlManagerConfig:
-    """Build project Manager wiring from the shared command channels."""
+def build_config(
+    teleop_source: str, with_hexfellow: bool = False
+) -> ControlManagerConfig:
+    """Build Manager wiring for the selected arm and optional base hardware.
+
+    Hexfellow requires Pico input. Its autonomous command topics are reserved
+    for future Deploy channels; only the arm channels have Deploy outputs.
+    """
+    if with_hexfellow and teleop_source != "pico":
+        raise ValueError("WITH_HEXFELLOW requires TELEOP_SOURCE=pico")
+    if teleop_source == "aloha":
+        override_root = "/master/joint_"
+    elif teleop_source == "pico":
+        override_root = "/pico_teleop/joint_"
+    else:
+        raise ValueError(
+            f"Unsupported teleop source {teleop_source!r}; "
+            "expected aloha or pico"
+        )
     channels = [
         CommandChannel(
-            name=channel.name,
-            msg_type=channel.msg_type,
-            autonomous_topic=channel.autonomous_topic,
-            override_topic=override_topic(channel, teleop_source),
-            output_topic=channel.output_topic,
+            name=f"{side}_arm",
+            msg_type="sensor_msgs/msg/JointState",
+            autonomous_topic=f"/{side}_algo_cmd",
+            override_topic=f"{override_root}{side}",
+            output_topic=f"/robot/{side}/joint_cmd",
         )
-        for channel in COMMAND_CHANNELS
+        for side in ("left", "right")
     ]
+    if with_hexfellow:
+        channels.extend(
+            [
+                CommandChannel(
+                    name="chassis",
+                    msg_type="geometry_msgs/msg/Twist",
+                    autonomous_topic="/chassis_algo_cmd",
+                    override_topic="/hexfellow_teleop/cmd_vel",
+                    output_topic="/chassis/cmd_vel",
+                ),
+                CommandChannel(
+                    name="lift",
+                    msg_type="sensor_msgs/msg/JointState",
+                    autonomous_topic="/lift_algo_cmd",
+                    override_topic="/hexfellow_teleop/lift_joint_cmd",
+                    output_topic="/lift/joint_cmd",
+                ),
+            ]
+        )
     if teleop_source == "aloha":
         enable_services = [
             "/robot/left_master/enable_ctrl",
@@ -64,11 +94,6 @@ def build_config(teleop_source: str) -> ControlManagerConfig:
             "/robot/left/reset_ctrl",
             "/robot/right/reset_ctrl",
         ]
-    else:
-        raise ValueError(
-            f"Unsupported teleop source {teleop_source!r}; "
-            "expected aloha or pico"
-        )
     return ControlManagerConfig(
         channels=channels,
         enable_services=enable_services,
@@ -84,7 +109,10 @@ def build_config(teleop_source: str) -> ControlManagerConfig:
 
 def main() -> None:
     teleop_source = os.environ.get("TELEOP_SOURCE", "aloha").strip().lower()
-    config = build_config(teleop_source)
+    hexfellow = os.environ.get("WITH_HEXFELLOW", "false").strip().lower()
+    if hexfellow not in ("true", "false"):
+        raise ValueError("WITH_HEXFELLOW must be true or false")
+    config = build_config(teleop_source, with_hexfellow=hexfellow == "true")
     output = Path(__file__).with_name("control_manager.json")
     output.write_text(config.model_dump_json(indent=4), encoding="utf-8")
 
