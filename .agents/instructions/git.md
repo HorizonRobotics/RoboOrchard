@@ -18,6 +18,12 @@ content.
 - Base the subject on the actual diff and select the primary affected component
   as the scope.
 - Keep each requested commit focused and do not include unrelated changes.
+- Before every commit, run `make auto-format` followed by `make check-lint`
+  from the repository root. Both commands must complete successfully.
+- If required test or lint tooling is unavailable, create or reuse the
+  repository-local `.venv` and install the needed tools instead of skipping
+  validation.
+- Review changes produced by `make auto-format` before staging them.
 - Before committing, inspect the staged diff and report the validation performed.
 
 ## MR/PR Preparation

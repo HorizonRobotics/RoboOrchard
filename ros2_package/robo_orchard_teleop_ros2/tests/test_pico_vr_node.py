@@ -397,7 +397,7 @@ class _VRTeleOp:
         self.recapture_count += 1
         return True
 
-    def reset_session(self):
+    def reset_session(self, *, require_rearm=False):
         self.reset_session_count += 1
 
     def __call__(self):

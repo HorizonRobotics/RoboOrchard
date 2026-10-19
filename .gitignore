@@ -6,6 +6,7 @@ test_logs_worker_master.log
 FULL_VERSION
 VERSION_POSTFIX
 *.egg-info/
+.venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

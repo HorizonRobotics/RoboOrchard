@@ -236,9 +236,7 @@ def test_inference_generators_preserve_default_model_fields(mode):
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
-def test_custom_model_channels_do_not_change_manager_wiring(
-    mode, monkeypatch
-):
+def test_custom_model_channels_do_not_change_manager_wiring(mode, monkeypatch):
     custom_channel = replace(
         COMMAND_CHANNELS[0],
         server_output_key="predicted_joints",

@@ -134,6 +134,7 @@ setup(
             "robo_orchard_teleop_ros2.robot.hexfellow.lift.pico_vr:main",
             "keyboard_trigger = robo_orchard_teleop_ros2.take_over.trigger.keyboard:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
+            "franka_pico_vr_teleop = robo_orchard_teleop_ros2.robot.franka.pico_vr:main",  # noqa: E501
             "marvin_pico_vr_teleop = robo_orchard_teleop_ros2.robot.marvin.pico_vr:main",  # noqa: E501
             "teleop_keyboard_node = robo_orchard_teleop_ros2.activation.keyboard:main",  # noqa: E501
         ],

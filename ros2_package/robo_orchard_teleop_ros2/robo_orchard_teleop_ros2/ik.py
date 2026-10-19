@@ -188,10 +188,38 @@ class IkOptimizer:
             value = min(value, hi)
         return float(value)
 
+    @staticmethod
+    def _clamp_seed_value(value: float, bounds) -> float:
+        if not np.isfinite(value):
+            value = 0.0
+        if bounds is None:
+            return float(value)
+
+        lo, hi = bounds
+        if lo is not None and np.isfinite(lo):
+            value = max(value, lo)
+        if hi is not None and np.isfinite(hi):
+            value = min(value, hi)
+
+        if (
+            lo is not None
+            and hi is not None
+            and np.isfinite(lo)
+            and np.isfinite(hi)
+            and lo < hi
+        ):
+            if value <= lo:
+                value = np.nextafter(lo, hi)
+            elif value >= hi:
+                value = np.nextafter(hi, lo)
+        return float(value)
+
     def _clamp_seed(self, seed: list[float]) -> list[float]:
         full = [0.0] * len(self.chain.links)
         for j, idx in enumerate(self._active_indices):
-            full[idx] = self._clip_value(seed[j], self.chain.links[idx].bounds)
+            full[idx] = self._clamp_seed_value(
+                seed[j], self.chain.links[idx].bounds
+            )
         return full
 
     def _verify_regularization_support(self):
@@ -242,7 +270,7 @@ class IkOptimizer:
                 )
             initial = self._clamp_seed(seed_state)
         else:
-            initial = [0.0] * len(self.chain.links)
+            initial = self._clamp_seed([0.0] * self.num_joints)
 
         ik_kwargs = {
             "initial_position": initial,

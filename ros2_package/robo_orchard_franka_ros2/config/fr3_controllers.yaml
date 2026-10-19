@@ -1,0 +1,62 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+
+    joint_position_command_controller:
+      type: robo_orchard_franka_ros2/JointPositionCommandController
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    franka_robot_state_broadcaster:
+      type: robo_orchard_franka_ros2/FrankaRobotStateBroadcaster
+
+franka_robot_state_broadcaster:
+  ros__parameters:
+    arm_id: fr3
+    publish_rate: 100.0
+
+joint_position_command_controller:
+  ros__parameters:
+    arm_id: fr3
+    command_topic: /robot/franka/joint_cmd
+    reset_service: /robot/franka/reset_ctrl
+    reset_timeout: 30.0
+    reset_joint_position:
+      - 0.0
+      - -0.7853981634
+      - 0.0
+      - -2.3561944902
+      - 0.0
+      - 1.5707963268
+      - 0.7853981634
+    state_interface: position
+    velocity_limit_scale: 0.5
+    acceleration_limit_scale: 0.5
+    jerk_limit_scale: 0.2
+    enable_target_step_limit: false
+    max_target_step: 1.0
+    max_velocity:
+      - 2.62
+      - 2.62
+      - 2.62
+      - 2.62
+      - 5.26
+      - 4.18
+      - 5.26
+    lower_limits:
+      - -2.7437
+      - -1.7837
+      - -2.9007
+      - -3.0421
+      - -2.8065
+      - 0.5445
+      - -3.0159
+    upper_limits:
+      - 2.7437
+      - 1.7837
+      - 2.9007
+      - -0.1518
+      - 2.8065
+      - 4.5169
+      - 3.0159

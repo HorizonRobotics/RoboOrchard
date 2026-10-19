@@ -162,6 +162,8 @@ def _install_stub_modules():
     numpy_module = types.ModuleType("numpy")
     numpy_module.array = np.array
     numpy_module.eye = np.eye
+    numpy_module.isfinite = np.isfinite
+    numpy_module.nextafter = np.nextafter
     numpy_module.linalg = types.SimpleNamespace(norm=np.linalg.norm)
     sys.modules["numpy"] = numpy_module
 
@@ -293,17 +295,50 @@ def test_ik_optimizer_clips_seed_and_solution_to_joint_limits(ik_module):
         pose, seed_state=[2.0, -3.0, 4.0, -5.0, 6.0, -7.0]
     )
 
-    assert _Chain.last_inverse_kwargs["initial_position"] == [
-        0.0,
-        1.0,
-        -2.0,
-        3.0,
-        -4.0,
-        5.0,
-        -6.0,
-    ]
+    assert np.allclose(
+        _Chain.last_inverse_kwargs["initial_position"],
+        [
+            0.0,
+            np.nextafter(1.0, -1.0),
+            np.nextafter(-2.0, 2.0),
+            np.nextafter(3.0, -3.0),
+            np.nextafter(-4.0, 4.0),
+            np.nextafter(5.0, -5.0),
+            np.nextafter(-6.0, 6.0),
+        ],
+    )
     assert _Chain.last_inverse_kwargs["regularization_parameter"] == 0.02
     assert solution == [1.0, -2.0, 3.0, -4.0, 5.0, -6.0]
+
+
+def test_ik_optimizer_builds_feasible_default_seed(ik_module):
+    _Chain.next_result = [0.0, 1.0, -1.5, 0.0, 0.0, 0.0, 0.0]
+    _Chain.next_fk_matrix = np.eye(4, dtype=np.float64)
+    optimizer = ik_module.IkOptimizer(
+        urdf_path=ik_module._TEST_URDF_PATH,
+        base_link="base_link",
+        ee_link="link6",
+    )
+    optimizer.chain.links[1].bounds = (0.5, 1.5)
+    optimizer.chain.links[2].bounds = (-2.0, -1.0)
+    pose = _Pose(
+        position=_Point(0.0, 0.0, 0.0),
+        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
+    )
+
+    solution = optimizer.solve(pose, seed_state=None)
+
+    initial_position = _Chain.last_inverse_kwargs["initial_position"]
+    assert initial_position == [
+        0.0,
+        np.nextafter(0.5, 1.5),
+        np.nextafter(-1.0, -2.0),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert solution == [1.0, -1.5, 0.0, 0.0, 0.0, 0.0]
 
 
 def test_ik_optimizer_returns_none_on_solver_exception(ik_module):
@@ -411,7 +446,6 @@ def test_ik_optimizer_skips_orientation_gate_when_unconstrained(ik_module):
 
 
 def test_ik_optimizer_validates_seed_length(ik_module):
-
     optimizer = ik_module.IkOptimizer(
         urdf_path=ik_module._TEST_URDF_PATH,
         base_link="base_link",

@@ -67,6 +67,8 @@
   package has an established test structure.
 - Start with the smallest relevant package or test target. Expand to broader
   checks only when the change crosses package boundaries.
+- A repository-local `.venv` may be created or reused to install test, lint,
+  and development tooling needed for validation. Do not commit its contents.
 - Use `make check-lint` for the root Python lint and license checks.
 - Use `make test` for the root Python application test target when applicable.
 - Use `make ros2-build` and `make ros2-test` for workspace-wide ROS 2

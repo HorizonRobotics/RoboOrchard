@@ -326,6 +326,7 @@ intent_module.ResetIntent = _ResetIntent
 sys.modules["robo_orchard_teleop_ros2.bridge.pico.intent"] = intent_module
 
 ik_module = types.ModuleType("robo_orchard_teleop_ros2.ik")
+ik_module.IKPY_REGULARIZATION_WITH_SEED = 0.02
 ik_module.IkOptimizer = _IkOptimizer
 sys.modules["robo_orchard_teleop_ros2.ik"] = ik_module
 
@@ -372,6 +373,7 @@ def test_target_pose_separates_translation_and_orientation_delta():
         trigger_intent=_LongPressIntent("left"),
         reset_intent=_ResetIntent("X"),
     )
+    assert _IkOptimizer.last_init_kwargs["regularization_parameter"] == 0.02
     teleop.control_state.is_active = True
     teleop.control_state.initial_vr_pose = _make_pose()
     teleop.control_state.initial_ee_pose = _make_pose(
@@ -412,6 +414,22 @@ def test_target_pose_separates_translation_and_orientation_delta():
         _IkOptimizer.last_solve_pose.orientation.w,
         math.cos(math.pi / 4.0),
     )
+
+
+def test_ik_regularization_parameter_is_forwarded():
+    _IkOptimizer.last_init_kwargs = None
+
+    VRTeleOp(
+        source_type="left",
+        urdf_path="robot.urdf",
+        base_link_name="base_link",
+        ee_link_name="link6",
+        trigger_intent=_LongPressIntent("left"),
+        reset_intent=_ResetIntent("X"),
+        ik_regularization_parameter=0.005,
+    )
+
+    assert _IkOptimizer.last_init_kwargs["regularization_parameter"] == 0.005
 
 
 def test_target_pose_low_pass_smooths_full_6d_target():
@@ -557,6 +575,33 @@ def test_reset_blocks_reengage_until_service_finishes_and_gripper_releases():
     assert teleop.update_vr_state(released) == Action.DEACTIVE
     assert not teleop.control_state.rearm_required
     assert teleop.update_vr_state(held) == Action.ACTIVE
+
+
+def test_reset_session_can_require_release_without_hardware_reset():
+    teleop = VRTeleOp(
+        source_type="left",
+        urdf_path="robot.urdf",
+        base_link_name="base_link",
+        ee_link_name="link6",
+        trigger_intent=_LongPressIntent("left"),
+        reset_intent=_ResetIntent("X"),
+    )
+    teleop.update_robot_ee_pose(_make_pose())
+    message = _VRState(
+        left_controller=_Controller(status=1, pose=_make_pose(), gripper=1.0),
+        right_controller=_Controller(status=0, pose=_make_pose()),
+    )
+    assert teleop.update_vr_state(message) == Action.ACTIVE
+    teleop.reset_session(require_rearm=True)
+    assert not teleop.control_state.reset_in_progress
+    assert teleop.control_state.initial_vr_pose is None
+    assert teleop.control_state.initial_ee_pose is None
+    assert teleop.control_state.filtered_target_ee_pose is None
+    assert teleop.update_vr_state(message) == Action.DEACTIVE
+    message.left_controller.gripper = 0.0
+    assert teleop.update_vr_state(message) == Action.DEACTIVE
+    message.left_controller.gripper = 1.0
+    assert teleop.update_vr_state(message) == Action.ACTIVE
 
 
 def test_ik_failure_yields_no_command_and_no_second_solve():

@@ -9,12 +9,17 @@
 
   <depend>robo_orchard_pico_msg_ros2</depend>
   <depend>robo_orchard_teleop_msg_ros2</depend>
+  <depend>franka_description</depend>
+  <depend>franka_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>robo_orchard_franka_ros2</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 
   <build_depend>rosidl_default_generators</build_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>hex_bridge</exec_depend>
   <exec_depend>hex_device_msgs</exec_depend>
   <exec_depend>hex_device_ros_wrapper</exec_depend>
@@ -24,9 +29,8 @@
   <exec_depend>robo_orchard_marvin_ros2</exec_depend>
   <exec_depend>robo_orchard_piper_ros2</exec_depend>
   <exec_depend>robo_orchard_wuji_glove_ros2</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
   <exec_depend>wujihand_bringup</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

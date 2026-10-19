@@ -9,9 +9,9 @@ collection.
 - **Aloha leader-follower** — a leader arm drives the follower over CAN.
   Piper only.
 - **Pico VR** — a Pico headset streams controller poses and the arm follows
-  through IK for Piper and Marvin; Hexfellow uses the controller sticks for
-  chassis velocity and lift position. The bridge reads raw device messages, which
-  the upstream `xrobotoolkit_sdk` does not expose, so build
+  through IK for Piper, Marvin, and Franka; Hexfellow uses the controller
+  sticks for chassis velocity and lift position. The bridge reads raw device
+  messages, which the upstream `xrobotoolkit_sdk` does not expose, so build
   [XRoboToolkit-PC-Service-Pybind](https://github.com/XR-Robotics/XRoboToolkit-PC-Service-Pybind)
   with [`patches/py_bindings.cpp`](patches/py_bindings.cpp) in place of
   `bindings/py_bindings.cpp`. It replaces that file wholesale.
@@ -24,6 +24,7 @@ collection.
 | ------------------ | :---: | :-----: | :--------: |
 | Piper              |   ✅   |    ✅    |     —      |
 | Marvin             |   —   |    ✅    |     —      |
+| Franka FR3         |   —   |    ✅    |     —      |
 | Hexfellow chassis/lift | — |    ✅    |     —      |
 | Wuji hand          |   —   |    —    |     ✅      |
 | Marvin + Wuji hand |   —   |    ✅    |     ✅      |
@@ -161,6 +162,101 @@ then reseeds the target. `stale_timeout_s` (0.3 s) applies to both VR and valid
 feedback; `publish_hz` (30) and `deadzone` (0.08) are also configurable. The
 downstream lift controller remains responsible for safe holding on command or
 communication loss.
+
+### Franka managed teleoperation and DAgger
+
+Build and source the dependencies described in the
+[Franka driver setup](../robo_orchard_franka_ros2/README.md#dependencies).
+
+Use `franka_pico_teleop.launch.py` for managed teleoperation. It starts the
+driver, Pico bridge, Franka IK node, and one Control Manager. Like Piper and
+Marvin, the launch remaps the teleop node's driver-facing command topic to a
+dedicated override topic using the `/<source>_teleop/joint_<arm>` convention:
+
+| Channel | Topic | Message |
+| --- | --- | --- |
+| Pico override | `/franka_teleop/joint_franka` | `sensor_msgs/msg/JointState` |
+| Model commands (example) | `/inference/joint_franka` | `sensor_msgs/msg/JointState` |
+| Manager output to driver | `/robot/franka/joint_cmd` | `sensor_msgs/msg/JointState` |
+| Measured joints | `/franka/joint_states` | `sensor_msgs/msg/JointState` |
+
+The Pico launch also accepts `load_gripper`, defaulting to `false`. Setting
+it to `true` only starts the official gripper driver and hand model; Pico
+does not send gripper commands. Its IK chain remains the seven-joint arm to
+`fr3_link8`, and neither Grip nor Trigger commands gripper motion. The
+native gripper is controlled independently through the official actions,
+not through the Control Manager arm channel.
+
+The arm channel is named `franka` independently of which Pico controller
+(`source_type:=left` or `right`) operates it. Command positions are seven
+joint angles in radians paired with `fr3_joint1` through `fr3_joint7`.
+Only Control Manager output should reach the driver's command topic; neither
+Deploy nor Pico should publish directly to it in a managed setup.
+
+Save this configuration in your project and pass its path to the launch:
+
+```yaml
+channels:
+  - name: franka_arm
+    kind: joint_command
+    msg_type: sensor_msgs/msg/JointState
+    autonomous_topic: /inference/joint_franka
+    override_topic: /franka_teleop/joint_franka
+    output_topic: /robot/franka/joint_cmd
+enable_services: []
+reset_services:
+  - /robot/franka/reset_ctrl
+inference_disable_services: []
+replay_time_s: 0.0
+```
+
+The driver launch activates the ros2_control controller; no Piper-style
+`enable_ctrl` service is assumed. The configuration above is for standalone
+teleoperation without a running Deploy node. For DAgger, configure
+`inference_disable_services` with the actual Deploy disable service, for
+example `/robot/inference_service/disable`. This lets the Manager disable
+inference before hardware reset. Configure Deploy's joint command channel
+to publish to the matching `autonomous_topic`, with the seven FR3 joint names.
+Model and observation mappings remain project-owned.
+
+```bash
+ros2 launch robo_orchard_teleop_ros2 franka_pico_teleop.launch.py \
+  robot_ip:=${ROBOT_IP} \
+  control_manager_config_file:=/path/to/project/control_manager.yaml
+```
+
+Use the global Manager services to select command routing:
+
+```bash
+ros2 service call /robot/control/takeover std_srvs/srv/Trigger "{}"
+ros2 service call /robot/control/auto std_srvs/srv/Trigger "{}"
+ros2 service call /robot/control/stop std_srvs/srv/Trigger "{}"
+ros2 service call /robot/control/reset std_srvs/srv/Trigger "{}"
+```
+
+Pico grip activation only gates local IK output; it does not select Manager
+mode. Pico reset gestures request the global Manager reset, not the driver's
+reset directly. The teleop node also watches `/robot/control/status`, so
+resets requested by an App or another client discard the old pose baseline.
+Reset blocks command output and leaves the Manager in `stop`; release and
+re-activate Pico to capture a new baseline, then explicitly select the desired
+Manager mode. A reset failure does not resume the old teleop session.
+
+Pico input, joint feedback, and end-effector pose must all be recent. The
+`stale_timeout_s` launch argument and node parameter defaults to `0.3` seconds,
+measured from local receipt using a monotonic clock. Missing or stale input
+stops new command generation and discards the teleoperation session. Once all
+inputs recover, release and re-activate Pico to capture a fresh baseline.
+The one-time flange-to-tool transform is not subject to this timeout.
+
+Manager `stop` blocks further command forwarding; it is not a hardware
+emergency stop and does not cancel an already accepted Ruckig target. Keep
+the robot's hardware safety procedures in place.
+
+This provides the command-routing side of DAgger. Run and configure Deploy
+and Recorder separately: record observations, commands, and Manager
+status/events to distinguish autonomous operation from human intervention.
+The launch does not start model inference, recording, or a training loop.
 
 ### Other robots
 
@@ -413,6 +509,14 @@ launch file and add the nodes you need.
 
 
 ## Project-owned control configuration
+
+Franka FR3 uses `franka_pico_teleop.launch.py` with the same required
+`control_manager_config_file` argument. Its managed override topic is
+`/franka_teleop/joint_franka`, carrying seven named joint positions in
+`sensor_msgs/msg/JointState`, following the Piper/Marvin
+`/<source>_teleop/joint_<arm>` convention. See the
+[Franka managed teleoperation and DAgger](#franka-managed-teleoperation-and-dagger)
+for project wiring, reset behavior, and DAgger setup.
 
 Managed robot launches require `control_manager_config_file:=<path>`.
 The Control Manager package provides validation and routing, not robot

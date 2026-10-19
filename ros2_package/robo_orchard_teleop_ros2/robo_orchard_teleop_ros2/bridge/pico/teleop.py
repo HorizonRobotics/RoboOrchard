@@ -27,7 +27,10 @@ from robo_orchard_pico_msg_ros2.msg import (
     VRState,
 )
 from robo_orchard_teleop_ros2.bridge.pico.intent import ResetIntent
-from robo_orchard_teleop_ros2.ik import IkOptimizer
+from robo_orchard_teleop_ros2.ik import (
+    IKPY_REGULARIZATION_WITH_SEED,
+    IkOptimizer,
+)
 from robo_orchard_teleop_ros2.msg_adaptor import (
     matrix_to_pose_msg,
     pose_msg_to_matrix,
@@ -95,6 +98,8 @@ class Action(Enum):
 
 
 class VRTeleOp:
+    """Map VR controller motion to filtered Cartesian targets and IK."""
+
     def __init__(
         self,
         source_type: Literal["left", "right"],
@@ -105,6 +110,9 @@ class VRTeleOp:
         reset_intent: ResetIntent,
         scale_factor: float = 1.0,
         pose_low_pass_alpha: float = 0.25,
+        ik_regularization_parameter: float | None = (
+            IKPY_REGULARIZATION_WITH_SEED
+        ),
         reset_callback: Callable | None = None,
         logger=None,
     ):
@@ -126,6 +134,7 @@ class VRTeleOp:
             base_link=base_link_name,
             ee_link=ee_link_name,
             clip_to_limit=True,
+            regularization_parameter=ik_regularization_parameter,
             logger=self.logger,
         )
 
@@ -235,9 +244,11 @@ class VRTeleOp:
         self.control_state.begin_reset()
         return True
 
-    def reset_session(self) -> None:
-        """Stop output and discard the current controller/robot baseline."""
+    def reset_session(self, *, require_rearm: bool = False) -> None:
+        """Discard the session, optionally requiring activation release."""
         self.control_state.reset()
+        if require_rearm:
+            self.control_state.rearm_required = True
 
     def recapture_baseline(self) -> bool:
         """Recapture the engage baseline poses to the most recent inputs.

@@ -1,0 +1,20 @@
+<library path="robo_orchard_franka_ros2_controller">
+  <class
+    name="robo_orchard_franka_ros2/JointPositionCommandController"
+    type="robo_orchard_franka_ros2::JointPositionCommandController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Receives absolute seven-joint position targets and uses Ruckig to generate commands for a
+      Franka robot.
+    </description>
+  </class>
+  <class
+    name="robo_orchard_franka_ros2/FrankaRobotStateBroadcaster"
+    type="robo_orchard_franka_ros2::FrankaRobotStateBroadcaster"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Publishes the Franka robot state and current pose at a configurable rate without blocking the
+      real-time control loop.
+    </description>
+  </class>
+</library>
