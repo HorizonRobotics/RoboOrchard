@@ -4,6 +4,11 @@ Teleoperation for RoboOrchard robots. The package turns operator input into
 robot commands, and provides the take-over (DAgger) plumbing used during data
 collection.
 
+Shared activation, source matching, and baseline-cutover contracts are defined
+in [`robo_orchard_teleop_msg_ros2`](../robo_orchard_teleop_msg_ros2/README.md).
+They keep candidate commands as `JointState` messages and leave Control
+Manager responsible for routing commands to hardware.
+
 ## Teleoperation modes
 
 - **Aloha leader-follower** — a leader arm drives the follower over CAN.
@@ -249,6 +254,32 @@ stops new command generation and discards the teleoperation session. Once all
 inputs recover, release and re-activate Pico to capture a fresh baseline.
 The one-time flange-to-tool transform is not subject to this timeout.
 
+For composition with a separate engagement coordinator, the Franka node
+supports `publish_activation` (default `false`) and `activation_topic`
+(default `/teleop/activation/state`). Enable only one activation publisher
+for a shared session. It publishes `TeleopActivationState` at the control
+rate using the existing Grip hold intent: `INACTIVE` means a real release,
+`PENDING` means held during the activation delay, and `ACTIVE` means the
+local arm session is active. Missing/invalid/stale input or a blocked held
+Grip reports `UNAVAILABLE`, not a release. A Grip held at startup never
+produces an `INACTIVE` heartbeat. These heartbeats do not select Manager mode.
+
+The `recapture_service` parameter defaults to `~/recapture_baseline`, using
+`robo_orchard_teleop_msg_ros2/srv/RecaptureBaseline`. A request requires fresh
+valid Pico input, measured joints and end-effector pose, and no reset in
+progress. It recaptures VR/arm baselines, clears pose smoothing and seeds IK
+from current measured joints. It neither moves nor activates the arm and
+does not clear a release requirement. Service, input and command callbacks
+share the default mutually-exclusive callback group, so IK publication
+cannot straddle recapture. Success returns the publisher's resolved/remapped
+candidate topic and an exclusive nonzero timestamp barrier; all subsequent
+candidates have strictly greater stamps, including on repeated clock ticks.
+Failure returns an empty topic and zero barrier. Candidate messages remain
+ordinary named `JointState` messages. Use the shared non-decreasing ROS clock
+domain required by the [interface contract](../robo_orchard_teleop_msg_ros2/README.md).
+The arm-only launch defaults and entrypoint remain unchanged; activation
+publication is opt-in. The combined launch option below enables it.
+
 Manager `stop` blocks further command forwarding; it is not a hardware
 emergency stop and does not cancel an already accepted Ruckig target. Keep
 the robot's hardware safety procedures in place.
@@ -257,6 +288,261 @@ This provides the command-routing side of DAgger. Run and configure Deploy
 and Recorder separately: record observations, commands, and Manager
 status/events to distinguish autonomous operation from human intervention.
 The launch does not start model inference, recording, or a training loop.
+
+### Franka and Robotiq combined teleoperation
+
+Set `enable_robotiq:=true` on the same launch to add the independent Robotiq
+driver, Robotiq Pico source and Engagement coordinator. Franka contains no
+Robotiq-specific logic. Grip activates the group; Trigger controls opening.
+`load_gripper:=true` and `enable_robotiq:=true` are mutually exclusive and
+are rejected before any nodes start. With the default `enable_robotiq:=false`,
+no Robotiq driver package is looked up or started.
+
+Build the [Robotiq driver and SDK](../robo_orchard_robotiq_ros2/README.md)
+in addition to the Franka dependencies. Copy
+[`config/franka_robotiq_manager.example.yaml`](config/franka_robotiq_manager.example.yaml)
+into your project and pass that copy explicitly. It has two channels, no
+automatic gripper enable/recovery services, and `replay_time_s: 0.0` so cached
+autonomous commands are not replayed when switching from AUTO to TAKEOVER.
+For DAgger, configure the actual Deploy disable service and both autonomous
+command topics in the project copy; the launch does not start inference or
+recording.
+
+```bash
+ros2 launch robo_orchard_teleop_ros2 franka_pico_teleop.launch.py \
+  robot_ip:=${ROBOT_IP} enable_robotiq:=true \
+  robotiq_config_file:=/path/to/project/robotiq.yaml \
+  control_manager_config_file:=/path/to/project/control_manager.yaml
+```
+
+`robotiq_config_file` defaults to empty (the driver's standard 2F-85 YAML).
+`robotiq_use_fake:=true` selects the SDK fake **gripper only**; Franka is still
+real hardware. This is not a simulation launch. Keep the default joint name
+`robotiq_gripper` for this wiring. Custom joint layouts, fingers or namespaces
+need project-owned source/driver wiring, not just a serial settings change.
+`source_type` selects the same Pico controller for both producers.
+
+`auto_enable:=true` optionally activates Robotiq once at driver startup;
+the default is `false`. It has no effect in arm-only mode and does not select
+Manager TAKEOVER. Clear the fingers before launching: activation may fully
+open/close. Failed activation, stop and reconnection never trigger an
+automatic retry or recovery. Hardware readiness stays in the driver;
+Engagement still only coordinates matching, baseline recapture and forwarding.
+
+The default
+[`config/franka_robotiq_engagement.yaml`](config/franka_robotiq_engagement.yaml)
+contains only the two candidate/override routes, the match topic and the
+recapture service. Override its path with `engagement_config_file` when using
+project-specific routes; update producer topics and Manager wiring together.
+The stock launch fixes the producer topics shown below.
+
+| Producer | Candidate to Engagement | Engagement to Manager | Manager to driver |
+| --- | --- | --- | --- |
+| Franka | `/franka_teleop/candidate` | `/franka_teleop/joint_franka` | `/robot/franka/joint_cmd` |
+| Robotiq | `/robotiq_teleop/candidate` | `/robotiq_teleop/joint_robotiq` | `/robotiq/joint_commands` |
+
+Only Manager publishes hardware commands. Do not run another teleop launch,
+activation publisher, Manager or direct driver-command publisher alongside
+this stack. Engagement consumes `/teleop/activation/state`,
+`/robotiq_teleop/match_state`, `/robot/control/status`, and the two candidates;
+it calls `/franka_teleop/recapture_baseline`. Watch
+`/teleop_engagement/status` for the waiting/blocking reason.
+
+1. Start with Grip released. Check driver status and clear the finger sweep;
+   explicitly call `/robotiq/activate` (`std_srvs/srv/Trigger`), unless startup
+   activation with `auto_enable:=true` has already succeeded. Activation can
+   open/close fully. TAKEOVER does not activate or recover the gripper.
+2. Request `/robot/control/takeover`. Hold Grip and adjust Trigger until its
+   opening target matches measured opening for the stable-match dwell.
+   Neither route forwards while waiting for the match.
+3. Engagement recaptures the arm/hand-controller baseline, clears filters and
+   reseeds IK. It waits for a post-recapture arm candidate and a fresh gripper
+   candidate with its same-stamp positive match before forwarding. Recapture
+   failure keeps both routes closed.
+4. Once engaged, moving Trigger away from measured opening is normal control,
+   not a new matching failure. Release closes both routes. Invalid inputs,
+   driver readiness loss, expired heartbeats/candidates or leaving TAKEOVER
+   invalidate the session; release and press again after recovery.
+
+Each gate cycle checks both fresh candidates before publishing. The producers
+run independently: loss of candidate publication is detected within the
+freshness timeout, not synchronously with an IK failure. ROS publications
+are not an atomic hardware transaction. Closing the gate or selecting STOP
+does not cancel targets already accepted by either driver. For a required
+gripper stop, explicitly call `/robotiq/stop`; a later `activate` is required
+before commands resume. Manager reset only resets the arm in this example;
+never add gripper `recover` unless the workflow permits dropping an object
+and sweeping the fingers. Use independent hardware safety procedures.
+
+The stock IK chain ends at `fr3_link8`. Before real operation, configure the
+actual Robotiq adapter/TCP transform and payload mass, center of mass and
+inertia in the Franka setup. This launch does not supply a calibrated Robotiq
+tool model or load values. Fake tests do not validate mounting, collisions,
+holding force or physical stop timing.
+
+For a hardware-free end-to-end regression, build/source the message packages,
+teleop, Manager and Robotiq driver with its SDK fake support, plus `franka_msgs`
+and the teleop Python dependencies. From the repository root, choose an
+unused nonzero ROS domain (not one used by a robot) and run:
+
+```bash
+ROS_DOMAIN_ID=171 ROS_LOCALHOST_ONLY=1 python3 \
+  ros2_package/robo_orchard_teleop_ros2/tests/integration/franka_robotiq_chain.py
+```
+
+This test uses the shipped route/Manager configurations with a synthetic
+seven-joint arm, synthetic Pico input and the real SDK fake driver. It checks
+matching, baseline cutover, rejection of delayed old candidates, release,
+STOP/TAKEOVER and held-input recovery. It starts no Franka hardware driver.
+Run separately from the stub-based unit tests; it requires real ROS messages.
+
+### Standalone Robotiq Pico source
+
+`robotiq_pico_vr_teleop` is an independent candidate producer for a Robotiq
+2F-85 with standard fingers in parallel mode. Start the
+[Robotiq driver](../robo_orchard_robotiq_ros2/README.md), inspect its status,
+and explicitly activate it following its safety procedure. Then run:
+
+```bash
+ros2 run robo_orchard_teleop_ros2 robotiq_pico_vr_teleop
+```
+
+The selected Pico controller's Trigger maps linearly to full finger opening
+in metres: `(1 - trigger) * 0.085`, zero Trigger fully open, one fully closed.
+`source_type` defaults to `right` and accepts `left`. This mapping is not
+valid for custom fingers or encompassing mode. The node does not activate
+or recover the gripper, select Manager mode, or depend on a Franka arm.
+It does not publish activation state. Grip does not gate candidate generation;
+a separate engagement coordinator owns shared activation and output gating.
+
+| Parameter | Default |
+| --- | --- |
+| `vr_topic` | `/pico_bridge/vr_state` |
+| `joint_state_topic` | `/robotiq/joint_states` |
+| `driver_status_topic` | `/robotiq/status` |
+| `joint_command_topic` | `/robotiq_teleop/candidate` |
+| `match_state_topic` | `/robotiq_teleop/match_state` |
+| `joint_name` | `robotiq_gripper` |
+| `publish_hz` | `30.0` |
+| `stale_timeout_s` | `0.3` |
+| `max_clock_skew_s` | `0.05` |
+| `match_tolerance_m` | `0.005` |
+| `match_dwell_s` | `0.3` |
+
+Readiness requires valid Trigger in `[0, 1]`, named measured opening in
+`[0, 0.085]`, and the driver's `DiagnosticArray` entry with
+`hardware_id == joint_name`. Its exact fields must report `online=true`,
+`motion_enabled=true`, `operation_busy=false`, `activated=true`,
+`activation_state=3` (SDK activation complete), zero `gripper_fault` and
+`controller_fault`, and diagnostic level OK. Missing fields are unavailable,
+not defaults. Driver status and feedback must both remain fresh.
+
+VR freshness uses local monotonic receipt time, like Franka: the headset
+clock need not match ROS time. The Pico Bridge rejects duplicate/regressing
+device frames; this source does not validate the VR header stamp. Receipt
+freshness detects stream loss, not end-to-end transport delay.
+Driver feedback and status still require increasing nonzero ROS header stamps
+within the freshness/skew budget as well as fresh local monotonic receipt
+times. Replayed, regressing, expired, or future-beyond-skew driver input cannot
+renew readiness. Use synchronized non-decreasing ROS clocks for ROS nodes.
+Fresh candidates and heartbeats are
+producer-stamped with strictly increasing timestamps. Invalid/unavailable
+input suppresses candidates and resets match dwell immediately.
+Candidates and their match heartbeats share one publication timestamp; the
+heartbeat identifies the fully resolved candidate topic. Its retained
+`loss_id` changes on observed readiness loss, even if inputs recover before
+the next publication, so recovery cannot hide a fault from the coordinator.
+
+`TeleopMatchState` is published periodically even while unavailable.
+`ready=true` permits candidate generation; `matched=true` requires the
+Trigger target and measured opening to stay within `match_tolerance_m` for
+`match_dwell_s`. Mismatch resets dwell but does not suppress otherwise-ready
+candidates: matching gates initial engagement in the coordinator, not normal
+motion. Commands are single-joint `JointState` messages with empty velocity
+and effort. Route candidates through the coordinator and Control Manager;
+do not connect this ungated candidate topic directly to hardware. This node
+does not itself start the coordinator or a combined launch.
+
+### Engagement coordinator
+
+`teleop_engagement` gates one configured group of ordinary `JointState`
+candidate routes together. Sources retain ownership of readiness, input
+mapping, matching tolerances and stable-match dwell. Control Manager retains
+ownership of mode selection and hardware routing. The coordinator never
+calls hardware activation/recovery/reset or selects Manager mode.
+
+Supply a YAML `config_file` with `command_routes` (`input_topic` and
+`output_topic` for each route), `match_state_topic` and `recapture_service`.
+For example, a generic two-route group is:
+
+```yaml
+command_routes:
+  - input_topic: /source_a/candidate
+    output_topic: /source_a/override
+  - input_topic: /source_b/candidate
+    output_topic: /source_b/override
+match_state_topic: /source_b/match_state
+recapture_service: /source_a/recapture_baseline
+```
+
+```bash
+ros2 run robo_orchard_teleop_ros2 teleop_engagement --ros-args \
+  -p config_file:=/path/to/engagement.yaml
+```
+
+Names use normal ROS namespace/remapping resolution; duplicate input/output
+topics and any overlap between inputs and outputs are rejected after
+resolution. Configure Manager override topics to the coordinator's outputs,
+not source candidates. The recapture response must identify exactly one
+resolved configured input topic.
+
+Node parameters default to `activation_topic=/teleop/activation/state`,
+`manager_status_topic=/robot/control/status`, `status_topic=~/status`,
+`publish_hz=30.0`, `stale_timeout_s=0.3`, `manager_status_timeout_s=2.5`,
+`service_timeout_s=2.0`, and `max_clock_skew_s=0.05`. Manager status uses
+its separate 2.5-second timeout for both ROS stamp age and local receipt age,
+supporting Control Manager's default 1 Hz heartbeat. Candidate, activation
+and match freshness remain 0.3 seconds. `status_topic` is a periodic
+`DiagnosticArray`
+with the current state (`idle`, `matching`, `recapturing`, `verifying`,
+`active`) and human-readable reason, not a separate control interface.
+
+Startup and faults require fresh `INACTIVE` followed by `ACTIVE`.
+`PENDING` suppresses output without consuming a previously observed release;
+held-at-startup `PENDING` or `ACTIVE` never arms the coordinator.
+`UNAVAILABLE`, stale/invalid heartbeats, source readiness loss, candidate
+stream loss while engaged, and leaving Manager TAKEOVER close every route
+and require another release. Ordinary release also closes all routes; the
+next activation must match and recapture again. Initial absence of arm
+candidates while input is inactive does not block activation or matching.
+
+With fresh activation, Manager TAKEOVER and source readiness, wait for
+`matched=true`, then request baseline recapture asynchronously and clear
+cached candidates. A successful response alone does not open the gate:
+wait for a fresh candidate strictly above its exclusive `stamp_barrier`
+on the identified route and fresh candidates on every other route. Queued
+candidates at/below the barrier are discarded throughout that engagement.
+The candidate identified by the match heartbeat's `candidate_topic` must
+have exactly that heartbeat's stamp before first forwarding. Either topic
+may arrive first; until both agree, all routes stay closed. This associates
+the initial match with the actual candidate without robot-specific logic or
+an additional configuration field.
+Candidates arriving before the service response can be retained for
+verification but never forwarded early. The service/candidate cutover must
+complete within `service_timeout_s`; cancelled or obsolete replies cannot
+restore an attempt. Initial match loss during cutover invalidates it.
+After engagement, `matched=false` does not close the gate: normal commanded
+motion may differ from feedback, while readiness must remain true.
+
+All input heartbeats and candidates require increasing nonzero producer
+ROS stamps within the freshness/skew budget plus fresh local monotonic
+receipt times. Replayed/regressing/expired/future-beyond-skew deliveries
+cannot renew freshness. Candidates require finite named JointState data;
+the coordinator does not interpret joint names or units. Forwarded messages
+preserve source content and stamps. Use synchronized non-decreasing ROS
+clocks; engagement cannot survive a clock reset or guarantee transparent
+producer restart detection. This executable does not start drivers, sources,
+Manager or a combined launch.
 
 ### Other robots
 

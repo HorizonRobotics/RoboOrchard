@@ -17,6 +17,7 @@
 import os
 import tempfile
 from functools import partial
+from math import isfinite
 from time import monotonic
 from typing import Literal
 
@@ -24,14 +25,15 @@ import numpy as np
 import rclpy
 import xacro
 from franka_msgs.msg import FrankaRobotState
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped
 from rclpy.node import Node, ParameterDescriptor
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from robo_orchard_pico_msg_ros2.msg import VRState
-from robo_orchard_teleop_msg_ros2.msg import ControlMode
+from robo_orchard_teleop_msg_ros2.msg import ControlMode, TeleopActivationState
+from robo_orchard_teleop_msg_ros2.srv import RecaptureBaseline
 from robo_orchard_teleop_ros2.bridge.pico.intent import (
     GripperIntent,
     ResetIntent,
@@ -73,6 +75,9 @@ class FrankaPicoVRTeleOpNode(Node):
             "/robot/franka/joint_cmd",
         )
         self.declare_parameter("reset_service", "/robot/control/reset")
+        self.declare_parameter("publish_activation", False)
+        self.declare_parameter("activation_topic", "/teleop/activation/state")
+        self.declare_parameter("recapture_service", "~/recapture_baseline")
         self.declare_parameter("control_frequency_hz", 90.0)
         self.declare_parameter("stale_timeout_s", 0.3)
         self.declare_parameter("translation_scale_factor", 1.2)
@@ -127,6 +132,9 @@ class FrankaPicoVRTeleOpNode(Node):
         self._manager_resetting = False
         self._reset_generation = 0
         self._destroying = False
+        self._last_stamp_ns = 0
+        self._activation_state = TeleopActivationState.UNAVAILABLE
+        self._activation_transition_id = 0
 
         reset_button = "X" if self.source_type == "left" else "A"
         self.teleop = VRTeleOp(
@@ -208,6 +216,20 @@ class FrankaPicoVRTeleOpNode(Node):
             "~/ee_pose_target",
             1,
         )
+        self._activation_publisher = None
+        if self.get_parameter("publish_activation").value:
+            self._activation_publisher = self.create_publisher(
+                TeleopActivationState,
+                self.get_parameter("activation_topic").value,
+                1,
+            )
+        # The default mutually-exclusive callback group serializes input,
+        # recapture and the complete IK generation/publication callback.
+        self._recapture_service = self.create_service(
+            RecaptureBaseline,
+            self.get_parameter("recapture_service").value,
+            self._recapture_baseline,
+        )
 
         self.timer = self.create_timer(
             1.0 / self.control_frequency_hz,
@@ -273,7 +295,15 @@ class FrankaPicoVRTeleOpNode(Node):
             if self.source_type == "left"
             else message.right_controller
         )
-        self._last_input_times["vr"] = now if controller.status != 0 else None
+        valid = (
+            controller.status != 0
+            and self._valid_pose(controller.pose)
+            and isfinite(controller.gripper)
+        )
+        self._last_input_times["vr"] = now if valid else None
+        if not valid:
+            self.teleop.reset_session(require_rearm=True)
+            return
         action = self.teleop.update_vr_state(message)
         if action == Action.RESET:
             self.get_logger().info("Reset gesture received.")
@@ -283,11 +313,17 @@ class FrankaPicoVRTeleOpNode(Node):
         positions_by_name = dict(
             zip(message.name, message.position, strict=False)
         )
-        if not all(name in positions_by_name for name in FRANKA_JOINT_NAMES):
+        if not all(
+            name in positions_by_name and isfinite(positions_by_name[name])
+            for name in FRANKA_JOINT_NAMES
+        ):
+            self._last_input_times["joints"] = None
+            self.teleop.reset_session(require_rearm=True)
             now_ns = self.get_clock().now().nanoseconds
             if now_ns - self._last_joint_warning_ns > 2_000_000_000:
                 self.get_logger().warning(
-                    "Joint state does not contain all FR3 arm joints."
+                    "Joint state must contain all FR3 arm joints "
+                    "with finite positions."
                 )
                 self._last_joint_warning_ns = now_ns
             return
@@ -302,6 +338,10 @@ class FrankaPicoVRTeleOpNode(Node):
     def _ee_pose_callback(self, message: PoseStamped):
         if self._ee_to_flange_matrix is None:
             return
+        if not self._valid_pose(message.pose):
+            self._last_input_times["pose"] = None
+            self.teleop.reset_session(require_rearm=True)
+            return
         ee_matrix = pose_msg_to_matrix(message.pose)
         flange_pose = matrix_to_pose_msg(ee_matrix @ self._ee_to_flange_matrix)
         now = monotonic()
@@ -311,6 +351,8 @@ class FrankaPicoVRTeleOpNode(Node):
 
     def _robot_state_callback(self, message: FrankaRobotState):
         if self._ee_to_flange_matrix is not None:
+            return
+        if not self._valid_pose(message.f_t_ee.pose):
             return
         flange_to_ee = pose_msg_to_matrix(message.f_t_ee.pose)
         self._ee_to_flange_matrix = np.linalg.inv(flange_to_ee)
@@ -333,6 +375,8 @@ class FrankaPicoVRTeleOpNode(Node):
         return False
 
     def _control_callback(self):
+        fresh = self._check_input_freshness(monotonic())
+        self._publish_activation(fresh)
         if (
             self._ee_to_flange_matrix is not None
             and self._robot_state_subscription is not None
@@ -343,7 +387,7 @@ class FrankaPicoVRTeleOpNode(Node):
         if self._reset_future is not None or self._manager_resetting:
             return
 
-        if not self._check_input_freshness(monotonic()):
+        if not fresh:
             return
 
         if (
@@ -381,10 +425,93 @@ class FrankaPicoVRTeleOpNode(Node):
         )
 
     def _new_header(self) -> Header:
+        stamp = self.get_clock().now().to_msg()
+        stamp_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+        self._last_stamp_ns = max(stamp_ns, self._last_stamp_ns + 1)
+        stamp.sec, stamp.nanosec = divmod(self._last_stamp_ns, 1_000_000_000)
         return Header(
-            stamp=self.get_clock().now().to_msg(),
+            stamp=stamp,
             frame_id=self.base_link_name,
         )
+
+    @staticmethod
+    def _valid_pose(pose: Pose) -> bool:
+        """Reject non-finite positions and invalid quaternions."""
+        quaternion = (
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+        return all(
+            isfinite(value)
+            for value in (pose.position.x, pose.position.y, pose.position.z)
+            + quaternion
+        ) and any(value != 0.0 for value in quaternion)
+
+    def _publish_activation(self, fresh: bool) -> None:
+        if self._activation_publisher is None:
+            return
+        state = TeleopActivationState.UNAVAILABLE
+        control = self.teleop.control_state
+        message = self.teleop.latest_vr_state
+        if fresh and message is not None:
+            if not control.trigger_intent.is_pressed(message):
+                state = TeleopActivationState.INACTIVE
+            elif (
+                control.is_active
+                and not control.reset_in_progress
+                and not control.rearm_required
+            ):
+                state = TeleopActivationState.ACTIVE
+            elif not control.reset_in_progress and not control.rearm_required:
+                state = TeleopActivationState.PENDING
+        if state != self._activation_state:
+            self._activation_state = state
+            self._activation_transition_id += 1
+        self._activation_publisher.publish(
+            TeleopActivationState(
+                header=self._new_header(),
+                state=state,
+                transition_id=self._activation_transition_id,
+            )
+        )
+
+    def _recapture_baseline(
+        self,
+        _request: RecaptureBaseline.Request,
+        response: RecaptureBaseline.Response,
+    ) -> RecaptureBaseline.Response:
+        """Rebase without activation or motion; return a stamp cutover."""
+        response.success = False
+        response.candidate_topic = ""
+        response.stamp_barrier.sec = 0
+        response.stamp_barrier.nanosec = 0
+        if (
+            self._reset_future is not None
+            or self._manager_resetting
+            or self.teleop.control_state.reset_in_progress
+        ):
+            response.reason = "Reset is in progress."
+            return response
+        if (
+            not self._check_input_freshness(monotonic())
+            or self.current_joint_positions is None
+            or self._ee_to_flange_matrix is None
+        ):
+            response.reason = "Source input or robot feedback is unavailable."
+            return response
+        if not self.teleop.recapture_baseline():
+            self.teleop.reset_session(require_rearm=True)
+            response.reason = "Baseline input is unavailable."
+            return response
+        self.teleop.control_state.filtered_target_ee_pose = None
+        self.teleop.update_robot_joint_state(self.current_joint_positions)
+        response.stamp_barrier = self._new_header().stamp
+        response.candidate_topic = self.joint_command_publisher.topic_name
+        response.success = True
+        response.reason = "Baseline recaptured."
+        return response
 
     def _request_reset(self) -> None:
         if self._reset_future is not None or self._manager_resetting:

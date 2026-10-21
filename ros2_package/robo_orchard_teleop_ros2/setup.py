@@ -118,7 +118,7 @@ setup(
     version="0.0.0",
     packages=find_packages(exclude=["test"]),
     data_files=data_files_generator(),
-    install_requires=["ikpy", "numpy", "scipy", "sshkeyboard"],
+    install_requires=["ikpy", "numpy", "scipy", "sshkeyboard", "PyYAML"],
     zip_safe=True,
     maintainer="hongyu.xie",
     maintainer_email="hongyu.xie@horizon.auto",
@@ -127,6 +127,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "teleop_engagement = robo_orchard_teleop_ros2.engagement:main",
             "pico_bridge = robo_orchard_teleop_ros2.bridge.pico.node:main",  # noqa: E501
             "hexfellow_chassis_pico_vr_teleop = "
             "robo_orchard_teleop_ros2.robot.hexfellow.chassis.pico_vr:main",
@@ -135,6 +136,8 @@ setup(
             "keyboard_trigger = robo_orchard_teleop_ros2.take_over.trigger.keyboard:main",  # noqa: E501
             "piper_pico_vr_teleop = robo_orchard_teleop_ros2.robot.piper.pico_vr:main",  # noqa: E501
             "franka_pico_vr_teleop = robo_orchard_teleop_ros2.robot.franka.pico_vr:main",  # noqa: E501
+            "robotiq_pico_vr_teleop = "
+            "robo_orchard_teleop_ros2.robot.robotiq.pico_vr:main",
             "marvin_pico_vr_teleop = robo_orchard_teleop_ros2.robot.marvin.pico_vr:main",  # noqa: E501
             "teleop_keyboard_node = robo_orchard_teleop_ros2.activation.keyboard:main",  # noqa: E501
         ],

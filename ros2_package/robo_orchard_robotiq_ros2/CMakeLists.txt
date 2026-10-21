@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.16)
+project(robo_orchard_robotiq_ros2)
+
+find_package(ament_cmake REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(grippers 1.1.0 EXACT CONFIG REQUIRED)
+find_package(Threads REQUIRED)
+
+add_executable(robotiq_driver_node src/robotiq_driver_node.cpp)
+target_compile_features(robotiq_driver_node PRIVATE cxx_std_17)
+target_compile_options(robotiq_driver_node PRIVATE -Wall -Wextra -Wpedantic)
+ament_target_dependencies(robotiq_driver_node
+  diagnostic_msgs rclcpp sensor_msgs std_srvs)
+target_link_libraries(robotiq_driver_node Robotiq::grippers Threads::Threads)
+install(TARGETS robotiq_driver_node DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(robotiq_driver_test tests/robotiq_driver_test.cpp)
+  target_compile_features(robotiq_driver_test PRIVATE cxx_std_17)
+  target_include_directories(robotiq_driver_test PRIVATE src)
+  ament_target_dependencies(robotiq_driver_test sensor_msgs)
+  target_link_libraries(robotiq_driver_test Robotiq::grippers)
+  ament_add_gtest(robotiq_node_test tests/robotiq_node_test.cpp)
+  target_compile_features(robotiq_node_test PRIVATE cxx_std_17)
+  target_include_directories(robotiq_node_test PRIVATE src)
+  ament_target_dependencies(robotiq_node_test
+    diagnostic_msgs rclcpp sensor_msgs std_srvs)
+  target_link_libraries(robotiq_node_test Robotiq::grippers Threads::Threads)
+endif()
+
+ament_package()

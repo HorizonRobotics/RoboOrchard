@@ -81,7 +81,7 @@ class _Node:
 
 
 class _OpaqueFunction:
-    def __init__(self, function, args):
+    def __init__(self, function, args=()):
         self.function = function
         self.args = args
 
@@ -175,10 +175,26 @@ def _load_module(path=LAUNCH_PATH):
                 sys.modules[name] = saved_module
 
 
-def test_launch_starts_driver_bridge_teleop_and_one_manager():
-    module = _load_module()
-
+def _description(module=None, **overrides):
+    module = module or _load_module()
     description = module.generate_launch_description()
+    values = {
+        entity.name: entity.default_value
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+    }
+    values.update(overrides)
+    context = types.SimpleNamespace(
+        perform_substitution=lambda substitution: values[substitution.name]
+    )
+    factory = description.entities.pop()
+    assert isinstance(factory, _OpaqueFunction)
+    description.entities.extend(factory.function(context, *factory.args))
+    return description
+
+
+def test_launch_starts_driver_bridge_teleop_and_one_manager():
+    description = _description()
 
     nodes = [
         entity for entity in description.entities if isinstance(entity, _Node)
@@ -214,7 +230,7 @@ def test_launch_starts_driver_bridge_teleop_and_one_manager():
 def test_launch_wires_arm_topics_and_reset_service():
     module = _load_module()
 
-    description = module.generate_launch_description()
+    description = _description(module)
     teleop_node = next(
         entity
         for entity in description.entities
@@ -242,12 +258,14 @@ def test_launch_wires_arm_topics_and_reset_service():
     )
     assert stale_argument.default_value == "0.3"
     assert "enable_gripper" not in parameters
+    assert parameters["publish_activation"] is False
+    assert parameters["recapture_service"] == "~/recapture_baseline"
 
 
 def test_launch_requires_project_manager_config():
     module = _load_module()
 
-    description = module.generate_launch_description()
+    description = _description(module)
     arguments = [
         entity.name
         for entity in description.entities
@@ -258,6 +276,11 @@ def test_launch_requires_project_manager_config():
         "robot_ip",
         "use_rviz",
         "load_gripper",
+        "enable_robotiq",
+        "robotiq_use_fake",
+        "auto_enable",
+        "robotiq_config_file",
+        "engagement_config_file",
         "urdf_path",
         "source_type",
         "control_frequency_hz",
@@ -304,7 +327,7 @@ def test_documented_manager_config_matches_launch(monkeypatch):
     example, closing, _ = example.partition("```")
     assert closing, "Franka Control Manager YAML code block is not closed"
     config = ControlManagerConfig.model_validate(yaml.safe_load(example))
-    description = _load_module().generate_launch_description()
+    description = _description()
     teleop = next(
         entity
         for entity in description.entities
@@ -331,6 +354,141 @@ def test_manifest_has_no_redundant_runtime_dependencies():
     assert not generic.intersection(runtime)
     assert "robo_orchard_teleop_msg_ros2" in generic
     assert "robo_orchard_control_manager_ros2" in runtime
+    assert "robo_orchard_robotiq_ros2" in runtime
+
+
+def test_disabled_robotiq_is_not_resolved(monkeypatch):
+    module = _load_module()
+
+    def package_share(package):
+        assert "robotiq" not in package
+        return _FindPackageShare(package)
+
+    monkeypatch.setattr(module, "FindPackageShare", package_share)
+    description = _description(module)
+    assert not any(
+        isinstance(entity, _Node)
+        and entity.kwargs["executable"]
+        in ("robotiq_pico_vr_teleop", "teleop_engagement")
+        for entity in description.entities
+    )
+
+
+def test_conflicting_grippers_fail_before_constructing_nodes(monkeypatch):
+    module = _load_module()
+
+    def unexpected_node(**kwargs):
+        pytest.fail("A node was constructed before validating gripper choice")
+
+    monkeypatch.setattr(module, "Node", unexpected_node)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _description(module, enable_robotiq="true", load_gripper="true")
+
+
+@pytest.mark.parametrize("driver_config", ["", "/project/robotiq.yaml"])
+def test_combined_launch_and_shipped_configs(monkeypatch, driver_config):
+    monkeypatch.syspath_prepend(
+        str(LAUNCH_PATH.parents[2] / "robo_orchard_control_manager_ros2")
+    )
+    from robo_orchard_control_manager_ros2.config import ControlManagerConfig
+
+    description = _description(
+        enable_robotiq="true", robotiq_config_file=driver_config
+    )
+    nodes = {
+        entity.kwargs["executable"]: entity.kwargs
+        for entity in description.entities
+        if isinstance(entity, _Node)
+    }
+    assert list(nodes) == [
+        "pico_bridge",
+        "franka_pico_vr_teleop",
+        "control_manager_node",
+        "robotiq_pico_vr_teleop",
+        "teleop_engagement",
+    ]
+    arm = nodes["franka_pico_vr_teleop"]
+    hand = nodes["robotiq_pico_vr_teleop"]
+    assert arm["parameters"][0]["publish_activation"] is True
+    assert hand["parameters"][0]["source_type"].name == (
+        arm["parameters"][0]["source_type"].name
+    )
+    includes = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, _IncludeLaunchDescription)
+    ]
+    assert len(includes) == 2
+    driver = includes[1]
+    assert (
+        driver.launch_description_source.launch_file_path.substitutions[
+            0
+        ].package
+        == "robo_orchard_robotiq_ros2"
+    )
+    assert driver.launch_arguments["namespace"] == "robotiq"
+    assert driver.launch_arguments["use_fake"].name == "robotiq_use_fake"
+    assert driver.launch_arguments["auto_enable"].name == "auto_enable"
+    if driver_config:
+        assert driver.launch_arguments["config_file"] == driver_config
+    else:
+        assert "config_file" not in driver.launch_arguments
+
+    config_dir = LAUNCH_PATH.parents[1] / "config"
+    gate = yaml.safe_load(
+        (config_dir / "franka_robotiq_engagement.yaml").read_text()
+    )
+    manager = ControlManagerConfig.model_validate(
+        yaml.safe_load(
+            (config_dir / "franka_robotiq_manager.example.yaml").read_text()
+        )
+    )
+    assert (
+        arm["remappings"][0][1] == (gate["command_routes"][0]["input_topic"])
+    )
+    assert (
+        arm["parameters"][0]["recapture_service"]
+        == (gate["recapture_service"])
+    )
+    assert gate["command_routes"][1]["input_topic"] == (
+        "/robotiq_teleop/candidate"
+    )
+    assert gate["match_state_topic"] == "/robotiq_teleop/match_state"
+    assert [r["output_topic"] for r in gate["command_routes"]] == [
+        channel.override_topic for channel in manager.channels
+    ]
+    assert [channel.output_topic for channel in manager.channels] == [
+        "/robot/franka/joint_cmd",
+        "/robotiq/joint_commands",
+    ]
+    assert manager.enable_services == []
+    assert manager.reset_services == ["/robot/franka/reset_ctrl"]
+    assert manager.replay_time_s == 0.0
+
+
+def test_robotiq_auto_enable_defaults_off_and_is_typed_at_driver():
+    for path in (
+        LAUNCH_PATH,
+        LAUNCH_PATH.parents[2]
+        / "robo_orchard_robotiq_ros2/launch/robotiq_driver.launch.py",
+    ):
+        description = _load_module(path).generate_launch_description()
+        argument = next(
+            entity
+            for entity in description.entities
+            if isinstance(entity, _DeclareLaunchArgument)
+            and entity.name == "auto_enable"
+        )
+        assert argument.default_value == "false"
+        if path != LAUNCH_PATH:
+            driver = next(
+                entity
+                for entity in description.entities
+                if isinstance(entity, _Node)
+            )
+            value = driver.kwargs["parameters"][1]["auto_enable"]
+            assert value.value.name == "auto_enable"
+            assert value.value_type is bool
 
 
 @pytest.mark.parametrize("load_gripper", ["false", "true"])

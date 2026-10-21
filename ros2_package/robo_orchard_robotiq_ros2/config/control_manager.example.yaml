@@ -1,0 +1,13 @@
+# Example project wiring, not loaded by the standalone driver launch.
+channels:
+  - name: gripper
+    kind: joint_command
+    msg_type: sensor_msgs/msg/JointState
+    autonomous_topic: /robot/autonomous/gripper/joint_commands
+    override_topic: /robot/override/gripper/joint_commands
+    output_topic: /robotiq/joint_commands
+enable_services:
+  - /robotiq/activate
+# Recovery runs a calibration sweep and may release an object. Do not wire it
+# into generic reset by default; invoke explicitly after checking hardware.
+reset_services: []

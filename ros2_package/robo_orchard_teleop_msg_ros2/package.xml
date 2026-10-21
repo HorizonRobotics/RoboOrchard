@@ -3,10 +3,11 @@
 <package format="3">
   <name>robo_orchard_teleop_msg_ros2</name>
   <version>0.0.0</version>
-  <description>ROS2 message definitions for teleoperation systems, including control mode and takeover event messages for robotic systems.</description>
+  <description>ROS2 teleoperation interfaces for control mode, takeover, activation, matching, and baseline recapture.</description>
   <maintainer email="hongyu.xie@horizon.auto">hongyu.xie</maintainer>
   <license>Apache-2.0</license>
 
+  <depend>builtin_interfaces</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
 

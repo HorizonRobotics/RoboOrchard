@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>robo_orchard_robotiq_ros2</name>
+  <version>0.0.0</version>
+  <description>Standalone Robotiq 2F-85 serial driver using the official SDK.</description>
+  <maintainer email="yiwei.jin@horizon.auto">yiwei.jin</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>libserialport-dev</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- grippers 1.1.0 is installed separately; no rosdep/ROS package exists. -->
+  <test_depend>ament_cmake_gtest</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

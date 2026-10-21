@@ -1,0 +1,7 @@
+command_routes:
+  - input_topic: /franka_teleop/candidate
+    output_topic: /franka_teleop/joint_franka
+  - input_topic: /robotiq_teleop/candidate
+    output_topic: /robotiq_teleop/joint_robotiq
+match_state_topic: /robotiq_teleop/match_state
+recapture_service: /franka_teleop/recapture_baseline

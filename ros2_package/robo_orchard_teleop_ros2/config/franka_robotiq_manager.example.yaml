@@ -1,0 +1,20 @@
+# Copy into your project and pass control_manager_config_file explicitly.
+channels:
+  - name: franka_arm
+    kind: joint_command
+    msg_type: sensor_msgs/msg/JointState
+    autonomous_topic: /inference/joint_franka
+    override_topic: /franka_teleop/joint_franka
+    output_topic: /robot/franka/joint_cmd
+  - name: robotiq_gripper
+    kind: joint_command
+    msg_type: sensor_msgs/msg/JointState
+    autonomous_topic: /inference/joint_robotiq
+    override_topic: /robotiq_teleop/joint_robotiq
+    output_topic: /robotiq/joint_commands
+# Activation/recovery can sweep the fingers: request them explicitly.
+enable_services: []
+reset_services:
+  - /robot/franka/reset_ctrl
+inference_disable_services: []
+replay_time_s: 0.0

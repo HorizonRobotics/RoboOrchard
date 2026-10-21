@@ -111,6 +111,7 @@ def test_franka_reset_client_flow_in_subprocess():
             _last_input_times={},
             _check_input_freshness=lambda now: True,
             current_joint_positions=None,
+            _valid_pose=lambda pose: True,
             _finish_reset_state=lambda: (
                 FrankaPicoVRTeleOpNode._finish_reset_state(node)
             ),
@@ -151,7 +152,9 @@ def test_franka_reset_client_flow_in_subprocess():
 
         FrankaPicoVRTeleOpNode._vr_state_callback(
             node, SimpleNamespace(
-                right_controller=SimpleNamespace(status=1),
+                right_controller=SimpleNamespace(
+                    status=1, pose=None, gripper=1,
+                ),
             ),
         )
 

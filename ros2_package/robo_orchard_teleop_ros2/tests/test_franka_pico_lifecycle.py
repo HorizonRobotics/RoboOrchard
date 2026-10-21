@@ -53,6 +53,11 @@ node._reset_future = None
 node._reset_generation = 0
 node._manager_resetting = False
 node._destroying = False
+node._last_stamp_ns = 0
+node._last_joint_warning_ns = 0
+node._activation_publisher = None
+node._activation_state = pico_vr.TeleopActivationState.UNAVAILABLE
+node._activation_transition_id = 0
 node._generated_urdf_path = None
 node.reset_service_name = "/robot/control/reset"
 node.current_joint_positions = [0.1] * 7
@@ -237,6 +242,13 @@ def test_node_status_subscription_and_named_joint_command_contract():
         pico_vr.os.path.isfile = lambda path: True
         node = pico_vr.FrankaPicoVRTeleOpNode()
         assert node.reset_service_name == "/robot/control/reset"
+        assert node._activation_publisher is None
+        assert node._recapture_service.args[0] is pico_vr.RecaptureBaseline
+        assert node._recapture_service.args[1] == "~/recapture_baseline"
+        enabled = pico_vr.FrankaPicoVRTeleOpNode(parameter_overrides=[
+            ros_stubs._Parameter("publish_activation", True),
+        ])
+        assert enabled._activation_publisher is not None
         subscription = next(
             args for args, kwargs in node.subscriptions
             if args[1] == "/robot/control/status"
@@ -447,6 +459,182 @@ def test_stale_timeout_requires_a_finite_positive_value(timeout):
                 assert "stale_timeout_s" in str(error)
             else:
                 raise AssertionError("Invalid timeout was accepted")
+            """
+        )
+    )
+
+
+def test_recapture_clears_filter_reseeds_and_orders_candidates():
+    _run_freshness_script(
+        """
+        def stamp_ns(stamp):
+            return stamp.sec * 1000000000 + stamp.nanosec
+
+        node.joint_command_publisher.topic_name = "/namespaced/remapped_arm"
+        old_stamp = node.joint_command_publisher.messages[-1].header.stamp
+        feedback_pose[0] = teleop_stubs._make_pose(x=2.0)
+        message.right_controller.pose = teleop_stubs._make_pose(x=0.5)
+        joint_message.position = [0.3] * 7
+        refresh()
+        response = SimpleNamespace(stamp_barrier=SimpleNamespace(
+            sec=0, nanosec=0,
+        ))
+        node._recapture_baseline(None, response)
+        assert response.success
+        assert response.candidate_topic == "/namespaced/remapped_arm"
+        assert stamp_ns(response.stamp_barrier) >= stamp_ns(old_stamp)
+        assert state.initial_vr_pose is message.right_controller.pose
+        assert state.initial_ee_pose.position.x == 2.0
+        assert state.filtered_target_ee_pose is None
+        assert state.current_joint_state == [0.3] * 7
+        node._control_callback()
+        command = node.joint_command_publisher.messages[-1]
+        barrier_ns = stamp_ns(response.stamp_barrier)
+        assert stamp_ns(command.header.stamp) > barrier_ns
+        assert node.teleop.ik_solver.last_solve_joint_state == [0.3] * 7
+        assert state.filtered_target_ee_pose.position.x == 2.0
+        node._control_callback()
+        next_command = node.joint_command_publisher.messages[-1]
+        assert stamp_ns(next_command.header.stamp) > stamp_ns(
+            command.header.stamp,
+        )
+        """
+    )
+
+
+@pytest.mark.parametrize("inactive", ["released", "rearm"])
+def test_recapture_does_not_activate_or_clear_rearm(inactive):
+    _run_freshness_script(
+        f"inactive = {inactive!r}\n"
+        + textwrap.dedent(
+            """
+            node.teleop.reset_session(require_rearm=inactive == "rearm")
+            node.joint_command_publisher.topic_name = "/candidate"
+            response = SimpleNamespace(stamp_barrier=SimpleNamespace(
+                sec=0, nanosec=0,
+            ))
+            node._recapture_baseline(None, response)
+            assert response.success
+            assert not state.is_active
+            assert state.rearm_required == (inactive == "rearm")
+            node._control_callback()
+            assert len(node.joint_command_publisher.messages) == 1
+            """
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", ["vr", "joints", "pose", "reset", "capture"]
+)
+def test_recapture_failure_has_no_cutover_or_session_restore(failure):
+    _run_freshness_script(
+        f"failure = {failure!r}\n"
+        + textwrap.dedent(
+            """
+            if failure == "reset":
+                node._on_control_status(SimpleNamespace(data="resetting"))
+            elif failure == "capture":
+                node.teleop.recapture_baseline = lambda: False
+            else:
+                node._last_input_times[failure] = None
+            response = SimpleNamespace(stamp_barrier=SimpleNamespace(
+                sec=99, nanosec=99,
+            ))
+            node._recapture_baseline(None, response)
+            assert not response.success
+            assert response.reason
+            assert response.candidate_topic == ""
+            assert response.stamp_barrier.sec == 0
+            assert response.stamp_barrier.nanosec == 0
+            assert not state.is_active
+            assert state.rearm_required
+            node._control_callback()
+            assert len(node.joint_command_publisher.messages) == 1
+            """
+        )
+    )
+
+
+def test_activation_heartbeat_distinguishes_release_pending_and_fault():
+    _run_freshness_script(
+        """
+        node._activation_publisher = ros_stubs._Publisher()
+        activation = pico_vr.TeleopActivationState
+        def heartbeat():
+            node._control_callback()
+            return node._activation_publisher.messages[-1]
+
+        assert heartbeat().state == activation.ACTIVE
+        previous = heartbeat().transition_id
+        assert heartbeat().transition_id == previous
+        node.teleop.reset_session(require_rearm=True)
+        assert heartbeat().state == activation.UNAVAILABLE
+        message.right_controller.gripper = 0.0
+        refresh()
+        assert heartbeat().state == activation.INACTIVE
+        message.right_controller.gripper = 1.0
+        state.trigger_intent.is_active = lambda message: False
+        refresh()
+        assert heartbeat().state == activation.PENDING
+        state.trigger_intent.is_active = lambda message: True
+        refresh()
+        assert heartbeat().state == activation.ACTIVE
+        now[0] = 1.0
+        assert heartbeat().state == activation.UNAVAILABLE
+        refresh()
+        assert heartbeat().state == activation.UNAVAILABLE
+        """
+    )
+
+
+def test_startup_held_grip_never_reports_release():
+    _run_freshness_script(
+        """
+        node._activation_publisher = ros_stubs._Publisher()
+        node.teleop.reset_session()
+        state.trigger_intent.is_active = lambda message: False
+        node._control_callback()
+        assert node._activation_publisher.messages[-1].state \
+            == pico_vr.TeleopActivationState.PENDING
+        state.trigger_intent.is_active = lambda message: True
+        refresh()
+        node._control_callback()
+        assert node._activation_publisher.messages[-1].state \
+            == pico_vr.TeleopActivationState.ACTIVE
+        assert all(item.state != pico_vr.TeleopActivationState.INACTIVE
+                   for item in node._activation_publisher.messages)
+        """
+    )
+
+
+@pytest.mark.parametrize("invalid", ["vr_pose", "grip", "joints", "pose"])
+def test_invalid_numeric_input_invalidates_session_and_recapture(invalid):
+    _run_freshness_script(
+        f"invalid = {invalid!r}\n"
+        + textwrap.dedent(
+            """
+            if invalid == "vr_pose":
+                message.right_controller.pose.orientation.w = 0.0
+                node._vr_state_callback(message)
+            elif invalid == "grip":
+                message.right_controller.gripper = float("nan")
+                node._vr_state_callback(message)
+            elif invalid == "joints":
+                joint_message.position[0] = float("nan")
+                node._joint_state_callback(joint_message)
+            else:
+                feedback_pose[0].position.x = float("nan")
+                node._ee_pose_callback(pico_vr.PoseStamped(
+                    pose=feedback_pose[0],
+                ))
+            response = SimpleNamespace(stamp_barrier=SimpleNamespace(
+                sec=0, nanosec=0,
+            ))
+            node._recapture_baseline(None, response)
+            assert not response.success
+            assert not state.is_active
+            assert state.rearm_required
             """
         )
     )

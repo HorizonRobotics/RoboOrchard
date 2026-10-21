@@ -1,0 +1,15 @@
+# Recapture from fresh source input and measured robot state, without motion.
+# An acknowledgement alone is insufficient: the consumer must wait for a
+# fresh JointState on candidate_topic with header.stamp > stamp_barrier.
+# See README.md for the producer serialization and clock requirements.
+---
+bool success
+string reason
+
+# Fully resolved ROS topic of the rebaselined JointState producer.
+# Empty on failure.
+string candidate_topic
+
+# Exclusive producer timestamp cutover; zero on failure.
+# No old-baseline candidate may have a stamp greater than this barrier.
+builtin_interfaces/Time stamp_barrier

@@ -88,3 +88,20 @@ def test_timeout_and_explicit_rearm_fail_closed():
     intent.update(_message(module.TeleopActivationState.ACTIVE))
     intent.require_rearm()
     assert intent.status() == (False, "release_required")
+
+
+def test_pending_preserves_release_but_never_arms_or_activates():
+    module = _load_module()
+    intent = module.TopicActivationIntent(timeout_s=0.2, monotonic=_Clock())
+    state = module.TeleopActivationState
+    for initial, expected in (
+        (state.ACTIVE, False),
+        (state.INACTIVE, True),
+        (state.UNAVAILABLE, False),
+    ):
+        intent.update(_message(initial))
+        intent.update(_message(state.PENDING))
+        assert intent.status() == (False, "activation_pending")
+        assert intent.is_pressed(object())
+        intent.update(_message(state.ACTIVE))
+        assert intent.is_active(object()) is expected

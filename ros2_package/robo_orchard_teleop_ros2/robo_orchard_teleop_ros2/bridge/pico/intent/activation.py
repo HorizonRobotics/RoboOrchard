@@ -56,6 +56,7 @@ class TopicActivationIntent:
             TeleopActivationState.UNAVAILABLE,
             TeleopActivationState.INACTIVE,
             TeleopActivationState.ACTIVE,
+            TeleopActivationState.PENDING,
         }:
             state = TeleopActivationState.UNAVAILABLE
         self._state = state
@@ -81,6 +82,8 @@ class TopicActivationIntent:
             return False, "activation_unavailable"
         if self._state == TeleopActivationState.INACTIVE:
             return False, "inactive"
+        if self._state == TeleopActivationState.PENDING:
+            return False, "activation_pending"
         if not self._armed:
             return False, "release_required"
         return True, "active"
@@ -94,13 +97,16 @@ class TopicActivationIntent:
         return active
 
     def is_pressed(self, _message: VRState) -> bool:
-        """Return whether a fresh heartbeat reports the key as active."""
+        """Return whether a fresh heartbeat reports the control held."""
         if self._last_message_time_s is None:
             return False
         now_s = self._monotonic()
         if now_s - self._last_message_time_s > self.timeout_s:
             return False
-        return self._state == TeleopActivationState.ACTIVE
+        return self._state in {
+            TeleopActivationState.ACTIVE,
+            TeleopActivationState.PENDING,
+        }
 
     def reset(self) -> None:
         """Keep keyboard state when only the teleop session resets."""

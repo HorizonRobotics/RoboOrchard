@@ -111,6 +111,9 @@ class _Node:
             wait_for_service=lambda timeout_sec: True,
         )
 
+    def create_service(self, *args, **kwargs):
+        return types.SimpleNamespace(args=args, kwargs=kwargs)
+
     def create_timer(self, period_s, callback):
         timer = types.SimpleNamespace(
             period_s=period_s, callback=callback, cancelled=False
@@ -272,6 +275,7 @@ if "robo_orchard_teleop_msg_ros2" not in sys.modules:
         UNAVAILABLE = 0
         INACTIVE = 1
         ACTIVE = 2
+        PENDING = 3
 
         header: object = field(
             default_factory=lambda: sys.modules["std_msgs.msg"].Header()
@@ -295,6 +299,19 @@ if "robo_orchard_teleop_msg_ros2" not in sys.modules:
     teleop_msgs.msg = teleop_msgs_msg
     sys.modules["robo_orchard_teleop_msg_ros2"] = teleop_msgs
     sys.modules["robo_orchard_teleop_msg_ros2.msg"] = teleop_msgs_msg
+
+
+if "robo_orchard_teleop_msg_ros2.srv" not in sys.modules:
+    teleop_srvs = types.ModuleType("robo_orchard_teleop_msg_ros2.srv")
+    teleop_srvs.RecaptureBaseline = type(
+        "RecaptureBaseline",
+        (),
+        {
+            "Request": type("Request", (), {}),
+            "Response": type("Response", (), {}),
+        },
+    )
+    sys.modules["robo_orchard_teleop_msg_ros2.srv"] = teleop_srvs
 
 
 rclpy = types.ModuleType("rclpy")

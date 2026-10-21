@@ -1,0 +1,15 @@
+/**:
+  ros__parameters:
+    port: /dev/ttyUSB0
+    baud_rate: 115200
+    slave_address: 9
+    serial_timeout_ms: 500
+    exchange_rate_hz: 100.0
+    state_rate_hz: 30.0
+    status_timeout_ms: 1000
+    activation_timeout_ms: 15000
+    joint_name: robotiq_gripper
+    speed_mps: 0.05
+    force_fraction: 0.1
+    use_fake: false
+    auto_enable: false

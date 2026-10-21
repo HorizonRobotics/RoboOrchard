@@ -14,8 +14,13 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch import LaunchContext, LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -23,7 +28,17 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
-def generate_launch_description() -> LaunchDescription:
+def _launch_nodes(context: LaunchContext) -> list:
+    """Validate the hardware choice before returning any startup actions."""
+    combined = IfCondition(LaunchConfiguration("enable_robotiq")).evaluate(
+        context
+    )
+    if combined and IfCondition(LaunchConfiguration("load_gripper")).evaluate(
+        context
+    ):
+        raise ValueError(
+            "enable_robotiq and load_gripper are mutually exclusive"
+        )
     robot_ip = LaunchConfiguration("robot_ip")
     use_rviz = LaunchConfiguration("use_rviz")
     load_gripper = LaunchConfiguration("load_gripper")
@@ -38,6 +53,135 @@ def generate_launch_description() -> LaunchDescription:
         "control_manager_config_file"
     )
 
+    nodes = [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution(
+                    [
+                        FindPackageShare("robo_orchard_franka_ros2"),
+                        "launch",
+                        "joint_position_control.launch.py",
+                    ]
+                )
+            ),
+            launch_arguments={
+                "robot_ip": robot_ip,
+                "arm_id": "fr3",
+                "use_rviz": use_rviz,
+                "load_gripper": load_gripper,
+            }.items(),
+        ),
+        Node(
+            package="robo_orchard_teleop_ros2",
+            executable="pico_bridge",
+            name="pico_bridge",
+            namespace="/pico_bridge",
+            output="screen",
+            emulate_tty=True,
+        ),
+        Node(
+            package="robo_orchard_teleop_ros2",
+            executable="franka_pico_vr_teleop",
+            name="franka_pico_vr_teleop",
+            namespace="/pico_bridge",
+            output="screen",
+            emulate_tty=True,
+            parameters=[
+                {
+                    "urdf_path": urdf_path,
+                    "source_type": source_type,
+                    "base_link_name": "fr3_link0",
+                    "ee_link_name": "fr3_link8",
+                    "joint_state_topic": "/franka/joint_states",
+                    "joint_command_topic": "/robot/franka/joint_cmd",
+                    "reset_service": "/robot/control/reset",
+                    "publish_activation": combined,
+                    "recapture_service": (
+                        "/franka_teleop/recapture_baseline"
+                        if combined
+                        else "~/recapture_baseline"
+                    ),
+                    "control_frequency_hz": ParameterValue(
+                        control_frequency_hz, value_type=float
+                    ),
+                    "stale_timeout_s": ParameterValue(
+                        stale_timeout_s, value_type=float
+                    ),
+                    "ik_regularization_parameter": ParameterValue(
+                        ik_regularization_parameter, value_type=float
+                    ),
+                }
+            ],
+            remappings=[
+                (
+                    "/robot/franka/joint_cmd",
+                    "/franka_teleop/candidate"
+                    if combined
+                    else "/franka_teleop/joint_franka",
+                ),
+            ],
+        ),
+        Node(
+            package="robo_orchard_control_manager_ros2",
+            executable="control_manager_node",
+            name="control_manager",
+            namespace="/robot/control",
+            output="screen",
+            parameters=[{"config_file": control_manager_config_file}],
+        ),
+    ]
+    if combined:
+        driver_arguments = {
+            "namespace": "robotiq",
+            "use_fake": LaunchConfiguration("robotiq_use_fake"),
+            "auto_enable": LaunchConfiguration("auto_enable"),
+        }
+        driver_config = context.perform_substitution(
+            LaunchConfiguration("robotiq_config_file")
+        )
+        if driver_config:
+            driver_arguments["config_file"] = driver_config
+        nodes.extend(
+            [
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        PathJoinSubstitution(
+                            [
+                                FindPackageShare("robo_orchard_robotiq_ros2"),
+                                "launch",
+                                "robotiq_driver.launch.py",
+                            ]
+                        )
+                    ),
+                    launch_arguments=driver_arguments.items(),
+                ),
+                Node(
+                    package="robo_orchard_teleop_ros2",
+                    executable="robotiq_pico_vr_teleop",
+                    name="robotiq_pico_vr_teleop",
+                    output="screen",
+                    parameters=[{"source_type": source_type}],
+                ),
+                Node(
+                    package="robo_orchard_teleop_ros2",
+                    executable="teleop_engagement",
+                    name="teleop_engagement",
+                    output="screen",
+                    parameters=[
+                        {
+                            "config_file": LaunchConfiguration(
+                                "engagement_config_file"
+                            ),
+                        }
+                    ],
+                ),
+            ]
+        )
+    return nodes
+
+
+def generate_launch_description() -> LaunchDescription:
+    """Launch managed Franka teleop with optional coordinated Robotiq."""
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -53,6 +197,39 @@ def generate_launch_description() -> LaunchDescription:
                 "load_gripper",
                 default_value="false",
                 description="Start the native gripper without Pico control.",
+            ),
+            DeclareLaunchArgument(
+                "enable_robotiq",
+                default_value="false",
+                description="Coordinate Franka and Robotiq Pico teleop.",
+            ),
+            DeclareLaunchArgument(
+                "robotiq_use_fake",
+                default_value="false",
+                description="Use the SDK fake gripper, not a fake Franka.",
+            ),
+            DeclareLaunchArgument(
+                "auto_enable",
+                default_value="false",
+                description=(
+                    "Activate Robotiq once at startup; may open/close."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "robotiq_config_file",
+                default_value="",
+                description="Driver YAML; empty uses the driver's default.",
+            ),
+            DeclareLaunchArgument(
+                "engagement_config_file",
+                default_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("robo_orchard_teleop_ros2"),
+                        "config",
+                        "franka_robotiq_engagement.yaml",
+                    ]
+                ),
+                description="Coordinated candidate and override routes.",
             ),
             DeclareLaunchArgument(
                 "urdf_path",
@@ -90,75 +267,6 @@ def generate_launch_description() -> LaunchDescription:
                 "control_manager_config_file",
                 description="Project-owned Control Manager configuration.",
             ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution(
-                        [
-                            FindPackageShare("robo_orchard_franka_ros2"),
-                            "launch",
-                            "joint_position_control.launch.py",
-                        ]
-                    )
-                ),
-                launch_arguments={
-                    "robot_ip": robot_ip,
-                    "arm_id": "fr3",
-                    "use_rviz": use_rviz,
-                    "load_gripper": load_gripper,
-                }.items(),
-            ),
-            Node(
-                package="robo_orchard_teleop_ros2",
-                executable="pico_bridge",
-                name="pico_bridge",
-                namespace="/pico_bridge",
-                output="screen",
-                emulate_tty=True,
-            ),
-            Node(
-                package="robo_orchard_teleop_ros2",
-                executable="franka_pico_vr_teleop",
-                name="franka_pico_vr_teleop",
-                namespace="/pico_bridge",
-                output="screen",
-                emulate_tty=True,
-                parameters=[
-                    {
-                        "urdf_path": urdf_path,
-                        "source_type": source_type,
-                        "base_link_name": "fr3_link0",
-                        "ee_link_name": "fr3_link8",
-                        "joint_state_topic": "/franka/joint_states",
-                        "joint_command_topic": "/robot/franka/joint_cmd",
-                        "reset_service": "/robot/control/reset",
-                        "control_frequency_hz": ParameterValue(
-                            control_frequency_hz,
-                            value_type=float,
-                        ),
-                        "stale_timeout_s": ParameterValue(
-                            stale_timeout_s,
-                            value_type=float,
-                        ),
-                        "ik_regularization_parameter": ParameterValue(
-                            ik_regularization_parameter,
-                            value_type=float,
-                        ),
-                    }
-                ],
-                remappings=[
-                    (
-                        "/robot/franka/joint_cmd",
-                        "/franka_teleop/joint_franka",
-                    ),
-                ],
-            ),
-            Node(
-                package="robo_orchard_control_manager_ros2",
-                executable="control_manager_node",
-                name="control_manager",
-                namespace="/robot/control",
-                output="screen",
-                parameters=[{"config_file": control_manager_config_file}],
-            ),
+            OpaqueFunction(function=_launch_nodes),
         ]
     )
