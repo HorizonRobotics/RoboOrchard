@@ -27,7 +27,7 @@ def generate_launch_description():
     driver_config_file = LaunchConfiguration("driver_config_file")
     auto_enable_side = LaunchConfiguration("auto_enable_side")
     auto_enable_mode = LaunchConfiguration("auto_enable_mode")
-    control_frequency_hz = LaunchConfiguration("control_frequency_hz")
+    teleop_frequency_hz = LaunchConfiguration("teleop_frequency_hz")
     translation_scale_factor = LaunchConfiguration("translation_scale_factor")
     pose_low_pass_alpha = LaunchConfiguration("pose_low_pass_alpha")
     operator_input_source = LaunchConfiguration("operator_input_source")
@@ -74,9 +74,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "auto_enable_mode", default_value="joint_impedance"
             ),
-            DeclareLaunchArgument(
-                "control_frequency_hz", default_value="30.0"
-            ),
+            DeclareLaunchArgument("teleop_frequency_hz", default_value="30.0"),
             DeclareLaunchArgument(
                 "translation_scale_factor", default_value="1.0"
             ),
@@ -141,8 +139,8 @@ def generate_launch_description():
                         "base_link_name": "robot_stand",
                         "left_ee_link_name": "TCP_Link_L",
                         "right_ee_link_name": "TCP_Link_R",
-                        "control_frequency_hz": ParameterValue(
-                            control_frequency_hz, value_type=float
+                        "teleop_frequency_hz": ParameterValue(
+                            teleop_frequency_hz, value_type=float
                         ),
                         "translation_scale_factor": ParameterValue(
                             translation_scale_factor, value_type=float

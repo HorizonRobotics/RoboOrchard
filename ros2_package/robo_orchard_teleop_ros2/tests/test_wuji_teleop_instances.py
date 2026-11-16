@@ -17,14 +17,33 @@
 import pytest
 
 from robo_orchard_teleop_ros2.wuji_teleop_instances import (
+    WujiTeleopInstance,
     resolve_wuji_teleop_instances,
 )
+
+
+def test_existing_instance_constructor_defaults_to_first_generation():
+    instance = WujiTeleopInstance(
+        "right",
+        "hand_right",
+        "",
+        "/wuji_glove/right",
+        "",
+        "wuji_glove_right",
+        "wuji_glove_right",
+        "default",
+        "/right_hand_algo_cmd",
+    )
+    assert instance.hand_side == "right"
+    assert instance.hand_name == "hand_right"
+    assert instance.hand_model == "wuji_hand"
 
 
 def test_single_side_preserves_simple_defaults():
     [instance] = resolve_wuji_teleop_instances(hand_side="right")
 
     assert instance.hand_side == "right"
+    assert instance.hand_model == "wuji_hand"
     assert instance.hand_name == "hand_right"
     assert instance.hand_serial_number == ""
     assert instance.glove_namespace == "/wuji_glove/right"
@@ -33,6 +52,82 @@ def test_single_side_preserves_simple_defaults():
     assert instance.glove_frame_prefix == "wuji_glove_right"
     assert instance.glove_sdk_user == "default"
     assert instance.algo_topic == "/right_hand_algo_cmd"
+
+
+@pytest.mark.parametrize(
+    ("models", "expected"),
+    [
+        ("wuji_hand_2", ["wuji_hand_2", "wuji_hand_2"]),
+        ("wuji_hand,wuji_hand_2", ["wuji_hand", "wuji_hand_2"]),
+        (",wuji_hand_2", ["wuji_hand", "wuji_hand_2"]),
+    ],
+)
+def test_hand_model_is_broadcast_or_selected_per_instance(models, expected):
+    instances = resolve_wuji_teleop_instances(
+        hand_side="left,right",
+        hand_model=models,
+        hand_serial_number="000123,000456",
+    )
+    assert [instance.hand_model for instance in instances] == expected
+
+
+@pytest.mark.parametrize("serials", ["", ",", " , ", "000123,", ",000456"])
+def test_multiple_hand2_require_every_serial(serials: str) -> None:
+    with pytest.raises(ValueError, match="required for every Hand2"):
+        resolve_wuji_teleop_instances(
+            hand_side="left,right",
+            hand_model="wuji_hand_2",
+            hand_serial_number=serials,
+        )
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_single_hand2_keeps_automatic_discovery(side: str) -> None:
+    [instance] = resolve_wuji_teleop_instances(
+        hand_side=side, hand_model="wuji_hand_2"
+    )
+    assert instance.hand_serial_number == ""
+
+
+@pytest.mark.parametrize(
+    "models", ["wuji_hand,wuji_hand_2", "wuji_hand_2,wuji_hand"]
+)
+def test_mixed_pair_with_one_hand2_keeps_automatic_discovery(
+    models: str,
+) -> None:
+    instances = resolve_wuji_teleop_instances(
+        hand_side="left,right", hand_model=models
+    )
+    assert all(not instance.hand_serial_number for instance in instances)
+
+
+def test_multiple_hand2_in_mixed_group_require_serials() -> None:
+    with pytest.raises(ValueError, match="missing value at position 3"):
+        resolve_wuji_teleop_instances(
+            hand_side="left,right,right",
+            hand_model="wuji_hand_2,wuji_hand,wuji_hand_2",
+            hand_serial_number="000123,HAND1,",
+        )
+
+
+def test_multiple_hand2_serials_must_be_unique() -> None:
+    with pytest.raises(ValueError, match="hand_serial_number.*unique"):
+        resolve_wuji_teleop_instances(
+            hand_side="left,right",
+            hand_model="wuji_hand_2",
+            hand_serial_number="000123,000123",
+        )
+
+
+@pytest.mark.parametrize(
+    "models",
+    ["unknown", "wuji_hand,unknown", "wuji_hand,wuji_hand_2,wuji_hand"],
+)
+def test_invalid_hand_models_fail_before_launch(models):
+    with pytest.raises(ValueError, match="hand_model"):
+        resolve_wuji_teleop_instances(
+            hand_side="left,right", hand_model=models
+        )
 
 
 def test_left_and_right_expand_without_other_arguments():

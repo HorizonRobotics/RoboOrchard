@@ -15,518 +15,121 @@
 # permissions and limitations under the License.
 
 from __future__ import annotations
-# ruff: noqa: E402
 import importlib
 import sys
-import types
-from dataclasses import dataclass
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-if str(PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PACKAGE_ROOT))
 
-_saved_numpy_module = sys.modules.pop("numpy", None)
-import numpy as np  # noqa: E402
+class _Ik:
+    result = None
+    calls = []
 
-if _saved_numpy_module is not None:
-    sys.modules["numpy"] = _saved_numpy_module
+    def __init__(self, *args):
+        self.joint_names = ["joint1", "joint2"]
+        self.num_joints = 2
+        type(self).calls.append(args)
 
-_STUB_MODULE_NAMES = (
-    "geometry_msgs",
-    "geometry_msgs.msg",
-    "ikpy",
-    "ikpy.chain",
-    "numpy",
-    "scipy",
-    "scipy.spatial",
-    "scipy.spatial.transform",
-)
-
-
-@dataclass
-class _Point:
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-
-
-@dataclass
-class _Quaternion:
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    w: float = 1.0
-
-
-@dataclass
-class _Pose:
-    position: _Point
-    orientation: _Quaternion
-
-
-class _Rotation:
-    def __init__(self, matrix=None, magnitude_value=0.0):
-        self._matrix = (
-            np.array(matrix, dtype=np.float64)
-            if matrix is not None
-            else np.eye(3, dtype=np.float64)
-        )
-        self._magnitude_value = float(magnitude_value)
-
-    @classmethod
-    def from_quat(cls, quat):
-        quat = list(quat)
-        assert quat == [0.0, 0.0, 0.0, 1.0]
-        return cls(np.eye(3, dtype=np.float64), 0.0)
-
-    @classmethod
-    def from_matrix(cls, matrix):
-        matrix = np.array(matrix, dtype=np.float64)
-        magnitude_value = (
-            0.0 if np.allclose(matrix, np.eye(3, dtype=np.float64)) else 1.0
-        )
-        return cls(matrix, magnitude_value)
-
-    def as_matrix(self):
-        return np.array(self._matrix, dtype=np.float64)
-
-    def magnitude(self):
-        return self._magnitude_value
-
-
-class _Link:
-    def __init__(self, name, joint_type="revolute", bounds=None):
-        self.name = name
-        self.joint_type = joint_type
-        self.bounds = bounds
-
-
-class _Chain:
-    next_result = None
-    next_fk_matrix = np.eye(4, dtype=np.float64)
-    last_init_kwargs = None
-    last_inverse_target = None
-    last_inverse_kwargs = None
-    last_forward_input = None
-
-    def __init__(
-        self, links=None, active_links_mask=None, name=None, urdf_metadata=None
-    ):
-        self.links = links or [
-            _Link("base_link", joint_type="fixed"),
-            _Link("joint1", bounds=(-1.0, 1.0)),
-            _Link("joint2", bounds=(-2.0, 2.0)),
-            _Link("joint3", bounds=(-3.0, 3.0)),
-            _Link("joint4", bounds=(-4.0, 4.0)),
-            _Link("joint5", bounds=(-5.0, 5.0)),
-            _Link("joint6", bounds=(-6.0, 6.0)),
-        ]
-        self.active_links_mask = None
-        self.name = name
-        self.urdf_metadata = urdf_metadata
-
-    @classmethod
-    def from_urdf_file(cls, *args, **kwargs):
-        cls.last_init_kwargs = {"args": args, "kwargs": kwargs}
-        return cls(
-            name=kwargs.get("name"),
-            urdf_metadata={"base_elements": kwargs.get("base_elements")},
-        )
-
-    def inverse_kinematics_frame(self, target_matrix, **kwargs):
-        type(self).last_inverse_target = np.array(
-            target_matrix, dtype=np.float64
-        )
-        type(self).last_inverse_kwargs = dict(kwargs)
-        result = type(self).next_result
-        if isinstance(result, Exception):
-            raise result
-        return np.array(result, dtype=np.float64)
-
-    def forward_kinematics(self, result):
-        type(self).last_forward_input = np.array(result, dtype=np.float64)
-        return np.array(type(self).next_fk_matrix, dtype=np.float64)
-
-
-def _install_stub_modules():
-    geometry_msgs = types.ModuleType("geometry_msgs")
-    geometry_msgs_msg = types.ModuleType("geometry_msgs.msg")
-    geometry_msgs_msg.Pose = _Pose
-    geometry_msgs.msg = geometry_msgs_msg
-    sys.modules["geometry_msgs"] = geometry_msgs
-    sys.modules["geometry_msgs.msg"] = geometry_msgs_msg
-
-    numpy_module = types.ModuleType("numpy")
-    numpy_module.array = np.array
-    numpy_module.eye = np.eye
-    numpy_module.isfinite = np.isfinite
-    numpy_module.nextafter = np.nextafter
-    numpy_module.linalg = types.SimpleNamespace(norm=np.linalg.norm)
-    sys.modules["numpy"] = numpy_module
-
-    scipy_module = types.ModuleType("scipy")
-    scipy_spatial_module = types.ModuleType("scipy.spatial")
-    scipy_transform_module = types.ModuleType("scipy.spatial.transform")
-    scipy_transform_module.Rotation = _Rotation
-    scipy_spatial_module.transform = scipy_transform_module
-    scipy_module.spatial = scipy_spatial_module
-    sys.modules["scipy"] = scipy_module
-    sys.modules["scipy.spatial"] = scipy_spatial_module
-    sys.modules["scipy.spatial.transform"] = scipy_transform_module
-
-    ikpy_module = types.ModuleType("ikpy")
-    ikpy_chain_module = types.ModuleType("ikpy.chain")
-    ikpy_chain_module.Chain = _Chain
-    ikpy_module.chain = ikpy_chain_module
-    sys.modules["ikpy"] = ikpy_module
-    sys.modules["ikpy.chain"] = ikpy_chain_module
+    def solve_pose(self, pose, **kwargs):
+        type(self).calls.append((pose, kwargs))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
 
 
 @pytest.fixture()
-def ik_module(tmp_path):
+def ik_module(monkeypatch):
+    extension_name = "robo_orchard_teleop_ros2._ik"
     module_name = "robo_orchard_teleop_ros2.ik"
-    saved_modules = {
-        name: sys.modules.get(name)
-        for name in (*_STUB_MODULE_NAMES, module_name)
+    monkeypatch.setitem(sys.modules, extension_name, SimpleNamespace(Ik=_Ik))
+    monkeypatch.setitem(
+        sys.modules, "geometry_msgs.msg", SimpleNamespace(Pose=object)
+    )
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    _Ik.calls = []
+    _Ik.result = {
+        "q": [0.1, -0.2],
+        "accepted": True,
+        "position_error": 0.0,
+        "rotation_error": 0.0,
+    }
+    module = importlib.import_module(module_name)
+    yield module
+    sys.modules.pop(module_name, None)
+
+
+def pose(quat=(0.0, 0.0, 0.0, 1.0)):
+    return SimpleNamespace(
+        position=SimpleNamespace(x=0.1, y=0.2, z=0.3),
+        orientation=SimpleNamespace(**dict(zip("xyzw", quat, strict=True))),
+    )
+
+
+def optimizer(module, **kwargs):
+    return module.IkOptimizer("robot.urdf", "base", "ee", **kwargs)
+
+
+def test_solver_chain_and_seeded_options(ik_module):
+    ik = optimizer(ik_module)
+    assert ik.get_joint_names() == ["joint1", "joint2"]
+    assert ik.num_joints == 2
+    assert _Ik.calls[0] == ("robot.urdf", "base", "ee")
+    assert ik.solve(pose(), [0.4, -0.5]) == [0.1, -0.2]
+    values, kwargs = _Ik.calls[-1]
+    assert values == [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0]
+    assert kwargs == {
+        "seed": [0.4, -0.5],
+        "orientation_mode": "all",
+        "regularization_parameter": 0.02,
+        "clip_to_limit": True,
+        "position_tolerance": 0.05,
+        "orientation_tolerance": 0.3,
     }
 
-    for name in (*_STUB_MODULE_NAMES, module_name):
-        sys.modules.pop(name, None)
 
-    _install_stub_modules()
-    module = importlib.import_module(module_name)
-
-    urdf_path = tmp_path / "robot.urdf"
-    links = ["base_link"] + [f"link{index}" for index in range(1, 7)]
-    joints = []
-    for index in range(1, 7):
-        joints.append(
-            f'<joint name="joint{index}" type="revolute">'
-            f'<parent link="{links[index - 1]}"/>'
-            f'<child link="{links[index]}"/>'
-            '<axis xyz="0 0 1"/>'
-            '<limit lower="-1" upper="1"/>'
-            "</joint>"
-        )
-    urdf_path.write_text(
-        "<robot>"
-        + "".join(f'<link name="{name}"/>' for name in links)
-        + "".join(joints)
-        + "</robot>",
-        encoding="utf-8",
-    )
-    module._TEST_URDF_PATH = str(urdf_path)
-
-    _Chain.next_result = None
-    _Chain.next_fk_matrix = np.eye(4, dtype=np.float64)
-    _Chain.last_init_kwargs = None
-    _Chain.last_inverse_target = None
-    _Chain.last_inverse_kwargs = None
-    _Chain.last_forward_input = None
-
-    try:
-        yield module
-    finally:
-        sys.modules.pop(module_name, None)
-        for name in _STUB_MODULE_NAMES:
-            sys.modules.pop(name, None)
-
-        for name, saved_module in saved_modules.items():
-            if saved_module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = saved_module
-
-
-def test_ik_optimizer_builds_chain_and_uses_seeded_initial_position(ik_module):
-    """Build the requested linear chain and preserve seeded IK behavior."""
-    _Chain.next_result = [0.0, 0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
-    fk = np.eye(4, dtype=np.float64)
-    fk[:3, 3] = [0.1, 0.2, 0.3]
-    _Chain.next_fk_matrix = fk
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.1, 0.2, 0.3),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    solution = optimizer.solve(
-        pose, seed_state=[0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
-    )
-
-    assert solution == [0.1, -0.2, 0.3, -0.4, 0.5, -0.6]
-    assert _Chain.last_init_kwargs is not None
-    assert _Chain.last_init_kwargs["kwargs"]["name"] == "link6"
-    assert _Chain.last_init_kwargs["kwargs"]["base_elements"][-1] == "link6"
-    assert _Chain.last_inverse_kwargs["orientation_mode"] == "all"
-    assert _Chain.last_inverse_kwargs["regularization_parameter"] == 0.02
-    assert _Chain.last_inverse_kwargs["initial_position"] == [
-        0.0,
-        0.1,
-        -0.2,
-        0.3,
-        -0.4,
-        0.5,
-        -0.6,
-    ]
-
-
-def test_ik_optimizer_clips_seed_and_solution_to_joint_limits(ik_module):
-    _Chain.next_result = [0.0, 2.0, -3.0, 4.0, -5.0, 6.0, -7.0]
-    _Chain.next_fk_matrix = np.eye(4, dtype=np.float64)
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    solution = optimizer.solve(
-        pose, seed_state=[2.0, -3.0, 4.0, -5.0, 6.0, -7.0]
-    )
-
-    assert np.allclose(
-        _Chain.last_inverse_kwargs["initial_position"],
-        [
-            0.0,
-            np.nextafter(1.0, -1.0),
-            np.nextafter(-2.0, 2.0),
-            np.nextafter(3.0, -3.0),
-            np.nextafter(-4.0, 4.0),
-            np.nextafter(5.0, -5.0),
-            np.nextafter(-6.0, 6.0),
-        ],
-    )
-    assert _Chain.last_inverse_kwargs["regularization_parameter"] == 0.02
-    assert solution == [1.0, -2.0, 3.0, -4.0, 5.0, -6.0]
-
-
-def test_ik_optimizer_builds_feasible_default_seed(ik_module):
-    _Chain.next_result = [0.0, 1.0, -1.5, 0.0, 0.0, 0.0, 0.0]
-    _Chain.next_fk_matrix = np.eye(4, dtype=np.float64)
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    optimizer.chain.links[1].bounds = (0.5, 1.5)
-    optimizer.chain.links[2].bounds = (-2.0, -1.0)
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    solution = optimizer.solve(pose, seed_state=None)
-
-    initial_position = _Chain.last_inverse_kwargs["initial_position"]
-    assert initial_position == [
-        0.0,
-        np.nextafter(0.5, 1.5),
-        np.nextafter(-1.0, -2.0),
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-    ]
-    assert solution == [1.0, -1.5, 0.0, 0.0, 0.0, 0.0]
-
-
-def test_ik_optimizer_returns_none_on_solver_exception(ik_module):
-    _Chain.next_result = RuntimeError("boom")
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    assert optimizer.solve(pose, seed_state=[0.0] * 6) is None
-
-
-def test_ik_optimizer_returns_none_on_large_fk_error(ik_module):
-    _Chain.next_result = [0.0] * 7
-    fk = np.eye(4, dtype=np.float64)
-    fk[0, 3] = 0.1
-    _Chain.next_fk_matrix = fk
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    assert optimizer.solve(pose, seed_state=[0.0] * 6) is None
-
-
-def test_ik_optimizer_position_tolerance_is_configurable(ik_module):
-    """The same 4 cm miss is accepted or rejected purely by tolerance.
-
-    On hardware every rejected solve sat 3.1-4.4 cm out with near-exact
-    orientation, and rejecting them left the arm with no command at all --
-    a 426 ms freeze mid-motion. The default is loose enough to ride those
-    out, but callers with tighter fidelity needs can still dial it down.
-    """
-    fk = np.eye(4, dtype=np.float64)
-    fk[0, 3] = 0.04
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    _Chain.next_result = [0.0] * 7
-    _Chain.next_fk_matrix = fk
-    loose = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    assert loose.position_tolerance == 0.05
-    assert loose.solve(pose, seed_state=[0.0] * 6) is not None
-
-    _Chain.next_result = [0.0] * 7
-    _Chain.next_fk_matrix = fk
-    strict = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
+@pytest.mark.parametrize("regularization", [None, 0.0, 0.07])
+@pytest.mark.parametrize("mode", [None, "X", "Y", "Z", "all"])
+def test_custom_options_are_forwarded(ik_module, regularization, mode):
+    ik = optimizer(
+        ik_module,
+        regularization_parameter=regularization,
+        clip_to_limit=False,
         position_tolerance=0.03,
+        orientation_tolerance=0.2,
     )
-    assert strict.solve(pose, seed_state=[0.0] * 6) is None
+    assert ik.solve(pose(), orientation_mode=mode) == [0.1, -0.2]
+    _, kwargs = _Ik.calls[-1]
+    assert kwargs["seed"] is None
+    assert kwargs["regularization_parameter"] == regularization
+    assert kwargs["orientation_mode"] == mode
+    assert not kwargs["clip_to_limit"]
+    assert kwargs["position_tolerance"] == 0.03
+    assert kwargs["orientation_tolerance"] == 0.2
 
 
-def test_ik_optimizer_skips_orientation_gate_when_unconstrained(ik_module):
-    """orientation_mode=None must not be scored on orientation.
-
-    Grading a position-only solve against the orientation it was told to
-    ignore rejects it every time, which is how the old position-only
-    fallback managed to burn 22.6 ms per call and never return a solution.
-    """
-    fk = np.eye(4, dtype=np.float64)
-    # 90 deg out -- far past the 0.3 rad gate, but nobody asked for it.
-    fk[:3, :3] = np.array(
-        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-        dtype=np.float64,
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    _Chain.next_result = [0.0] * 7
-    _Chain.next_fk_matrix = fk
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    assert optimizer.solve(pose, seed_state=[0.0] * 6) is None
-
-    _Chain.next_result = [0.0] * 7
-    _Chain.next_fk_matrix = fk
-    assert (
-        optimizer.solve(pose, seed_state=[0.0] * 6, orientation_mode=None)
-        is not None
+def test_solver_failures_keep_logging_and_return_none(ik_module):
+    messages = []
+    logger = SimpleNamespace(warning=messages.append)
+    ik = optimizer(ik_module, logger=logger)
+    _Ik.result = RuntimeError("boom")
+    assert ik.solve(pose(), [0.0, 0.0]) is None
+    assert messages == ["IK solver exception: boom"]
+    _Ik.result = {
+        "accepted": False,
+        "position_error": 0.1,
+        "rotation_error": 0.4,
+    }
+    assert ik.solve(pose()) is None
+    assert messages[-1] == (
+        "IK failed to converge (pos_err=0.1000, rot_err=0.4000)"
     )
 
 
-def test_ik_optimizer_validates_seed_length(ik_module):
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    with pytest.raises(ValueError, match="seed_state length 2"):
-        optimizer.solve(pose, seed_state=[0.0, 0.0])
-
-
-def test_ik_optimizer_skips_regularization_without_seed(ik_module):
-    _Chain.next_result = [0.0] * 7
-    _Chain.next_fk_matrix = np.eye(4, dtype=np.float64)
-    optimizer = ik_module.IkOptimizer(
-        urdf_path=ik_module._TEST_URDF_PATH,
-        base_link="base_link",
-        ee_link="link6",
-    )
-    pose = _Pose(
-        position=_Point(0.0, 0.0, 0.0),
-        orientation=_Quaternion(0.0, 0.0, 0.0, 1.0),
-    )
-
-    solution = optimizer.solve(pose, seed_state=None)
-
-    assert solution == [0.0] * 6
-    assert "regularization_parameter" not in _Chain.last_inverse_kwargs
-
-
-def test_resolve_urdf_chain_selects_requested_branch(ik_module, tmp_path):
-    """Resolve each end-effector through its own branch in a dual-arm URDF."""
-    urdf_path = tmp_path / "dual_arm.urdf"
-    urdf_path.write_text(
-        """
-<robot name="dual">
-  <link name="robot_stand"/>
-  <link name="left_base"/>
-  <link name="left_flange"/>
-  <link name="right_base"/>
-  <link name="right_flange"/>
-  <joint name="left_mount" type="fixed">
-    <parent link="robot_stand"/><child link="left_base"/>
-  </joint>
-  <joint name="left_joint" type="revolute">
-    <parent link="left_base"/><child link="left_flange"/>
-  </joint>
-  <joint name="right_mount" type="fixed">
-    <parent link="robot_stand"/><child link="right_base"/>
-  </joint>
-  <joint name="right_joint" type="revolute">
-    <parent link="right_base"/><child link="right_flange"/>
-  </joint>
-</robot>
-        """.strip(),
-        encoding="utf-8",
-    )
-
-    left_elements, left_terminal = ik_module._resolve_urdf_chain(
-        str(urdf_path), "robot_stand", "left_flange"
-    )
-    right_elements, right_terminal = ik_module._resolve_urdf_chain(
-        str(urdf_path), "robot_stand", "right_flange"
-    )
-
-    assert left_elements == [
-        "robot_stand",
-        "left_mount",
-        "left_base",
-        "left_joint",
-        "left_flange",
-    ]
-    assert left_terminal == "left_joint"
-    assert right_elements == [
-        "robot_stand",
-        "right_mount",
-        "right_base",
-        "right_joint",
-        "right_flange",
-    ]
-    assert right_terminal == "right_joint"
+def test_input_errors_remain_caller_errors(ik_module):
+    ik = optimizer(ik_module)
+    with pytest.raises(ValueError, match="seed_state length 1"):
+        ik.solve(pose(), [0.0])
+    for quat in [(0.0,) * 4, (float("nan"), 0.0, 0.0, 1.0)]:
+        with pytest.raises(ValueError, match="zero norm"):
+            ik.solve(pose(quat))

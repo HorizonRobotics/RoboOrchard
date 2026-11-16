@@ -452,6 +452,7 @@ def test_pico_node_passes_pose_low_pass_alpha_to_vr_teleop():
     node = PiperPicoVRTeleOpNode()
 
     assert "pose_low_pass_alpha" not in node._parameters
+    assert node.teleop_frequency_hz == 30.0
     assert VRTeleOp.instances[0].init_kwargs["pose_low_pass_alpha"] == 0.25
     assert VRTeleOp.instances[1].init_kwargs["pose_low_pass_alpha"] == 0.25
 
@@ -484,16 +485,28 @@ def test_pico_node_passes_configured_ee_link_name_to_vr_teleop():
     assert VRTeleOp.instances[1].init_kwargs["ee_link_name"] == "link6"
 
 
-def test_pico_node_uses_higher_control_rate():
+@pytest.mark.parametrize("frequency", [30.0, 60.0, 90.0])
+def test_pico_node_uses_configured_control_rate(monkeypatch, frequency):
     import robo_orchard_teleop_ros2.robot.piper.pico_vr as pico_vr_module
 
-    pico_vr_module.os.path.exists = lambda _path: True
+    monkeypatch.setattr(pico_vr_module.os.path, "exists", lambda _path: True)
     VRTeleOp.instances.clear()
 
-    node = PiperPicoVRTeleOpNode()
+    node = PiperPicoVRTeleOpNode(
+        parameter_overrides=[_Parameter("teleop_frequency_hz", frequency)]
+    )
 
     assert len(node.timers) == 1
-    assert node.timers[0].period_s == 1.0 / 30.0
+    assert node.teleop_frequency_hz == frequency
+    assert node.timers[0].period_s == pytest.approx(1.0 / frequency)
+
+
+@pytest.mark.parametrize("frequency", [0.0, -1.0, math.nan, math.inf])
+def test_pico_node_rejects_invalid_control_rate(frequency):
+    with pytest.raises(ValueError, match="teleop_frequency_hz"):
+        PiperPicoVRTeleOpNode(
+            parameter_overrides=[_Parameter("teleop_frequency_hz", frequency)]
+        )
 
 
 @pytest.mark.parametrize("side", ["left", "right"])

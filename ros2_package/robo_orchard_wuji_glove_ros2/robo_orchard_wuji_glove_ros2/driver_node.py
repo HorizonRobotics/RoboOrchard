@@ -160,8 +160,8 @@ class WujiGloveDriverNode(Node):
         sdk_log_level = str(
             self.declare_parameter("sdk_log_level", "warn").value
         )
-        divider = int(
-            self.declare_parameter("emf_poses_rate_divider", 1).value
+        emf_poses_rate_hz = int(
+            self.declare_parameter("emf_poses_rate_hz", 0).value
         )
         reconnect_interval = float(
             self.declare_parameter("reconnect_interval_s", 2.0).value
@@ -196,8 +196,8 @@ class WujiGloveDriverNode(Node):
                 "frame_prefix must be a relative frame path without empty "
                 "segments or whitespace"
             )
-        if divider < 1:
-            raise ValueError("emf_poses_rate_divider must be at least 1")
+        if not 0 <= emf_poses_rate_hz <= 65_535:
+            raise ValueError("emf_poses_rate_hz must be between 0 and 65535")
         _require_positive_finite("reconnect_interval_s", reconnect_interval)
         _require_positive_finite(
             "critical_stream_timeout_s", self._critical_stream_timeout_s
@@ -242,7 +242,7 @@ class WujiGloveDriverNode(Node):
             sdk_user=sdk_user,
             hand_model_path=hand_model_path,
             sdk_log_level=sdk_log_level,
-            emf_poses_rate_divider=divider,
+            emf_poses_rate_hz=emf_poses_rate_hz,
             time_sync_max_age_s=time_sync_max_age_s,
             time_sync_max_rtt_ms=time_sync_max_rtt_ms,
             enabled_streams=enabled_streams,

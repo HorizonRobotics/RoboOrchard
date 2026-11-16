@@ -14,7 +14,6 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import ast
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -206,9 +205,9 @@ def test_publish_frequency_is_explicitly_float(launch):
         "hexfellow_chassis_pico_vr_teleop",
         "hexfellow_lift_pico_vr_teleop",
     ):
-        frequency = nodes[executable]["parameters"][0]["publish_hz"]
+        frequency = nodes[executable]["parameters"][0]["teleop_frequency_hz"]
         assert frequency.value_type is float
-        assert frequency.value.name == "publish_hz"
+        assert frequency.value.name == "teleop_frequency_hz"
 
 
 @pytest.mark.parametrize(
@@ -234,25 +233,10 @@ def test_speed_parameters_forward_defaults_and_overrides_as_float(
 
 def test_both_adapters_have_packaged_entrypoints():
     package_root = Path(__file__).resolve().parents[1]
-    tree = ast.parse((package_root / "setup.py").read_text())
-    setup_call = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "setup"
-    )
-    entrypoints = next(
-        ast.literal_eval(keyword.value)
-        for keyword in setup_call.keywords
-        if keyword.arg == "entry_points"
-    )["console_scripts"]
+    cmake = (package_root / "CMakeLists.txt").read_text()
     for component in ("chassis", "lift"):
         module = (
             f"robo_orchard_teleop_ros2.robot.hexfellow.{component}.pico_vr"
         )
-        assert (
-            f"hexfellow_{component}_pico_vr_teleop = {module}:main"
-            in entrypoints
-        )
+        assert f'"hexfellow_{component}_pico_vr_teleop|{module}"' in cmake
         assert (package_root / (module.replace(".", "/") + ".py")).is_file()

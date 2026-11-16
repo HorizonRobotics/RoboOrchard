@@ -4,7 +4,7 @@ An `ament_cmake` C++17 node using the separately installed official Robotiq
 `grippers` SDK **1.1.0**, not `ros2_control` or a ROS action driver. This
 package controls one serial 2F-85 with standard fingers in parallel mode.
 It remains independent of Pico and Franka; optional
-[combined teleoperation](../robo_orchard_teleop_ros2/README.md#franka-and-robotiq-combined-teleoperation)
+[teleoperation integration](../robo_orchard_teleop_ros2/README.md)
 is owned by the teleop package. No automatic activation or fault recovery
 occurs in the driver.
 

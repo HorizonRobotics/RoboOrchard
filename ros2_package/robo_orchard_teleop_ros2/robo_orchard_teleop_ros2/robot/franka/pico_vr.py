@@ -78,7 +78,7 @@ class FrankaPicoVRTeleOpNode(Node):
         self.declare_parameter("publish_activation", False)
         self.declare_parameter("activation_topic", "/teleop/activation/state")
         self.declare_parameter("recapture_service", "~/recapture_baseline")
-        self.declare_parameter("control_frequency_hz", 90.0)
+        self.declare_parameter("teleop_frequency_hz", 90.0)
         self.declare_parameter("stale_timeout_s", 0.3)
         self.declare_parameter("translation_scale_factor", 1.2)
         self.declare_parameter("pose_low_pass_alpha", 0.5)
@@ -102,11 +102,14 @@ class FrankaPicoVRTeleOpNode(Node):
         self.ee_link_name = self.get_parameter("ee_link_name").value
         self._ee_to_flange_matrix: np.ndarray | None = None
         self._tcp_transform_logged = False
-        self.control_frequency_hz = float(
-            self.get_parameter("control_frequency_hz").value
+        self.teleop_frequency_hz = float(
+            self.get_parameter("teleop_frequency_hz").value
         )
-        if self.control_frequency_hz <= 0.0:
-            raise ValueError("control_frequency_hz must be positive")
+        if (
+            not isfinite(self.teleop_frequency_hz)
+            or self.teleop_frequency_hz <= 0.0
+        ):
+            raise ValueError("teleop_frequency_hz must be positive and finite")
         self.stale_timeout_s = float(
             self.get_parameter("stale_timeout_s").value
         )
@@ -232,7 +235,7 @@ class FrankaPicoVRTeleOpNode(Node):
         )
 
         self.timer = self.create_timer(
-            1.0 / self.control_frequency_hz,
+            1.0 / self.teleop_frequency_hz,
             self._control_callback,
         )
 
@@ -240,7 +243,7 @@ class FrankaPicoVRTeleOpNode(Node):
             "Franka Pico teleop ready: side=%s, rate=%.1f Hz, joints=%s"
             % (
                 self.source_type,
-                self.control_frequency_hz,
+                self.teleop_frequency_hz,
                 self.teleop.ik_solver.get_joint_names(),
             )
         )

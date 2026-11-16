@@ -96,6 +96,11 @@ def generate_launch_description():
         default_value="",
         description="URDF path used by the Pico VR teleop IK solver.",
     )
+    teleop_frequency_arg = DeclareLaunchArgument(
+        "teleop_frequency_hz",
+        default_value="30.0",
+        description="IK and command publication frequency in Hz.",
+    )
     operator_input_source_arg = DeclareLaunchArgument(
         "operator_input_source",
         default_value="pico",
@@ -268,6 +273,10 @@ def generate_launch_description():
                     value_type=List[str],
                 ),
                 "urdf_path": LaunchConfiguration("urdf_path"),
+                "teleop_frequency_hz": ParameterValue(
+                    LaunchConfiguration("teleop_frequency_hz"),
+                    value_type=float,
+                ),
                 "ee_link_name": "link6",
                 "base_link_name": "base_link",
                 "reset_service": "/robot/control/reset",
@@ -315,6 +324,7 @@ def generate_launch_description():
             enable_mit_control_mode_arg,
             control_manager_config_file_arg,
             urdf_path_arg,
+            teleop_frequency_arg,
             match_tolerance_arg,
             operator_input_source_arg,
             keyboard_control_side_arg,

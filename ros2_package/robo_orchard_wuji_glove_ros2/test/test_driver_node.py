@@ -59,7 +59,7 @@ class _FakeSdkClient:
             serial_number="WG1KA001",
             device_name=config.device_name,
             firmware_version="0.11.0",
-            sdk_version="2026.7.21",
+            sdk_version="2026.10.26",
             handedness="right",
             ip_address="192.168.1.120",
             data_port=50000,
@@ -175,7 +175,7 @@ def test_driver_publishes_sdk_skeleton_and_expected_topics():
         ):
             assert topic in topics
         assert sdk.config.hand_side == "right"
-        assert sdk.config.emf_poses_rate_divider == 1
+        assert sdk.config.emf_poses_rate_hz == 0
         assert sdk.config.time_sync_max_age_s == 5.0
         assert sdk.config.time_sync_max_rtt_ms == 100.0
         assert sdk.config.sdk_user == "default"
@@ -468,14 +468,35 @@ def test_driver_without_skeleton_does_not_wait_for_skeleton_readiness():
         rclpy.shutdown()
 
 
-def test_teleop_minimal_profile_only_opens_skeleton_stream():
-    rclpy.init(args=["--ros-args", "-p", "stream_profile:=teleop_minimal"])
+@pytest.mark.parametrize("rate_hz", [0, 60])
+def test_teleop_minimal_profile_only_publishes_skeleton_stream(rate_hz):
+    rclpy.init(
+        args=[
+            "--ros-args",
+            "-p",
+            "stream_profile:=teleop_minimal",
+            "-p",
+            f"emf_poses_rate_hz:={rate_hz}",
+        ]
+    )
     sdk = _FakeSdkClient()
     node = WujiGloveDriverNode(sdk)
     try:
         assert sdk.config.enabled_streams == frozenset({"hand_skeleton"})
         assert not sdk.config.publish_transforms
         assert set(sdk.callbacks) == {"hand_skeleton"}
+        assert sdk.config.emf_poses_rate_hz == rate_hz
+        assert set(node._stream_publishers) == {"hand_skeleton"}
     finally:
         node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize("rate_hz", [-1, 65_536])
+def test_driver_rejects_out_of_range_emf_rate(rate_hz):
+    rclpy.init(args=["--ros-args", "-p", f"emf_poses_rate_hz:={rate_hz}"])
+    try:
+        with pytest.raises(ValueError, match="between 0 and 65535"):
+            WujiGloveDriverNode(_FakeSdkClient())
+    finally:
         rclpy.shutdown()

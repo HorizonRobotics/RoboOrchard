@@ -36,6 +36,7 @@ class WujiTeleopInstance:
     glove_frame_prefix: str
     glove_sdk_user: str
     algo_topic: str
+    hand_model: str = "wuji_hand"
 
 
 def _split_sides(value: str) -> list[str]:
@@ -59,8 +60,10 @@ def _split_optional(value: str, count: int, name: str) -> list[str]:
     return items
 
 
-def _split_broadcast(value: str, count: int, name: str) -> list[str]:
-    items = [item.strip() or "default" for item in value.split(",")]
+def _split_broadcast(
+    value: str, count: int, name: str, default: str = "default"
+) -> list[str]:
+    items = [item.strip() or default for item in value.split(",")]
     if len(items) == 1:
         return items * count
     if len(items) != count:
@@ -126,6 +129,7 @@ def _canonical_topic(value: str, namespace: str) -> str:
 def resolve_wuji_teleop_instances(
     *,
     hand_side: str,
+    hand_model: str = "wuji_hand",
     hand_name: str = "",
     hand_serial_number: str = "",
     glove_namespace: str = "",
@@ -135,14 +139,29 @@ def resolve_wuji_teleop_instances(
     glove_sdk_user: str = "default",
     algo_topic: str = "",
 ) -> list[WujiTeleopInstance]:
-    """Expand comma-separated launch values into validated instances."""
+    """Expand launch values, requiring serials for multiple Hand2 devices."""
     sides = _split_sides(hand_side)
     count = len(sides)
     side_counts = Counter(sides)
+    hand_models = _split_broadcast(
+        hand_model, count, "hand_model", default="wuji_hand"
+    )
+    if any(model not in ("wuji_hand", "wuji_hand_2") for model in hand_models):
+        raise ValueError(
+            "hand_model values must be 'wuji_hand' or 'wuji_hand_2'"
+        )
     hand_names = _split_optional(hand_name, count, "hand_name")
     hand_serials = _split_optional(
         hand_serial_number, count, "hand_serial_number"
     )
+    if hand_models.count("wuji_hand_2") > 1:
+        for index, model in enumerate(hand_models):
+            if model == "wuji_hand_2" and not hand_serials[index]:
+                raise ValueError(
+                    "hand_serial_number is required for every Hand2 when "
+                    "launching multiple Hand2 devices; "
+                    f"missing value at position {index + 1} ({sides[index]})"
+                )
     glove_namespaces = _split_optional(
         glove_namespace, count, "glove_namespace"
     )
@@ -211,6 +230,7 @@ def resolve_wuji_teleop_instances(
         instances.append(
             WujiTeleopInstance(
                 hand_side=side,
+                hand_model=hand_models[index],
                 hand_name=resolved_hand_name,
                 hand_serial_number=hand_serials[index],
                 glove_namespace=resolved_namespace,

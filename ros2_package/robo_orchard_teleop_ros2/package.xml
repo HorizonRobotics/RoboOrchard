@@ -18,10 +18,20 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 
-  <build_depend>rosidl_default_generators</build_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <build_depend>pybind11-dev</build_depend>
+  <build_depend>python3-dev</build_depend>
+  <depend>eigen</depend>
+  <depend>pinocchio</depend>
+  <depend>urdfdom</depend>
+  <depend>urdfdom_headers</depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-sshkeyboard-pip</exec_depend>
   <exec_depend>hex_bridge</exec_depend>
   <exec_depend>hex_device_msgs</exec_depend>
   <exec_depend>hex_device_ros_wrapper</exec_depend>
@@ -32,6 +42,7 @@
   <exec_depend>robo_orchard_piper_ros2</exec_depend>
   <exec_depend>robo_orchard_robotiq_ros2</exec_depend>
   <exec_depend>robo_orchard_wuji_glove_ros2</exec_depend>
+  <exec_depend>robo_orchard_wuji2_ros2</exec_depend>
   <exec_depend>wujihand_bringup</exec_depend>
   <exec_depend>xacro</exec_depend>
 
@@ -40,10 +51,10 @@
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
-
-  <member_of_group>rosidl_interface_packages</member_of_group>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-ikpy-pip</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

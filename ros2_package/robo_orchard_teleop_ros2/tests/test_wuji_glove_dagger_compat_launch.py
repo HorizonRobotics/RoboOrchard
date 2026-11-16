@@ -39,6 +39,7 @@ def _load_module():
 def _context(**overrides):
     values = {
         "hand_side": "right",
+        "hand_model": "wuji_hand",
         "hand_name": "",
         "hand_serial_number": "",
         "glove_namespace": "",
@@ -124,4 +125,16 @@ def test_launch_defaults_instance_arguments_to_side_derivation():
     ):
         assert arguments[name].default_value == ""
     assert arguments["glove_stream_profile"].default_value == "teleop_minimal"
+    assert arguments["hand_model"].default_value == "wuji_hand"
+    for name, default in (
+        ("hand2_connect_timeout", "10.0"),
+        ("hand2_auto_enable", "true"),
+        ("hand2_publish_joint_diagnostics", "true"),
+        ("hand2_publish_imu", "true"),
+        ("hand2_publish_fingertip_tactile", "false"),
+        ("hand2_reset_joint_position", str([0.0] * 20)),
+        ("hand2_reset_duration_s", "2.0"),
+        ("hand2_reset_timeout_s", "5.0"),
+    ):
+        assert arguments[name].default_value == default
     assert "replay_time_s" not in arguments

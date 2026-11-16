@@ -81,7 +81,7 @@ class MarvinPicoVRTeleOpNode(Node):
         self.declare_parameter(
             "right_ee_link_name", MARVIN_EE_LINK_NAMES["right"]
         )
-        self.declare_parameter("control_frequency_hz", 30.0)
+        self.declare_parameter("teleop_frequency_hz", 30.0)
         self.declare_parameter("translation_scale_factor", 1.0)
         self.declare_parameter("pose_low_pass_alpha", 0.25)
         self.declare_parameter("operator_input_source", "pico")
@@ -104,8 +104,8 @@ class MarvinPicoVRTeleOpNode(Node):
             "left": str(self.get_parameter("left_ee_link_name").value),
             "right": str(self.get_parameter("right_ee_link_name").value),
         }
-        control_frequency_hz = float(
-            self.get_parameter("control_frequency_hz").value
+        teleop_frequency_hz = float(
+            self.get_parameter("teleop_frequency_hz").value
         )
         translation_scale_factor = float(
             self.get_parameter("translation_scale_factor").value
@@ -129,13 +129,8 @@ class MarvinPicoVRTeleOpNode(Node):
         self._keyboard_activation_timeout_s = float(
             self.get_parameter("keyboard_activation_timeout_s").value
         )
-        if (
-            not math.isfinite(control_frequency_hz)
-            or control_frequency_hz <= 0
-        ):
-            raise ValueError(
-                "control_frequency_hz must be positive and finite"
-            )
+        if not math.isfinite(teleop_frequency_hz) or teleop_frequency_hz <= 0:
+            raise ValueError("teleop_frequency_hz must be positive and finite")
         if (
             not math.isfinite(translation_scale_factor)
             or translation_scale_factor <= 0
@@ -263,14 +258,14 @@ class MarvinPicoVRTeleOpNode(Node):
             )
 
         self.timer = self.create_timer(
-            1.0 / control_frequency_hz,
+            1.0 / teleop_frequency_hz,
             self._control_callback,
         )
         self.get_logger().info(
             "Marvin teleop ready: rate=%.1f Hz, base=%s, input=%s, "
             "keyboard_side=%s, urdf=%s"
             % (
-                control_frequency_hz,
+                teleop_frequency_hz,
                 self.base_link_name,
                 self._operator_input_source,
                 self._keyboard_control_side,

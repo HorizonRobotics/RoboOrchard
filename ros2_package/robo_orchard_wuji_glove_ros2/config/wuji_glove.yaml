@@ -7,7 +7,7 @@
     sdk_user: "default"
     hand_model_path: ""
     sdk_log_level: "warn"
-    emf_poses_rate_divider: 1
+    emf_poses_rate_hz: 0
     reconnect_interval_s: 2.0
     critical_stream_timeout_s: 1.0
     time_sync_max_age_s: 5.0
@@ -28,6 +28,8 @@
 /**/wuji_glove_retarget:
   ros__parameters:
     hand_side: "right"
+    # Target robot model: wuji_hand (default) or wuji_hand_2.
+    # Independent of the driver's human calibration hand_model_path.
     hand_model: "wuji_hand"
     min_joint_confidence: 0.5
     tracking_reset_gap_s: 0.5

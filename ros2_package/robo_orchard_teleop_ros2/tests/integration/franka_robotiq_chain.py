@@ -143,7 +143,7 @@ def main() -> None:
                 Parameter("joint_state_topic", value="/smoke/joints"),
                 Parameter("ee_pose_topic", value="/smoke/pose"),
                 Parameter("robot_state_topic", value="/smoke/robot_state"),
-                Parameter("control_frequency_hz", value=30.0),
+                Parameter("teleop_frequency_hz", value=30.0),
             ],
         )
         cleanup.callback(arm.destroy_node)

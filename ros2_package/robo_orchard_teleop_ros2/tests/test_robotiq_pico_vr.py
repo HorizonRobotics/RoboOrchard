@@ -390,7 +390,10 @@ def test_candidate_and_heartbeat_stamps_increase_on_same_tick(source):
     "parameter,value",
     [
         ("source_type", "both"),
-        ("publish_hz", 0.0),
+        ("teleop_frequency_hz", 0.0),
+        ("teleop_frequency_hz", -1.0),
+        ("teleop_frequency_hz", float("nan")),
+        ("teleop_frequency_hz", float("inf")),
         ("stale_timeout_s", -1.0),
         ("match_dwell_s", float("nan")),
         ("match_tolerance_m", -1.0),
@@ -405,3 +408,13 @@ def test_invalid_parameters(source, parameter, value):
                 ros_stubs._Parameter(parameter, value),
             ]
         )
+
+
+@pytest.mark.parametrize("frequency", [30.0, 60.0, 90.0])
+def test_configured_control_rate(source, frequency):
+    node = source.module.RobotiqPicoVRTeleOpNode(
+        parameter_overrides=[
+            ros_stubs._Parameter("teleop_frequency_hz", frequency)
+        ]
+    )
+    assert node.timers[0].period_s == pytest.approx(1 / frequency)

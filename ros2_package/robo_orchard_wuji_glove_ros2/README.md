@@ -3,7 +3,7 @@
 This package publishes Wuji Glove streams and retargets the 21-point hand
 skeleton to a 20-joint `sensor_msgs/msg/JointState` command candidate. The
 teleop runtime sends that candidate through the global Control Manager before
-the selected command reaches `wujihandros2` 1.1.0.
+the selected command reaches the configured Wuji Hand1 or Wuji Hand2 driver.
 
 ## Repository Layout
 
@@ -77,64 +77,82 @@ configured `/left_hand_algo_cmd` and `/right_hand_algo_cmd` topics.
 
 ## Vendor SDK
 
-The nodes use the official Wuji Python SDK directly. The tested and pinned
-version is `wuji-sdk==2026.7.21`; install it into the same Python environment
+Install the official `wuji-sdk==2026.10.26` into the same Python environment
 used by ROS 2 before building or launching:
 
 ```bash
-python3 -m pip install "wuji-sdk==2026.7.21"
+python3 -m pip install "wuji-sdk==2026.10.26"
 ```
 
-`wuji_glove_driver_node` uses `SdkManager` to select a glove by serial number
-or handedness, opens callback subscriptions, and closes every subscription
-before disconnecting. `wuji_glove_retarget_node` uses
-`RetargetSession.for_hand(HandModel.WujiHand, ...)` and publishes the returned
-firmware-order 20-vector without additional joint reordering.
+The `hand_model` parameter / standalone launch argument selects the target:
 
-An empty `serial_number` scans the SDK discovery results, filters them to Wuji
-Gloves of the requested handedness, and conservatively retains matching devices
-whose type is unavailable during discovery. Selection is deterministic only
-when exactly one candidate is discoverable. Zero or multiple candidates fail
-the connection and are reported in the connection diagnostics; configure an
-explicit serial number whenever multiple same-side candidates are present.
-Once selected, the driver connects by serial number and validates the resulting
-device type and handedness before opening subscriptions.
+| `hand_model` | Target | Command joint names |
+|---|---|---|
+| `wuji_hand` (default) | Wuji Hand1 | `left_finger1_joint1` … `left_finger5_joint4`, or `right_` equivalents |
+| `wuji_hand_2` | Wuji Hand2 | Official `l_` / `r_` names in firmware order |
 
-The SDK performs an initial clock synchronization inside `connect()` and then
-resynchronizes in the background. Before opening subscriptions, the wrapper
-also calls `sync_time()` and validates its timestamp and round-trip result. A
-failed or invalid synchronization aborts initialization and follows the normal
-disconnect/retry path; callbacks remain unable to publish until connection
-initialization has completed. `time_sync_max_age_s` and
-`time_sync_max_rtt_ms` bound the accepted result. When skeleton output is
-enabled, the driver remains in WARMUP until its first valid frame and reconnects
-if `critical_stream_timeout_s` elapses without another valid frame.
+See the [Wuji Hand2 command interface](../robo_orchard_wuji2_ros2/README.md#state-and-command-contract)
+for joint names and ordering. Unknown models fail startup.
+
+For standalone Wuji Hand2 retargeting:
+
+```bash
+ros2 launch robo_orchard_wuji_glove_ros2 wuji_glove.launch.py \
+  hand_side:=right hand_model:=wuji_hand_2 \
+  command_topic:=/hand_right/control/override
+```
+
+This launches the glove and retargeter, not a hand driver or Control Manager.
+Use a matching separately configured Hand 2 driver and managed command path;
+the compatibility teleop launches also accept `hand_model:=wuji_hand_2` and
+select the matching driver. See the
+[managed teleoperation launches](../robo_orchard_teleop_ros2/README.md#quick-start).
+
+SDK 2026.10.26 removes the `emf_poses_rate_divider` resource. Replace old
+`emf_poses_rate_divider` configuration with `emf_poses_rate_hz` (integer
+0–65535). The default `0` leaves the SDK's default rate unchanged.
+For a previous non-default divider, choose
+an explicit target frequency in Hz based on your device's native rate; the
+driver does not guess the native rate or translate dividers.
+
+Rates are quantized by the device and shared by subscribers (last writer wins).
+The setting also affects skeleton/retargeting input, even when EMF ROS output
+is disabled, and is reapplied on reconnect. Unsupported rate control fails
+connection initialization. Glove firmware 1.0.4 has not been hardware-validated.
+
+Without an explicit serial number, exactly one glove must match the requested
+side. Use explicit serial numbers for multiple same-side devices.
+`time_sync_max_age_s` and `time_sync_max_rtt_ms` bound accepted clock
+synchronization; failures cause reconnection. With skeleton output enabled,
+`critical_stream_timeout_s` controls reconnection after missing valid frames.
 
 The retargeter requires all 21 joints to meet `min_joint_confidence`. Low-quality
 frames produce no robot command and expose a tracking-lost diagnostics state.
-Tracking loss or a gap longer than `tracking_reset_gap_s` resets the stateful SDK
-retarget session before commands resume.
+The node default is `0.5` for both models. The standalone launch
+accepts `min_joint_confidence:=0.0` (or another value in `[0, 1]`) as an explicit
+retarget-only override. Leaving the launch argument empty preserves the value
+in `config_file`, or the node default when no value is configured. The shared
+Wuji teleop, DAgger, and Marvin keyboard launches expose the same override as
+`glove_min_joint_confidence`, shared across all Glove instances. Setting `0.0`
+bypasses only the low-confidence gate; invalid shapes, non-finite data, and
+confidence values outside `[0, 1]` remain rejected. This is a startup setting,
+not a dynamic runtime parameter.
+After tracking loss or a gap longer than `tracking_reset_gap_s`, retargeting
+restarts before commands resume.
 
 The default SDK user is recommended for teleoperation by the Wuji
 documentation. Set `sdk_user` to a user ID or a unique display name only when
-using a user-specific calibrated hand model. The node restores the process's
-previous SDK user when it disconnects.
+using a user-specific calibrated hand model.
 
+`hand_model_path` selects the human calibration model, not the target robot.
 SDK-managed glove calibration is stored below `~/.wuji/sdk/users/`. Mount the
 host's `.wuji` directory at the container user's `~/.wuji`, set
 `hand_model_path` to the mounted users directory, and pass `sdk_user` as either
-a user ID or an exact display name. The driver resolves that user through the
-SDK manager, then selects `<hand_model_path>/<user-id>/models/right_hand.urdf`
-or `left_hand.urdf` from `hand_side`.
-
-When `hand_model_path` is the SDK's own managed users directory, the driver
-switches to the resolved named user before connecting and lets the SDK load that
-managed model itself. It does not pass an SDK-managed path through the external
-override setter. A users directory mounted elsewhere is also supported: after
-resolving the SDK user, the selected URDF is applied through the official
-`glove.hand_model_path()` resource. In both cases the named user must exist in
-the SDK manager loaded by the process. An empty `hand_model_path` preserves the
-SDK's normal user-selection behavior.
+a user ID or an exact display name. The user must exist in the SDK manager.
+The model is `<hand_model_path>/<user-id>/models/right_hand.urdf` or
+`left_hand.urdf`, according to `hand_side`. A users directory mounted elsewhere
+is also supported. Leave `hand_model_path` empty to use the SDK's normal model
+selection.
 
 ## Launch
 
@@ -173,9 +191,10 @@ ros2 launch robo_orchard_teleop_ros2 wuji_glove_teleop_compat.launch.py \
 `hand_name`, `hand_serial_number`, `glove_namespace`,
 `glove_serial_number`, `glove_device_name`, and `glove_frame_prefix` are
 per-instance arguments. `glove_namespace` values are normalized to absolute ROS
-names before uniqueness checks. `glove_sdk_user` accepts either one value shared
-by all instances or one value per instance. The DAgger launch also treats
-`algo_topic` as per-instance. Each other non-empty argument must contain the
+names before uniqueness checks. `hand_model` and `glove_sdk_user` accept either
+one value shared by all instances or one value per instance. The DAgger launch
+also treats `algo_topic` as per-instance. Each other non-empty per-instance
+argument must contain the
 same number of comma-separated values as `hand_side`; an empty position keeps
 that instance's derived default.
 

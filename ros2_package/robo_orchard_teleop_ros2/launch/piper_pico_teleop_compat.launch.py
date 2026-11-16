@@ -82,6 +82,11 @@ def generate_launch_description():
         default_value="",
         description="URDF path used by the Pico VR teleop solver.",
     )
+    teleop_frequency_arg = DeclareLaunchArgument(
+        "teleop_frequency_hz",
+        default_value="30.0",
+        description="IK and command publication frequency in Hz.",
+    )
     operator_input_source_arg = DeclareLaunchArgument(
         "operator_input_source",
         default_value="pico",
@@ -144,6 +149,10 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             {
+                "teleop_frequency_hz": ParameterValue(
+                    LaunchConfiguration("teleop_frequency_hz"),
+                    value_type=float,
+                ),
                 "left_joint_names": ParameterValue(
                     LaunchConfiguration("left_joint_names"),
                     value_type=List[str],
@@ -294,6 +303,7 @@ def generate_launch_description():
             publish_ee_tf_arg,
             enable_mit_control_mode_arg,
             urdf_path_arg,
+            teleop_frequency_arg,
             operator_input_source_arg,
             keyboard_control_side_arg,
             keyboard_activation_topic_arg,

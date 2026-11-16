@@ -53,6 +53,7 @@ def generate_launch_description():
             "robo_orchard_teleop_ros2", "marvin_pico_teleop.launch.py"
         ),
         launch_arguments={
+            "teleop_frequency_hz": LaunchConfiguration("teleop_frequency_hz"),
             "urdf_path": LaunchConfiguration("urdf_path"),
             "driver_config_file": LaunchConfiguration("driver_config_file"),
             "auto_enable_side": LaunchConfiguration("auto_enable_side"),
@@ -80,6 +81,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "teleop_frequency_hz",
+                default_value="30.0",
+                description="Marvin IK and command frequency in Hz.",
+            ),
             DeclareLaunchArgument(
                 "urdf_path",
                 default_value=PathJoinSubstitution(

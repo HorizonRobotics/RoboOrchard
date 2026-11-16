@@ -33,7 +33,7 @@ def source(monkeypatch):
 
 
 @pytest.fixture
-def gate(monkeypatch, tmp_path):
+def gate(monkeypatch, tmp_path, request):
     import test_pico_vr_node as ros_stubs
 
     diagnostics = types.ModuleType("diagnostic_msgs.msg")
@@ -84,6 +84,9 @@ def gate(monkeypatch, tmp_path):
     node = module.EngagementNode(
         parameter_overrides=[
             ros_stubs._Parameter("config_file", str(config_path)),
+            ros_stubs._Parameter(
+                "teleop_frequency_hz", getattr(request, "param", 30.0)
+            ),
         ]
     )
     clock = SimpleNamespace(ros=10.0, local=1.0)
@@ -192,6 +195,54 @@ def assert_closed(gate):
     gate.node._tick()
     assert [len(pub.messages) for pub in gate.node._outputs.values()] == before
     assert gate.node._phase == "idle"
+
+
+@pytest.mark.parametrize("gate", [30.0, 60.0, 90.0], indirect=True)
+def test_final_command_output_preserves_teleop_frequency(gate):
+    gate.engage()
+    outputs = gate.node._outputs
+    for publisher in outputs.values():
+        publisher.messages.clear()
+    frequency = gate.node.teleop_frequency_hz
+    timer = gate.node.timers[0]
+    assert timer.period_s == pytest.approx(1.0 / frequency)
+    # Simulate one second of arm input at the configured rate, gripper input
+    # at 30 Hz, and the actual forwarding timer on a shared 180 Hz clock.
+    arm_interval = round(180 / frequency)
+    timer_interval = round(180 * timer.period_s)
+    for step in range(1, 181):
+        gate.advance(1.0 / 180)
+        gate.state("manager", "takeover")
+        gate.state("activation", 2)
+        gate.state("match", (True, True))
+        if step % arm_interval == 0:
+            gate.candidate("a")
+        if step % 6 == 0:
+            gate.candidate("b")
+        if step % timer_interval == 0:
+            timer.callback()
+    assert gate.node._phase == "active"
+    assert len(outputs["/group/a"].messages) == frequency
+    assert len(outputs["/group/b"].messages) == frequency
+    arm_stamps = [
+        gate.node._stamp(message) for message in outputs["/group/a"].messages
+    ]
+    assert len(set(arm_stamps)) == frequency
+    # Faster forwarding repeats cached gripper commands, not new samples.
+    gripper_stamps = {
+        gate.node._stamp(message) for message in outputs["/group/b"].messages
+    }
+    assert len(gripper_stamps) <= 31
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_teleop_frequency_requires_positive_finite_value(gate, value):
+    with pytest.raises(ValueError, match="teleop_frequency_hz"):
+        gate.module.EngagementNode(
+            parameter_overrides=[
+                gate.ros_stubs._Parameter("teleop_frequency_hz", value),
+            ]
+        )
 
 
 @pytest.mark.parametrize("failure", ["vr", "joints", "status", "timeout"])

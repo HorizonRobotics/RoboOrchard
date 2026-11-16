@@ -38,12 +38,31 @@ class _Subscription:
         self.closed = True
 
 
+class _RateSubscription:
+    def __init__(self, resource):
+        self.resource = resource
+        self.closed = False
+
+    def set_rate(self, frequency_hz):
+        assert any(not item.closed for item in self.resource.subscriptions)
+        self.resource.rate_requests.append(frequency_hz)
+        if self.resource.rate_error is not None:
+            raise self.resource.rate_error
+        return frequency_hz
+
+    def close(self):
+        self.closed = True
+
+
 class _Resource:
     def __init__(self, value=None):
         self.value = value
         self.subscriptions = []
         self.set_values = []
         self.subscribe_error = None
+        self.rate_subscriptions = []
+        self.rate_requests = []
+        self.rate_error = None
 
     def get(self):
         return self.value
@@ -51,6 +70,11 @@ class _Resource:
     def set(self, value):
         self.set_values.append(value)
         self.value = value
+
+    def subscribe(self):
+        subscription = _RateSubscription(self)
+        self.rate_subscriptions.append(subscription)
+        return subscription
 
     def subscribe_with_callback(self, callback, on_error=None):
         subscription = _Subscription(callback, on_error)
@@ -92,7 +116,6 @@ class _Glove:
                 "ip": _Resource("192.168.1.120"),
                 "port": _Resource(50000),
                 "hand_side": _Resource("right"),
-                "emf_poses_rate_divider": _Resource(1),
                 "hand_model_path": _Resource("/stale/model.urdf"),
             }
         )
@@ -222,7 +245,7 @@ def _config(**overrides):
         "sdk_user": "default",
         "hand_model_path": "",
         "sdk_log_level": "warn",
-        "emf_poses_rate_divider": 4,
+        "emf_poses_rate_hz": 0,
         "time_sync_max_age_s": 5.0,
         "time_sync_max_rtt_ms": 100.0,
         "enabled_streams": frozenset(
@@ -256,7 +279,7 @@ def _write_hand_model_root(root, hand_side="right"):
 
 def test_client_connects_by_side_and_opens_requested_streams():
     sdk, manager, glove = _sdk_and_manager()
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     callbacks = {
         name: lambda frame: None
         for name in (
@@ -274,14 +297,17 @@ def test_client_connects_by_side_and_opens_requested_streams():
     }
     errors = []
 
-    info = client.connect(_config(), callbacks, errors.append)
+    info = client.connect(
+        _config(emf_poses_rate_hz=100), callbacks, errors.append
+    )
 
     _assert_connect_args(manager, "WG1KA001")
     assert manager.scan_calls == 1
-    assert glove.resources["emf_poses_rate_divider"].value == 4
+    assert glove.resources["emf_poses"].rate_requests == [100]
+    assert glove.resources["emf_poses"].rate_subscriptions[0].closed
     assert client.connected
     assert info.serial_number == "WG1KA001"
-    assert info.sdk_version == "2026.7.21"
+    assert info.sdk_version == "2026.10.26"
     assert glove.sync_calls == 1
     assert len(client._subscriptions) == 10
 
@@ -299,9 +325,74 @@ def test_client_connects_by_side_and_opens_requested_streams():
     assert errors == ["tactile: closed"]
 
 
+@pytest.mark.parametrize(
+    "enabled_streams",
+    [frozenset(), frozenset({"hand_skeleton"}), frozenset({"emf_poses"})],
+)
+def test_default_rate_adds_no_subscription_or_rate_request(enabled_streams):
+    sdk, _, glove = _sdk_and_manager()
+    client = WujiSdkClient(sdk)
+    callbacks = {name: lambda frame: None for name in enabled_streams}
+    try:
+        client.connect(
+            _config_without_streams(enabled_streams=enabled_streams),
+            callbacks,
+            lambda message: None,
+        )
+        assert len(client._subscriptions) == len(enabled_streams)
+        assert not glove.resources["emf_poses"].rate_subscriptions
+        assert not glove.resources["emf_poses"].rate_requests
+    finally:
+        client.disconnect()
+
+
+def test_custom_rate_keeps_internal_emf_callback_and_reapplies_on_reconnect():
+    sdk, _, glove = _sdk_and_manager()
+    client = WujiSdkClient(sdk)
+    received = []
+    config = _config_without_streams(
+        enabled_streams=frozenset({"hand_skeleton"}), emf_poses_rate_hz=60
+    )
+    try:
+        for expected_requests in ([60], [60, 60]):
+            client.connect(
+                config, {"hand_skeleton": received.append}, received.append
+            )
+            emf = glove.resources["emf_poses"]
+            assert emf.rate_requests == expected_requests
+            assert all(item.closed for item in emf.rate_subscriptions)
+            assert len(client._subscriptions) == 2
+            assert not emf.subscriptions[-1].closed
+            emf.subscriptions[-1].callback("not a published EMF frame")
+            assert not received
+    finally:
+        subscriptions = list(client._subscriptions)
+        client.disconnect()
+    assert all(item.closed for item in subscriptions)
+
+
+def test_rate_failure_closes_temporary_subscription_and_connection():
+    sdk, manager, glove = _sdk_and_manager()
+    emf = glove.resources["emf_poses"]
+    emf.rate_error = RuntimeError("unsupported rate control")
+    client = WujiSdkClient(sdk)
+    with pytest.raises(RuntimeError, match="unsupported rate control"):
+        client.connect(
+            _config_without_streams(emf_poses_rate_hz=60),
+            {},
+            lambda message: None,
+        )
+    assert emf.rate_subscriptions[0].closed
+    assert all(item.closed for item in emf.subscriptions)
+    assert not client._subscriptions
+    assert not client.connected
+    assert manager.disconnected == ["glove"]
+    assert manager.current_user()["user_id"] == "prior-user"
+
+
 def test_client_selects_serial_number_and_named_sdk_user():
     sdk, manager, glove = _sdk_and_manager()
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     client.connect(
         _config(
@@ -328,7 +419,7 @@ def test_client_requires_exactly_one_matching_glove(serials):
         Namespace(sn=serial, device_type=sdk.DeviceType.WujiGlove)
         for serial in serials
     ]
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(
         RuntimeError,
@@ -348,7 +439,7 @@ def test_client_filters_other_device_types_before_selecting_by_side():
     manager.scan_devices.append(
         Namespace(sn="WH2KA001", device_type=sdk.DeviceType.WujiHand2)
     )
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     client.connect(_config_without_streams(), {}, lambda message: None)
 
@@ -361,7 +452,7 @@ def test_client_accepts_unique_untyped_glove_candidate():
     manager.scan_devices = [
         Namespace(sn="WG1KA001", device_type=sdk.DeviceType.Unknown)
     ]
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     client.connect(_config_without_streams(), {}, lambda message: None)
 
@@ -374,7 +465,7 @@ def test_client_requires_serial_for_known_and_untyped_candidates():
     manager.scan_devices.append(
         Namespace(sn="WG1KA002", device_type=sdk.DeviceType.Unknown)
     )
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(
         RuntimeError,
@@ -389,7 +480,7 @@ def test_client_requires_serial_for_known_and_untyped_candidates():
 def test_client_reports_failure_for_selected_glove_serial():
     sdk, manager, _ = _sdk_and_manager()
     manager.connect_error = RuntimeError("selected device disappeared")
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(
         RuntimeError, match="selected right Wuji Glove"
@@ -407,7 +498,7 @@ def test_client_rejects_invalid_time_sync_before_subscribing():
         round_trip_us=1_000,
         synced_at_us=0,
     )
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(RuntimeError, match="invalid time synchronization"):
         client.connect(_config(), {}, lambda message: None)
@@ -436,7 +527,7 @@ def test_client_rejects_invalid_time_sync_before_subscribing():
 def test_client_rejects_stale_or_high_rtt_time_sync(sync_result):
     sdk, manager, glove = _sdk_and_manager()
     glove.sync_result = sync_result
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(RuntimeError, match="invalid time synchronization"):
         client.connect(_config(), {}, lambda message: None)
@@ -448,7 +539,7 @@ def test_client_rejects_stale_or_high_rtt_time_sync(sync_result):
 @pytest.mark.parametrize("sdk_user", ["alice-id", "Alice"])
 def test_client_resolves_registry_user_and_external_model(tmp_path, sdk_user):
     sdk, manager, glove = _sdk_and_manager()
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     model_root = tmp_path / "users"
     hand_model = _write_hand_model_root(model_root)
 
@@ -475,7 +566,7 @@ def test_client_uses_sdk_managed_model_without_external_override(
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     sdk, manager, glove = _sdk_and_manager()
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     model_root = tmp_path / ".wuji" / "sdk" / "users"
     hand_model = _write_hand_model_root(model_root)
 
@@ -496,7 +587,7 @@ def test_client_uses_sdk_managed_model_without_external_override(
 
 def test_client_rejects_default_user_for_external_model(tmp_path):
     sdk, manager, _ = _sdk_and_manager()
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     model_root = tmp_path / "users"
     _write_hand_model_root(model_root)
 
@@ -519,7 +610,7 @@ def test_client_resolves_left_hand_model(tmp_path):
     manager.scan_devices = [
         Namespace(sn="WG1JA001", device_type=sdk.DeviceType.WujiGlove)
     ]
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     model_root = tmp_path / "users"
     hand_model = _write_hand_model_root(model_root, hand_side="left")
 
@@ -541,7 +632,7 @@ def test_client_resolves_left_hand_model(tmp_path):
 def test_client_fails_when_stream_ends_during_subscription():
     sdk, manager, glove = _sdk_and_manager()
     glove.resources["tactile"].subscribe_error = "closed"
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
     errors = []
 
     with pytest.raises(RuntimeError, match="tactile: closed"):
@@ -571,7 +662,7 @@ def test_client_fails_when_stream_ends_during_subscription():
 def test_client_disconnects_device_with_unexpected_type():
     sdk, manager, _ = _sdk_and_manager()
     manager.glove = Namespace(is_connected=True)
-    client = WujiSdkClient(sdk, sdk_version="2026.7.21")
+    client = WujiSdkClient(sdk, sdk_version="2026.10.26")
 
     with pytest.raises(RuntimeError, match="not a Wuji Glove"):
         client.connect(_config_without_streams(), {}, lambda message: None)

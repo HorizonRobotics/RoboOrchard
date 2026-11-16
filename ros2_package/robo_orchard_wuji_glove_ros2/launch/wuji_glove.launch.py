@@ -14,6 +14,8 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import Any
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -39,6 +41,35 @@ def _set_side_defaults(context):
         SetLaunchConfiguration(name, default)
         for name, default in defaults.items()
         if not LaunchConfiguration(name).perform(context).strip()
+    ]
+
+
+def _create_retarget_node(context: Any) -> list[Node]:
+    overrides = {
+        name: ParameterValue(LaunchConfiguration(name), value_type=str)
+        for name in ("hand_side", "hand_model")
+    }
+    threshold = LaunchConfiguration("min_joint_confidence").perform(context)
+    if threshold.strip():
+        overrides["min_joint_confidence"] = ParameterValue(
+            LaunchConfiguration("min_joint_confidence"), value_type=float
+        )
+    return [
+        Node(
+            package="robo_orchard_wuji_glove_ros2",
+            executable="wuji_glove_retarget_node",
+            name="wuji_glove_retarget",
+            namespace=LaunchConfiguration("glove_namespace"),
+            output="screen",
+            emulate_tty=True,
+            parameters=[LaunchConfiguration("config_file"), overrides],
+            remappings=[
+                (
+                    "retargeted_joint_commands",
+                    LaunchConfiguration("command_topic"),
+                ),
+            ],
+        )
     ]
 
 
@@ -109,7 +140,19 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "hand_model",
             default_value="wuji_hand",
-            description="Retarget model. This integration uses wuji_hand.",
+            description=(
+                "Target robot hand: wuji_hand (first generation) or "
+                "wuji_hand_2. Independent of human hand_model_path."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "min_joint_confidence",
+            default_value="",
+            description=(
+                "Optional retarget confidence threshold in [0, 1]. Empty "
+                "preserves config_file (node default 0.5); 0.0 bypasses only "
+                "the low-confidence gate."
+            ),
         ),
         DeclareLaunchArgument(
             "command_topic",
@@ -133,9 +176,6 @@ def generate_launch_description():
     sdk_user = ParameterValue(LaunchConfiguration("sdk_user"), value_type=str)
     hand_model_path = ParameterValue(
         LaunchConfiguration("hand_model_path"), value_type=str
-    )
-    hand_model = ParameterValue(
-        LaunchConfiguration("hand_model"), value_type=str
     )
     stream_profile = ParameterValue(
         LaunchConfiguration("stream_profile"), value_type=str
@@ -162,24 +202,6 @@ def generate_launch_description():
         ],
     )
 
-    retarget = Node(
-        package="robo_orchard_wuji_glove_ros2",
-        executable="wuji_glove_retarget_node",
-        name="wuji_glove_retarget",
-        namespace=LaunchConfiguration("glove_namespace"),
-        output="screen",
-        emulate_tty=True,
-        parameters=[
-            LaunchConfiguration("config_file"),
-            {"hand_side": hand_side, "hand_model": hand_model},
-        ],
-        remappings=[
-            (
-                "retargeted_joint_commands",
-                LaunchConfiguration("command_topic"),
-            ),
-        ],
-    )
-
     side_defaults = OpaqueFunction(function=_set_side_defaults)
+    retarget = OpaqueFunction(function=_create_retarget_node)
     return LaunchDescription([*arguments, side_defaults, driver, retarget])

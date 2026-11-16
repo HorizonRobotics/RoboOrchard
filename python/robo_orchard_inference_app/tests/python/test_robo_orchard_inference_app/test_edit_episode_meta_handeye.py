@@ -66,9 +66,6 @@ _roslibpy_stub.Topic = object
 _roslibpy_stub.core = types.SimpleNamespace(RosTimeoutError=RuntimeError)
 sys.modules.setdefault("roslibpy", _roslibpy_stub)
 
-_psutil_stub = types.ModuleType("psutil")
-sys.modules.setdefault("psutil", _psutil_stub)
-
 _polling2_stub = types.ModuleType("polling2")
 _polling2_stub.TimeoutException = RuntimeError
 _polling2_stub.poll = lambda *args, **kwargs: None

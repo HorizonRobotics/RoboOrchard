@@ -32,7 +32,37 @@ from robo_orchard_wuji_glove_ros2.conversions import (
     to_ros_time,
     transforms_to_messages,
 )
-from robo_orchard_wuji_glove_ros2.sdk_client import GloveDeviceInfo
+from robo_orchard_wuji_glove_ros2.sdk_client import (
+    GloveDeviceInfo,
+    load_wuji_sdk,
+)
+
+
+def test_real_sdk_emf_and_imu_frames_preserve_timestamp_and_values():
+    sdk, _ = load_wuji_sdk()
+    header = sdk.FrameHeader(7, 1_700_000_000_123_456, "r_wrist")
+    pose = sdk.Pose([0.01, 0.02, 0.03], sdk.Quaternion(0.0, 0.0, 0.0, 1.0))
+    frame = sdk.EmfPoseArray(
+        header, [sdk.EmfPose(pose, 0.9) for _ in range(5)]
+    )
+    poses = poses_to_message(frame, "operator")
+    assert poses.sequence == 7
+    assert poses.header.stamp.sec == 1_700_000_000
+    assert poses.header.stamp.nanosec == 123_456_000
+    assert poses.header.frame_id == "operator/r_wrist"
+    assert len(poses.poses) == 5
+    assert poses.poses[0].pose.position.x == pytest.approx(0.01)
+    assert poses.poses[0].confidence == pytest.approx(0.9)
+    raw_imu = sdk.ImuData.raw(
+        header,
+        sdk.Vector3F64(1.0, 2.0, 3.0),
+        sdk.Vector3F64(4.0, 5.0, 6.0),
+    )
+    imu = imu_to_message(raw_imu, "operator")
+    assert imu.header == poses.header
+    assert imu.angular_velocity.x == 1.0
+    assert imu.linear_acceleration.z == 6.0
+    assert imu.orientation_covariance[0] == -1.0
 
 
 def _header(sequence=7, timestamp_us=1_700_000_000_123_456):

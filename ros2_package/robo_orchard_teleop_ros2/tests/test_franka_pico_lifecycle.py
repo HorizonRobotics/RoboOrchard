@@ -226,6 +226,25 @@ def test_reset_completion_after_destroy_does_not_touch_node():
     )
 
 
+@pytest.mark.parametrize(
+    "frequency", ["0.0", "-1.0", "float('nan')", "float('inf')"]
+)
+def test_node_rejects_invalid_teleop_frequency(frequency):
+    _run_script(
+        f"""
+        pico_vr.os.path.isfile = lambda path: True
+        try:
+            pico_vr.FrankaPicoVRTeleOpNode(parameter_overrides=[
+                ros_stubs._Parameter("teleop_frequency_hz", {frequency}),
+            ])
+        except ValueError as error:
+            assert "teleop_frequency_hz" in str(error)
+        else:
+            raise AssertionError("invalid frequency accepted")
+        """
+    )
+
+
 def test_node_status_subscription_and_named_joint_command_contract():
     _run_script(
         """
@@ -241,6 +260,14 @@ def test_node_status_subscription_and_named_joint_command_contract():
         ros_stubs._VRTeleOp.__init__ = teleop_init
         pico_vr.os.path.isfile = lambda path: True
         node = pico_vr.FrankaPicoVRTeleOpNode()
+        assert node.teleop_frequency_hz == 90.0
+        assert node.timers[0].period_s == 1.0 / 90.0
+        for frequency in (30.0, 60.0, 90.0):
+            configured = pico_vr.FrankaPicoVRTeleOpNode(parameter_overrides=[
+                ros_stubs._Parameter("teleop_frequency_hz", frequency),
+            ])
+            assert configured.teleop_frequency_hz == frequency
+            assert configured.timers[0].period_s == 1.0 / frequency
         assert node.reset_service_name == "/robot/control/reset"
         assert node._activation_publisher is None
         assert node._recapture_service.args[0] is pico_vr.RecaptureBaseline

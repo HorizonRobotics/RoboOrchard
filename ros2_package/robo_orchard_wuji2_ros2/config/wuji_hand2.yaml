@@ -1,0 +1,17 @@
+/**:
+  ros__parameters:
+    endpoint: ""
+    serial_number: ""
+    hand_side: "right"
+    connect_timeout: 10.0
+    auto_enable: false
+    # Dense firmware index order, radians. Zero is fully extended, not disabled.
+    reset_joint_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                           0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    reset_duration_s: 2.0
+    reset_timeout_s: 5.0
+    reset_feedback_timeout_s: 0.2
+    reset_position_tolerance: 0.2  # radians
+    publish_joint_diagnostics: true
+    publish_imu: true
+    publish_fingertip_tactile: false

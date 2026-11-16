@@ -1,0 +1,135 @@
+<?xml version="1.0"?>
+<!-- Kinematic-only test fixture derived from agilexrobotics/piper_ros.
+     Source revision ac41fcbcdda598f01b51cf6175ed9a24d0dacadc.
+     MIT license; see PIPER_LICENSE.txt. Visuals and dynamics omitted. -->
+<robot name="piper_ik_fixture">
+  <link name="base_link"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <link name="link3"/>
+  <link name="link4"/>
+  <link name="link5"/>
+  <link name="link6"/>
+  <link name="gripper_base"/>
+  <joint
+      name="joint1"
+      type="revolute">
+      <origin
+        xyz="0 0 0.123"
+        rpy="0 0 0" />
+      <parent
+        link="base_link" />
+      <child
+        link="link1" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="-2.618"
+        upper="2.618"
+        effort="100"
+        velocity="5" />
+    </joint>
+  <joint
+      name="joint2"
+      type="revolute">
+      <origin
+        xyz="0 0 0"
+        rpy="1.5708 -0.1359 -3.1416" />
+
+      <parent
+        link="link1" />
+      <child
+        link="link2" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="0"
+        upper="3.14"
+        effort="100"
+        velocity="5" />
+    </joint>
+  <joint
+      name="joint3"
+      type="revolute">
+      <origin
+        xyz="0.28503 0 0"
+        rpy="0 0 -1.7939" />
+
+      <parent
+        link="link2" />
+      <child
+        link="link3" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="-2.967"
+        upper="0"
+        effort="100"
+        velocity="5" />
+    </joint>
+  <joint
+      name="joint4"
+      type="revolute">
+      <origin
+        xyz="-0.021984 -0.25075 0"
+        rpy="1.5708 0 0" />
+      <parent
+        link="link3" />
+      <child
+        link="link4" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="-1.745"
+        upper="1.745"
+        effort="100"
+        velocity="5" />
+    </joint>
+  <joint
+      name="joint5"
+      type="revolute">
+      <origin
+        xyz="0 0 0"
+        rpy="-1.5708 0 0" />
+      <parent
+        link="link4" />
+      <child
+        link="link5" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="-1.22"
+        upper="1.22"
+        effort="100"
+        velocity="5" />
+    </joint>
+  <joint
+      name="joint6"
+      type="revolute">
+      <origin
+        xyz="8.8259E-05 -0.091 0"
+        rpy="1.5708 0 0" />
+      <parent
+        link="link5" />
+      <child
+        link="link6" />
+      <axis
+        xyz="0 0 1" />
+      <limit
+        lower="-2.0944"
+        upper="2.0944"
+        effort="100"
+        velocity="3" />
+    </joint>
+  <joint
+      name="joint6_to_gripper_base"
+      type="fixed">
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <parent
+        link="link6" />
+      <child
+        link="gripper_base" />
+    </joint>
+</robot>

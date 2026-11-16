@@ -65,7 +65,6 @@ def _joint_names_from_feedback(
     return names
 
 
-TELEOP_CONTROL_FREQ_HZ = 30.0
 TRANSLATION_SCALE_FACTOR = 1.2
 POSE_LOW_PASS_ALPHA = 0.25
 # Piper gripper total opening upper limit (meters). Matches piper_x_description
@@ -96,6 +95,16 @@ class ArmEngageState(Enum):
 class PiperPicoVRTeleOpNode(Node):
     def __init__(self, **kwargs):
         super().__init__("piper_pico_vr_teleop", **kwargs)
+
+        self.declare_parameter("teleop_frequency_hz", 30.0)
+        self.teleop_frequency_hz = float(
+            self.get_parameter("teleop_frequency_hz").value
+        )
+        if (
+            not math.isfinite(self.teleop_frequency_hz)
+            or self.teleop_frequency_hz <= 0.0
+        ):
+            raise ValueError("teleop_frequency_hz must be positive and finite")
 
         self.joint_names: dict[str, list[str]] = {}
         for side in ("left", "right"):
@@ -373,7 +382,7 @@ class PiperPicoVRTeleOpNode(Node):
 
         # timer
         self.timer = self.create_timer(
-            1.0 / TELEOP_CONTROL_FREQ_HZ, self.timer_callback
+            1.0 / self.teleop_frequency_hz, self.timer_callback
         )
 
         self.get_logger().info(

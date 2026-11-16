@@ -77,7 +77,7 @@ class EngagementNode(Node):
         self.declare_parameter("manager_status_topic", "/robot/control/status")
         self.declare_parameter("status_topic", "~/status")
         for name, default in (
-            ("publish_hz", 30.0),
+            ("teleop_frequency_hz", 30.0),
             ("stale_timeout_s", 0.3),
             ("manager_status_timeout_s", 2.5),
             ("service_timeout_s", 2.0),
@@ -147,7 +147,9 @@ class EngagementNode(Node):
         self._status_publisher = self.create_publisher(
             DiagnosticArray, self.get_parameter("status_topic").value, 1
         )
-        self._timer = self.create_timer(1.0 / self.publish_hz, self._tick)
+        self._timer = self.create_timer(
+            1.0 / self.teleop_frequency_hz, self._tick
+        )
 
     @staticmethod
     def _stamp(message) -> int:

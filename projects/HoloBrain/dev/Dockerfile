@@ -22,6 +22,9 @@ RUN apt install -y \
     xdg-utils \
     clang \
     libclang-dev \
+    libeigen3-dev \
+    pybind11-dev \
+    python3-dev \
     unzip \
     python3.10-venv \
     ros-$ROS_DISTRO-rosbag2-storage-mcap \
@@ -53,6 +56,13 @@ RUN curl -fsSL \
     protoc --version
 
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+
+# Build and runtime C++ dependencies for the teleop IK extension.
+# Keep this prefix in the final image; installed extensions link against it.
+RUN python3 -m pip install --no-cache-dir --target /opt/teleop-deps \
+    "pin==2.7.0" "cmeel-eigen==3.4.1" "cmeel-urdfdom==3.1.1.1" \
+    "cmeel-urdfdom-headers==1.1.2"
+ENV CMAKE_PREFIX_PATH=/opt/teleop-deps/cmeel.prefix
 
 RUN pip install torch==2.8.0 \
     torchvision==0.23.0 \

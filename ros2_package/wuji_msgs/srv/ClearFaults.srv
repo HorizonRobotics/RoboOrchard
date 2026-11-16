@@ -1,0 +1,11 @@
+# Dense index order is side-neutral. Prefix body names with l_ or r_ for URDF joint names.
+# thumb (0-3): thumb_cmc_flex, thumb_cmc_abd, thumb_mcp, thumb_ip
+# index (4-7): index_finger_mcp_flex, index_finger_mcp_abd, index_finger_pip, index_finger_dip
+# middle (8-11): middle_finger_mcp_flex, middle_finger_mcp_abd, middle_finger_pip, middle_finger_dip
+# ring (12-15): ring_finger_mcp_flex, ring_finger_mcp_abd, ring_finger_pip, ring_finger_dip
+# pinky (16-19): pinky_mcp_flex, pinky_mcp_abd, pinky_pip, pinky_dip
+# Per-dense-index fault-clear selection. All false is a valid no-op.
+bool[20] mask
+---
+bool success
+string message

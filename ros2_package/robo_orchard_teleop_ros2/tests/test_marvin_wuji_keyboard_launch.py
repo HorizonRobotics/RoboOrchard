@@ -69,6 +69,7 @@ def _arguments(description):
 def _context(**overrides):
     values = {
         "hand_side": "right",
+        "hand_model": "wuji_hand",
         "hand_name": "",
         "hand_serial_number": "",
         "glove_namespace": "",
@@ -146,6 +147,13 @@ def test_driver_config_defaults_to_the_wuji_hand_profile():
 
 
 def test_both_arms_follow_the_keyboard_by_default():
-    arguments = _arguments(_description())
+    description = _description()
+    arguments = _arguments(description)
     assert arguments["keyboard_control_side"].default_value == "both"
     assert arguments["auto_enable_side"].default_value == "both"
+    assert arguments["auto_enable_mode"].default_value == "joint_impedance"
+    marvin = _include_by_file(description, "marvin_pico_teleop.launch.py")
+    forwarded = dict(marvin.launch_arguments)
+    assert forwarded["auto_enable_side"].name == "auto_enable_side"
+    assert forwarded["auto_enable_mode"].name == "auto_enable_mode"
+    assert "hand2_auto_enable" not in forwarded

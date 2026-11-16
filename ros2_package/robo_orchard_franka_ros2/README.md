@@ -86,4 +86,4 @@ Control it directly through the official interfaces. Keep
 `load_gripper:=false` when using Robotiq instead of the native gripper.
 
 For teleoperation and DAgger setup, see the
-[Franka teleoperation guide](../robo_orchard_teleop_ros2/README.md#franka-managed-teleoperation-and-dagger).
+[teleoperation launch entries](../robo_orchard_teleop_ros2/README.md#quick-start).

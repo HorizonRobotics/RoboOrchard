@@ -112,6 +112,7 @@ def load_launch_module(path: Path, module_name: str):
         ),
     }
     modules["launch"].LaunchDescription = LaunchDescription
+    modules["launch"].LaunchContext = object
     modules["launch.actions"].DeclareLaunchArgument = DeclareLaunchArgument
     modules["launch.actions"].GroupAction = GroupAction
     modules["launch.conditions"].IfCondition = IfCondition

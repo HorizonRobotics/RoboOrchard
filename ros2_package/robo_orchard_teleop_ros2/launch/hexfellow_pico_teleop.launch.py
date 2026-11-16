@@ -27,8 +27,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description() -> LaunchDescription:
     """Launch Hexfellow drivers, Pico teleop and Control Manager together."""
     vr_topic = LaunchConfiguration("vr_topic")
-    publish_hz = ParameterValue(
-        LaunchConfiguration("publish_hz"), value_type=float
+    teleop_frequency_hz = ParameterValue(
+        LaunchConfiguration("teleop_frequency_hz"), value_type=float
     )
     return LaunchDescription(
         [
@@ -73,7 +73,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "lift_state_topic", default_value="/lift/motor_states"
             ),
-            DeclareLaunchArgument("publish_hz", default_value="30.0"),
+            DeclareLaunchArgument("teleop_frequency_hz", default_value="30.0"),
             DeclareLaunchArgument(
                 "max_linear_x",
                 default_value="0.2",
@@ -151,7 +151,7 @@ def generate_launch_description() -> LaunchDescription:
                             LaunchConfiguration("max_angular_z"),
                             value_type=float,
                         ),
-                        "publish_hz": publish_hz,
+                        "teleop_frequency_hz": teleop_frequency_hz,
                     }
                 ],
             ),
@@ -173,7 +173,7 @@ def generate_launch_description() -> LaunchDescription:
                             LaunchConfiguration("position_rate"),
                             value_type=float,
                         ),
-                        "publish_hz": publish_hz,
+                        "teleop_frequency_hz": teleop_frequency_hz,
                     }
                 ],
             ),

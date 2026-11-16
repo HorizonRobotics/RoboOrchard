@@ -43,7 +43,7 @@ setup(
     install_requires=[
         "numpy",
         "setuptools",
-        "wuji-sdk==2026.7.21",
+        "wuji-sdk==2026.10.26",
     ],
     zip_safe=False,
     maintainer="xuewu.lin",

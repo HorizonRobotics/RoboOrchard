@@ -125,7 +125,7 @@ def test_composition_has_one_bridge_manager_and_all_adapters(
 
 def test_combination_disables_only_hexfellow_shared_nodes(components):
     piper = components["piper_pico_teleop_compat.launch.py"][2]
-    assert set(piper) == {"control_manager_config_file"}
+    assert set(piper) == {"control_manager_config_file", "teleop_frequency_hz"}
     hexfellow = components["hexfellow_pico_teleop.launch.py"][2]
     assert {
         name: value

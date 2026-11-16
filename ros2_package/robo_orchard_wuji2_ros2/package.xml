@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>robo_orchard_wuji2_ros2</name>
+  <version>0.0.0</version>
+  <description>Official Wuji Hand 2 driver adapted for RoboOrchard and ROS 2 Humble.</description>
+  <maintainer email="yiwei.jin@horizon.auto">yiwei.jin</maintainer>
+  <license>MIT</license>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/wuji-technology/wuji-ros2</url>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>nlohmann-json-dev</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>wuji_msgs</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- Wuji SDK C 2026.10.26 is installed separately; no rosdep key exists. -->
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

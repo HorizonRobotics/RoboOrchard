@@ -23,7 +23,7 @@ from typing import List
 
 PACKAGE_PATH = Path(__file__).resolve().parents[1]
 LAUNCH_PATH = PACKAGE_PATH / "launch" / "piper_pico_dagger_compat.launch.py"
-SETUP_PATH = PACKAGE_PATH / "setup.py"
+CMAKE_PATH = PACKAGE_PATH / "CMakeLists.txt"
 
 
 class _LaunchDescription:
@@ -146,11 +146,11 @@ def _launch_argument_by_name(description, name):
     )
 
 
-def test_setup_does_not_register_legacy_control_owners():
-    setup_source = SETUP_PATH.read_text()
+def test_build_does_not_register_legacy_control_owners():
+    build_source = CMAKE_PATH.read_text()
 
-    assert "take_over.node:main" not in setup_source
-    assert "take_over.orchestrator" not in setup_source
+    assert "take_over.node" not in build_source
+    assert "take_over.orchestrator" not in build_source
 
 
 def test_launch_declares_arguments_and_one_manager() -> None:
@@ -173,6 +173,7 @@ def test_launch_declares_arguments_and_one_manager() -> None:
         "enable_mit_control_mode",
         "control_manager_config_file",
         "urdf_path",
+        "teleop_frequency_hz",
         "match_tolerance",
         "operator_input_source",
         "keyboard_control_side",

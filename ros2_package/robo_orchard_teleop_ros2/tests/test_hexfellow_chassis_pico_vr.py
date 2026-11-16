@@ -40,6 +40,7 @@ def assert_stopped(node):
 
 
 def test_defaults_publish_only_override_candidates(node):
+    assert node.teleop_frequency_hz == 30.0
     assert node.vr_topic == "/pico_bridge/vr_state"
     assert node.publishers[0].topic == "/hexfellow_teleop/cmd_vel"
     assert node.timers[0].period == pytest.approx(1 / 30)
@@ -47,6 +48,26 @@ def test_defaults_publish_only_override_candidates(node):
     node._publish_cmd_vel()
     assert not node.control_active
     assert_stopped(node)
+
+
+@pytest.mark.parametrize("frequency", [60.0, 90.0])
+def test_configured_control_rate(frequency):
+    node = load_node_module("chassis").HexfellowChassisPicoVRTeleOpNode(
+        parameter_overrides=[
+            SimpleNamespace(name="teleop_frequency_hz", value=frequency)
+        ]
+    )
+    assert node.timers[0].period == pytest.approx(1 / frequency)
+
+
+@pytest.mark.parametrize("frequency", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_control_rate(frequency):
+    with pytest.raises(ValueError, match="teleop_frequency_hz"):
+        load_node_module("chassis").HexfellowChassisPicoVRTeleOpNode(
+            parameter_overrides=[
+                SimpleNamespace(name="teleop_frequency_hz", value=frequency)
+            ]
+        )
 
 
 def test_long_press_toggles_once_until_released(node):

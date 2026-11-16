@@ -1,0 +1,5 @@
+# SDK current limit for every Hand 2 joint, in A. The driver accepts finite nonnegative values.
+float32 effort_limit
+---
+bool success
+string message

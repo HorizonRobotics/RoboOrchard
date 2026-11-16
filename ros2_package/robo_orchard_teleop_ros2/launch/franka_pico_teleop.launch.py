@@ -44,7 +44,7 @@ def _launch_nodes(context: LaunchContext) -> list:
     load_gripper = LaunchConfiguration("load_gripper")
     urdf_path = LaunchConfiguration("urdf_path")
     source_type = LaunchConfiguration("source_type")
-    control_frequency_hz = LaunchConfiguration("control_frequency_hz")
+    teleop_frequency_hz = LaunchConfiguration("teleop_frequency_hz")
     stale_timeout_s = LaunchConfiguration("stale_timeout_s")
     ik_regularization_parameter = LaunchConfiguration(
         "ik_regularization_parameter"
@@ -101,8 +101,8 @@ def _launch_nodes(context: LaunchContext) -> list:
                         if combined
                         else "~/recapture_baseline"
                     ),
-                    "control_frequency_hz": ParameterValue(
-                        control_frequency_hz, value_type=float
+                    "teleop_frequency_hz": ParameterValue(
+                        teleop_frequency_hz, value_type=float
                     ),
                     "stale_timeout_s": ParameterValue(
                         stale_timeout_s, value_type=float
@@ -160,7 +160,17 @@ def _launch_nodes(context: LaunchContext) -> list:
                     executable="robotiq_pico_vr_teleop",
                     name="robotiq_pico_vr_teleop",
                     output="screen",
-                    parameters=[{"source_type": source_type}],
+                    parameters=[
+                        {
+                            "source_type": source_type,
+                            "teleop_frequency_hz": ParameterValue(
+                                LaunchConfiguration(
+                                    "robotiq_teleop_frequency_hz"
+                                ),
+                                value_type=float,
+                            ),
+                        }
+                    ],
                 ),
                 Node(
                     package="robo_orchard_teleop_ros2",
@@ -171,6 +181,9 @@ def _launch_nodes(context: LaunchContext) -> list:
                         {
                             "config_file": LaunchConfiguration(
                                 "engagement_config_file"
+                            ),
+                            "teleop_frequency_hz": ParameterValue(
+                                teleop_frequency_hz, value_type=float
                             ),
                         }
                     ],
@@ -249,7 +262,7 @@ def generate_launch_description() -> LaunchDescription:
                 description="Pico controller side: left or right.",
             ),
             DeclareLaunchArgument(
-                "control_frequency_hz",
+                "teleop_frequency_hz",
                 default_value="90.0",
                 description="IK and arm command publication frequency.",
             ),
@@ -257,6 +270,11 @@ def generate_launch_description() -> LaunchDescription:
                 "stale_timeout_s",
                 default_value="0.3",
                 description="Maximum Pico and arm feedback age in seconds.",
+            ),
+            DeclareLaunchArgument(
+                "robotiq_teleop_frequency_hz",
+                default_value="30.0",
+                description="Optional Robotiq command frequency in Hz.",
             ),
             DeclareLaunchArgument(
                 "ik_regularization_parameter",

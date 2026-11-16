@@ -283,8 +283,9 @@ def test_launch_requires_project_manager_config():
         "engagement_config_file",
         "urdf_path",
         "source_type",
-        "control_frequency_hz",
+        "teleop_frequency_hz",
         "stale_timeout_s",
+        "robotiq_teleop_frequency_hz",
         "ik_regularization_parameter",
         "control_manager_config_file",
     ]
@@ -307,44 +308,6 @@ def test_launch_requires_project_manager_config():
     assert manager.kwargs["parameters"][0]["config_file"].name == (
         "control_manager_config_file"
     )
-
-
-def test_documented_manager_config_matches_launch(monkeypatch):
-    ros_packages = LAUNCH_PATH.parents[2]
-    monkeypatch.syspath_prepend(
-        str(ros_packages / "robo_orchard_control_manager_ros2")
-    )
-    from robo_orchard_control_manager_ros2.config import ControlManagerConfig
-
-    guide = (LAUNCH_PATH.parents[1] / "README.md").read_text()
-    _, heading, section = guide.partition(
-        "### Franka managed teleoperation and DAgger\n"
-    )
-    assert heading, "Franka teleoperation section is missing from README"
-    section = section.split("\n### ", 1)[0].split("\n## ", 1)[0]
-    _, opening, example = section.partition("```yaml\n")
-    assert opening, "Franka Control Manager YAML example is missing"
-    example, closing, _ = example.partition("```")
-    assert closing, "Franka Control Manager YAML code block is not closed"
-    config = ControlManagerConfig.model_validate(yaml.safe_load(example))
-    description = _description()
-    teleop = next(
-        entity
-        for entity in description.entities
-        if isinstance(entity, _Node)
-        and entity.kwargs["name"] == "franka_pico_vr_teleop"
-    )
-    channel = config.channels[0]
-    assert len(config.channels) == 1
-    assert teleop.kwargs["remappings"] == [
-        (channel.output_topic, channel.override_topic)
-    ]
-    assert channel.msg_type == "sensor_msgs/msg/JointState"
-    assert channel.autonomous_topic == "/inference/joint_franka"
-    assert config.reset_services == ["/robot/franka/reset_ctrl"]
-    assert config.enable_services == []
-    assert config.inference_disable_services == []
-    assert config.replay_time_s == 0.0
 
 
 def test_manifest_has_no_redundant_runtime_dependencies():

@@ -46,7 +46,7 @@ class RobotiqPicoVRTeleOpNode(Node):
             "joint_command_topic": "/robotiq_teleop/candidate",
             "match_state_topic": "/robotiq_teleop/match_state",
             "joint_name": "robotiq_gripper",
-            "publish_hz": 30.0,
+            "teleop_frequency_hz": 30.0,
             "stale_timeout_s": 0.3,
             "max_clock_skew_s": 0.05,
             "match_tolerance_m": 0.005,
@@ -61,7 +61,7 @@ class RobotiqPicoVRTeleOpNode(Node):
         if not self.joint_name:
             raise ValueError("joint_name must not be empty")
         for name in (
-            "publish_hz",
+            "teleop_frequency_hz",
             "stale_timeout_s",
             "max_clock_skew_s",
             "match_tolerance_m",
@@ -70,7 +70,10 @@ class RobotiqPicoVRTeleOpNode(Node):
             value = float(self.get_parameter(name).value)
             if not isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
-            if name in ("publish_hz", "stale_timeout_s") and value == 0.0:
+            if (
+                name in ("teleop_frequency_hz", "stale_timeout_s")
+                and value == 0.0
+            ):
                 raise ValueError(f"{name} must be positive")
             setattr(self, name, value)
 
@@ -113,7 +116,9 @@ class RobotiqPicoVRTeleOpNode(Node):
             self.get_parameter("match_state_topic").value,
             1,
         )
-        self.timer = self.create_timer(1.0 / self.publish_hz, self._publish)
+        self.timer = self.create_timer(
+            1.0 / self.teleop_frequency_hz, self._publish
+        )
 
     def _stamp_age_valid(self, stamp_ns: int) -> bool:
         age_s = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9

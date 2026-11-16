@@ -20,6 +20,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 LAUNCH_PATH = (
     Path(__file__).resolve().parents[1] / "launch" / "wuji_glove.launch.py"
 )
@@ -125,11 +127,28 @@ def _resolve_side_defaults(description, values):
     return resolved
 
 
+def _nodes(description, **overrides):
+    context = {
+        entity.name: entity.default_value
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+    }
+    context.update(overrides)
+    nodes = []
+    for entity in description.entities:
+        if isinstance(entity, _Node):
+            nodes.append(entity)
+        elif (
+            isinstance(entity, _OpaqueFunction)
+            and entity.function.__name__ == "_create_retarget_node"
+        ):
+            nodes.extend(entity.function(context))
+    return nodes
+
+
 def test_launch_starts_driver_and_retarget_nodes():
     description = _load_module().generate_launch_description()
-    nodes = [
-        entity for entity in description.entities if isinstance(entity, _Node)
-    ]
+    nodes = _nodes(description)
 
     assert [node.kwargs["executable"] for node in nodes] == [
         "wuji_glove_driver_node",
@@ -142,9 +161,7 @@ def test_launch_starts_driver_and_retarget_nodes():
 
 def test_launch_forwards_device_selection_and_command_topic():
     description = _load_module().generate_launch_description()
-    nodes = [
-        entity for entity in description.entities if isinstance(entity, _Node)
-    ]
+    nodes = _nodes(description)
     driver, retarget = nodes
 
     overrides = driver.kwargs["parameters"][1]
@@ -159,6 +176,11 @@ def test_launch_forwards_device_selection_and_command_topic():
     assert overrides["hand_model_path"].value_type is str
     assert overrides["stream_profile"].value.name == "stream_profile"
     assert overrides["stream_profile"].value_type is str
+    target_overrides = retarget.kwargs["parameters"][1]
+    assert target_overrides["hand_model"].value.name == "hand_model"
+    assert target_overrides["hand_model"].value_type is str
+    assert "hand_model" not in overrides
+    assert "hand_model_path" not in target_overrides
     source_topic, destination_topic = retarget.kwargs["remappings"][0]
     assert source_topic == "retargeted_joint_commands"
     assert destination_topic.name == "command_topic"
@@ -172,6 +194,43 @@ def test_launch_forwards_device_selection_and_command_topic():
         arguments["command_topic"].default_value == "retargeted_joint_commands"
     )
     assert arguments["stream_profile"].default_value == "configured"
+    assert arguments["hand_model"].default_value == "wuji_hand"
+    assert "wuji_hand_2" in arguments["hand_model"].description
+
+
+@pytest.mark.parametrize("model", ["wuji_hand", "wuji_hand_2"])
+def test_default_threshold_preserves_parameter_file(model):
+    description = _load_module().generate_launch_description()
+    driver, retarget = _nodes(description, hand_model=model)
+    for node in (driver, retarget):
+        assert node.kwargs["parameters"][0].name == "config_file"
+        assert "min_joint_confidence" not in node.kwargs["parameters"][1]
+    argument = next(
+        entity
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+        and entity.name == "min_joint_confidence"
+    )
+    assert argument.default_value == ""
+
+
+@pytest.mark.parametrize("threshold", ["0.0", "0.7"])
+@pytest.mark.parametrize("model", ["wuji_hand", "wuji_hand_2"])
+def test_explicit_threshold_overrides_only_retarget(threshold, model):
+    description = _load_module().generate_launch_description()
+    driver, retarget = _nodes(
+        description, min_joint_confidence=threshold, hand_model=model
+    )
+    assert "min_joint_confidence" not in driver.kwargs["parameters"][1]
+    # The inline dictionary follows config_file, so an explicit launch value
+    # wins over any YAML threshold without replacing other YAML parameters.
+    assert retarget.kwargs["parameters"][0].name == "config_file"
+    override = retarget.kwargs["parameters"][1]["min_joint_confidence"]
+    assert override.value.name == "min_joint_confidence"
+    assert override.value.perform({"min_joint_confidence": threshold}) == (
+        threshold
+    )
+    assert override.value_type is float
 
 
 def test_launch_derives_empty_names_from_hand_side():

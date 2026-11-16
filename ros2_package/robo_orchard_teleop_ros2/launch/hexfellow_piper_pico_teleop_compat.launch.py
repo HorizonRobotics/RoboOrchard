@@ -52,6 +52,11 @@ def generate_launch_description() -> LaunchDescription:
                 description="Maximum chassis forward/backward speed in m/s.",
             ),
             DeclareLaunchArgument(
+                "teleop_frequency_hz",
+                default_value="30.0",
+                description="Piper, chassis and lift control frequency in Hz.",
+            ),
+            DeclareLaunchArgument(
                 "max_angular_z",
                 default_value="0.2",
                 description="Maximum chassis yaw rate in rad/s.",
@@ -74,6 +79,9 @@ def generate_launch_description() -> LaunchDescription:
                             )
                         ),
                         launch_arguments={
+                            "teleop_frequency_hz": LaunchConfiguration(
+                                "teleop_frequency_hz"
+                            ),
                             "control_manager_config_file": LaunchConfiguration(
                                 "control_manager_config_file"
                             ),
@@ -94,6 +102,9 @@ def generate_launch_description() -> LaunchDescription:
                             )
                         ),
                         launch_arguments={
+                            "teleop_frequency_hz": LaunchConfiguration(
+                                "teleop_frequency_hz"
+                            ),
                             "chassis_url": LaunchConfiguration("chassis_url"),
                             "lift_url": LaunchConfiguration("lift_url"),
                             "max_linear_x": LaunchConfiguration(

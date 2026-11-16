@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-SUPPORTED_WUJI_SDK_VERSION = "2026.7.21"
+SUPPORTED_WUJI_SDK_VERSION = "2026.10.26"
 SDK_CONNECT_TIMEOUT_MS = 1_000
 SDK_CONNECT_RETRY_COUNT = 3
 EARLIEST_UTC_TIMESTAMP_US = 1_577_836_800_000_000
@@ -71,7 +71,7 @@ class SdkClientConfig:
     sdk_user: str
     hand_model_path: str
     sdk_log_level: str
-    emf_poses_rate_divider: int
+    emf_poses_rate_hz: int
     time_sync_max_age_s: float
     time_sync_max_rtt_ms: float
     enabled_streams: frozenset[str]
@@ -227,9 +227,6 @@ class WujiSdkClient:
                     hand_model_path,
                     config.hand_side,
                 )
-                glove.emf_poses_rate_divider().set(
-                    config.emf_poses_rate_divider
-                )
                 self._verify_time_sync(glove, config)
 
                 self._open_subscriptions(
@@ -239,6 +236,14 @@ class WujiSdkClient:
                     on_error,
                     connection_token,
                 )
+                if config.emf_poses_rate_hz:
+                    # CallbackSubscription has no set_rate. Keep its EMF
+                    # subscription alive while a short-lived ordinary handle
+                    # changes the rate shared by all subscribers.
+                    with contextlib.closing(
+                        glove.emf_poses().subscribe()
+                    ) as subscription:
+                        subscription.set_rate(config.emf_poses_rate_hz)
                 info = GloveDeviceInfo(
                     serial_number=str(glove.sn().get()),
                     device_name=config.device_name,
@@ -467,11 +472,15 @@ class WujiSdkClient:
         connection_token: object,
     ) -> None:
         for spec in SDK_STREAM_SPECS:
-            if spec.name in config.enabled_streams:
+            enabled = spec.name in config.enabled_streams
+            needs_rate_source = (
+                spec.name == "emf_poses" and config.emf_poses_rate_hz > 0
+            )
+            if enabled or needs_rate_source:
                 self._subscribe(
                     spec.name,
                     getattr(glove, spec.name)(),
-                    callbacks[spec.name],
+                    callbacks[spec.name] if enabled else lambda frame: None,
                     on_error,
                     connection_token,
                 )

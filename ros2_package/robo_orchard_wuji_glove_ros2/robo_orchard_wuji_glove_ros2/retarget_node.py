@@ -34,9 +34,33 @@ from sensor_msgs.msg import JointState
 from robo_orchard_wuji_glove_msg_ros2.msg import HandSkeleton
 from robo_orchard_wuji_glove_ros2.sdk_client import WujiSdkRetargeter
 
+# Dense firmware order from the official Hand 2 driver's JointMapping.
+_HAND2_JOINT_NAME_BODIES = (
+    "thumb_cmc_flex",
+    "thumb_cmc_abd",
+    "thumb_mcp",
+    "thumb_ip",
+    "index_finger_mcp_flex",
+    "index_finger_mcp_abd",
+    "index_finger_pip",
+    "index_finger_dip",
+    "middle_finger_mcp_flex",
+    "middle_finger_mcp_abd",
+    "middle_finger_pip",
+    "middle_finger_dip",
+    "ring_finger_mcp_flex",
+    "ring_finger_mcp_abd",
+    "ring_finger_pip",
+    "ring_finger_dip",
+    "pinky_mcp_flex",
+    "pinky_mcp_abd",
+    "pinky_pip",
+    "pinky_dip",
+)
+
 
 class WujiGloveRetargetNode(Node):
-    """Retarget glove skeleton frames to first-generation hand commands."""
+    """Retarget glove skeleton frames to the configured Wuji hand model."""
 
     def __init__(self, retargeter: Any | None = None) -> None:
         super().__init__("wuji_glove_retarget")
@@ -54,10 +78,8 @@ class WujiGloveRetargetNode(Node):
         )
         if self._hand_side not in ("left", "right"):
             raise ValueError("hand_side must be 'left' or 'right'")
-        if self._hand_model != "wuji_hand":
-            raise ValueError(
-                "hand_model must be 'wuji_hand' for wujihandros2 1.1.0"
-            )
+        if self._hand_model not in ("wuji_hand", "wuji_hand_2"):
+            raise ValueError("hand_model must be 'wuji_hand' or 'wuji_hand_2'")
         if not math.isfinite(self._min_joint_confidence) or not (
             0.0 <= self._min_joint_confidence <= 1.0
         ):
@@ -72,11 +94,17 @@ class WujiGloveRetargetNode(Node):
         self._retargeter = retargeter or WujiSdkRetargeter(
             self._hand_model, self._hand_side
         )
-        self._joint_names = [
-            f"{self._hand_side}_finger{finger}_joint{joint}"
-            for finger in range(1, 6)
-            for joint in range(1, 5)
-        ]
+        if self._hand_model == "wuji_hand":
+            self._joint_names = [
+                f"{self._hand_side}_finger{finger}_joint{joint}"
+                for finger in range(1, 6)
+                for joint in range(1, 5)
+            ]
+        else:
+            self._joint_names = [
+                f"{self._hand_side[0]}_{body}"
+                for body in _HAND2_JOINT_NAME_BODIES
+            ]
         self._last_error_log = 0.0
         self._tracking_valid = False
         self._tracking_error = "waiting for a valid skeleton frame"

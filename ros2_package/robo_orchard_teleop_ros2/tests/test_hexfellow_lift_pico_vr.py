@@ -37,6 +37,8 @@ def move(node, axis_y=1.0):
 
 
 def test_defaults_and_wait_for_feedback(node):
+    assert node.teleop_frequency_hz == 30.0
+    assert node.timers[0].period == pytest.approx(1 / 30)
     assert node.vr_topic == "/pico_bridge/vr_state"
     assert node.state_topic == "/lift/motor_states"
     assert node.publishers[0].topic == "/hexfellow_teleop/lift_joint_cmd"
@@ -44,6 +46,26 @@ def test_defaults_and_wait_for_feedback(node):
     node.time_s = 0.1
     node._publish_joint_cmd()
     assert node.publishers[0].messages == []
+
+
+@pytest.mark.parametrize("frequency", [60.0, 90.0])
+def test_configured_control_rate(frequency):
+    node = load_node_module("lift").HexfellowLiftPicoVRTeleOpNode(
+        parameter_overrides=[
+            SimpleNamespace(name="teleop_frequency_hz", value=frequency)
+        ]
+    )
+    assert node.timers[0].period == pytest.approx(1 / frequency)
+
+
+@pytest.mark.parametrize("frequency", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_control_rate(frequency):
+    with pytest.raises(ValueError, match="teleop_frequency_hz"):
+        load_node_module("lift").HexfellowLiftPicoVRTeleOpNode(
+            parameter_overrides=[
+                SimpleNamespace(name="teleop_frequency_hz", value=frequency)
+            ]
+        )
 
 
 @pytest.mark.parametrize("axis_y", [-1.0, 1.0])

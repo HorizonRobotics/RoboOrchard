@@ -45,7 +45,7 @@ class HexfellowChassisPicoVRTeleOpNode(Node):
             ParameterDescriptor(description="Chassis override Twist topic."),
         )
         self.declare_parameter(
-            "publish_hz",
+            "teleop_frequency_hz",
             30.0,
             ParameterDescriptor(description="Command publish frequency."),
         )
@@ -94,7 +94,14 @@ class HexfellowChassisPicoVRTeleOpNode(Node):
 
         self.vr_topic = self.get_parameter("vr_topic").value
         self.cmd_vel_topic = self.get_parameter("cmd_vel_topic").value
-        self.publish_hz = float(self.get_parameter("publish_hz").value)
+        self.teleop_frequency_hz = float(
+            self.get_parameter("teleop_frequency_hz").value
+        )
+        if (
+            not math.isfinite(self.teleop_frequency_hz)
+            or self.teleop_frequency_hz <= 0.0
+        ):
+            raise ValueError("teleop_frequency_hz must be positive and finite")
         self.max_linear_x = float(self.get_parameter("max_linear_x").value)
         self.max_angular_z = float(self.get_parameter("max_angular_z").value)
         self.deadzone = float(self.get_parameter("deadzone").value)
@@ -122,7 +129,7 @@ class HexfellowChassisPicoVRTeleOpNode(Node):
             1,
         )
         self._timer = self.create_timer(
-            1.0 / self.publish_hz,
+            1.0 / self.teleop_frequency_hz,
             self._publish_cmd_vel,
         )
 
