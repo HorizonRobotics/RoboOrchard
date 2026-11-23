@@ -66,7 +66,7 @@ class HexfellowChassisPicoVRTeleOpNode(Node):
         )
         self.declare_parameter(
             "stale_timeout_s",
-            0.3,
+            0.5,
             ParameterDescriptor(
                 description="Stop if no valid VR frame arrives."
             ),

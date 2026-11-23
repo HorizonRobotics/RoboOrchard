@@ -66,6 +66,16 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.08",
                 description="Lift target position change rate in m/s.",
             ),
+            DeclareLaunchArgument(
+                "chassis_stale_timeout_s",
+                default_value="0.5",
+                description="Chassis VR input timeout in seconds.",
+            ),
+            DeclareLaunchArgument(
+                "lift_stale_timeout_s",
+                default_value="0.5",
+                description="Lift VR input and feedback timeout in seconds.",
+            ),
             GroupAction(
                 scoped=True,
                 actions=[
@@ -115,6 +125,12 @@ def generate_launch_description() -> LaunchDescription:
                             ),
                             "position_rate": LaunchConfiguration(
                                 "position_rate"
+                            ),
+                            "chassis_stale_timeout_s": LaunchConfiguration(
+                                "chassis_stale_timeout_s"
+                            ),
+                            "lift_stale_timeout_s": LaunchConfiguration(
+                                "lift_stale_timeout_s"
                             ),
                             "control_manager_config_file": LaunchConfiguration(
                                 "control_manager_config_file"

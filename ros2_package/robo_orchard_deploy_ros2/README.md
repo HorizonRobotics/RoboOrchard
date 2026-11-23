@@ -1,5 +1,93 @@
 # RoboOchard Deploy ROS2 Package
 
+## Observation-relative pose action channels
+
+`kind: "pose_command"` selects `PoseCommandChannel`, independently of
+`JointCommandChannel`. It reads finite `[T, 7]` model rows ordered xyz in
+meters followed by quaternion wxyz, and publishes one
+`nav_msgs/msg/Path` containing exactly one `PoseStamped` per control tick
+on the configured `topic`.
+`server_output_key` selects the model response field. For example:
+
+```json
+{
+  "kind": "pose_command",
+  "server_output_key": "mobile_traj",
+  "topic": "/base_pose_target",
+  "frame_id": "base_link"
+}
+```
+
+Poses map body coordinates into the fixed body frame at the observation
+origin, named by the required `frame_id` in both headers. Each Path carries
+that original observation reference time in `header.stamp`, identical for
+every row of the chunk. The reference is the latest ROS message header stamp in the
+approximately synchronized observation snapshot. It is an approximate common
+origin, not an exact simultaneous acquisition time. It is never inference
+response time or command publication time. References distinguish observation
+origins, not unique chunk IDs: snapshots with equal timestamps remain equal.
+Quaternion values are normalized and reordered into ROS xyzw fields; zero
+quaternions are rejected. Raw response arrays are not modified.
+
+The single element `poses[0].header.stamp` is the original observation time
+plus `round((i + 1) * 1e9 / control_frequency)` nanoseconds, where `i` is the
+zero-based row index in the original model response. Async skipped rows and
+pending handovers retain this index. This inner stamp describes model sample
+time, not publication time or a new coordinate reference. A consumer computes
+velocity differences using inner stamp differences, including when intermediate
+messages were dropped. The outer stamp alone selects the observation frame.
+This is the pose-channel contract; arbitrary multi-pose navigation Paths are
+not accepted by the HexFellow tracker. Scheduling remains owned by Deploy.
+
+Migration: change explicit pose-channel and Manager `msg_type` values from
+`geometry_msgs/msg/PoseStamped` to `nav_msgs/msg/Path` and upgrade the tracker
+with Deploy. The channel `kind`, model field names and HTTP payload stay the
+same. Default `msg_type` selection uses Path automatically.
+
+The reference timestamp remains local to the exact inference request, including
+asynchronous stitching, pending handovers, and stale-response rejection. No
+timestamp, header, or metadata is added to the model-service HTTP payload.
+
+`control_config.control_frequency` is the input-sampling and execution
+frequency, **25 Hz by default**. Set `200.0` explicitly for models sampled at
+200 Hz, as the HoloBrain project generators do. Explicit values are unchanged.
+There is no resampling or separate model/action frequency; model samples must match
+this rate. Row i represents the future pose at `(i + 1) / control_frequency`
+relative to the observation origin. Deployment preserves existing scheduling,
+not coordinated wall-clock start times.
+
+All channels must supply the same nonzero horizon. Deploy validates every
+pose row before accepting a new chunk. An invalid pose row, including a zero
+quaternion, rejects the entire new chunk without interrupting an active one.
+Each channel publishes its row at the current step of an accepted chunk.
+Joint command step limiting, trajectory stitching, and `server_remaining_key`
+RTC tails apply only to joint channels.
+
+Async scheduling retains the existing RTC-based index policy: progress while a
+request is in flight skips that many samples when a remaining-action field was
+sent. Without remaining actions, a new chunk starts at row zero. There is no
+additional wall-clock/inference-latency correction for pose chunks.
+Numerically identical responses are still fresh chunks.
+
+Deploy does not convert poses to velocities, track odometry, project planar
+axes, or implement robot control. The previous `TwistCommandChannel` and
+`pose_to_twist` helper are removed; direct velocity model outputs are no longer
+a Deploy channel. Control Manager's Twist routing and teleoperation are
+unaffected. Use a downstream pose-tracking controller for velocity-driven
+hardware. The optional [HexFellow adapter](../robo_orchard_hexfellow_ros2/)
+provides this controller and launches the official chassis/lift drivers:
+`mobile_traj` → Deploy single-pose `Path` → Control Manager → tracker → official
+driver `Twist`. It does not change model HTTP or add a shared start-time
+protocol; the tracker uses odometry at the original observation stamp.
+
+No zero/identity pose is emitted on exhaustion, disable, invalidation,
+publication failure, or shutdown: that would be a motion target, not a stop.
+Disable clears buffered actions and invalidates outstanding requests under the
+publication lock; resume cannot replay them. Controllers must stop based on
+fresh Deploy enabled status, Control Manager routing state, and target freshness;
+chunk exhaustion requires a command timeout. Configure hardware safety
+independently.
+
 ## Published inference state
 
 Both nodes publish `robo_orchard_deploy_msg_ros2/msg/InferenceStatus` on the

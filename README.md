@@ -14,6 +14,7 @@ specifically designed for:
 - **[Data Recording](./ros2_package/robo_orchard_data_ros2)**: Comprehensive data collection and logging capabilities.
 - **[Image Tools](./ros2_package/robo_orchard_image_tools/)**: High-throughput ROS2 image processing utilities.
 - **[Model Deploy](./ros2_package/robo_orchard_deploy_ros2/)**: Efficiently deploy the manipulation model in real robot
+- **[HexFellow Pose Tracking](./ros2_package/robo_orchard_hexfellow_ros2/)**: Optional official-driver wrapper with observation-relative chassis pose feedback and managed teleop
 - **ROS2 Integration**: Full ROS2 Humble support for distributed robotic systems
 
 ## Project Structure

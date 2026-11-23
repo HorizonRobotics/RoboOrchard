@@ -68,6 +68,7 @@ class DeployNode(Node):
             self._action_callback_group,
         )
         self.current_actions = None
+        self._action_observation_stamp: tuple[int, int] | None = None
         self.current_action_index = 0
         self.state = NodeState.INIT
         self.state_lock = threading.Lock()
@@ -134,28 +135,29 @@ class DeployNode(Node):
                 "No observations received yet.", throttle_duration_sec=1
             )
             return
-        predict_actions = self.model_inferencer.request_inference(cur_obs)
+        predict_actions = self.model_inferencer.request_inference(cur_obs.data)
         if predict_actions is None:
             self.get_logger().warning("No actions received from model server.")
             return
-        else:
-            with self.state_lock:
-                if (
-                    request_generation != self._inference_generation
-                    or self.state != NodeState.IDLE
-                ):
-                    self.get_logger().debug(
-                        "Discarding stale inference response."
-                    )
-                    return
-                self.current_actions = predict_actions
-                self.current_action_index = 0
-                self.state = NodeState.EXECUTING
+        if not self.action_executor.validated_step_count(predict_actions):
+            return
+        with self.state_lock:
+            if (
+                request_generation != self._inference_generation
+                or self.state != NodeState.IDLE
+            ):
+                self.get_logger().debug("Discarding stale inference response.")
+                return
+            self.current_actions = predict_actions
+            self._action_observation_stamp = cur_obs.reference_stamp
+            self.current_action_index = 0
+            self.state = NodeState.EXECUTING
 
     def _invalidate_actions_locked(self) -> None:
         """Clear buffered actions and invalidate outstanding requests."""
         self._inference_generation += 1
         self.current_actions = None
+        self._action_observation_stamp = None
         self.current_action_index = 0
         self.action_executor.reset_limiter()
 
@@ -173,12 +175,15 @@ class DeployNode(Node):
                     "[IDLE]: Wait for new actions.", throttle_duration_sec=1
                 )
                 self.current_actions = None
+                self._action_observation_stamp = None
                 self.state = NodeState.IDLE
                 return
 
             try:
                 self.action_executor.send_action(
-                    self.current_actions, self.current_action_index
+                    self.current_actions,
+                    self.current_action_index,
+                    self._action_observation_stamp,
                 )
                 self.get_logger().debug(
                     f"[EXECUTING]: Action {self.current_action_index} sent."
@@ -188,10 +193,16 @@ class DeployNode(Node):
                 self.get_logger().error(
                     f"[EXECUTING]: Error when sending action: {e}"
                 )
-                self.current_actions = None
-                self.current_action_index = 0
+                self._invalidate_actions_locked()
                 self.state = NodeState.IDLE
                 return
+
+    def destroy_node(self) -> bool:
+        """Invalidate action state before destroying ROS publishers."""
+        with self.state_lock:
+            self._invalidate_actions_locked()
+            self.state = NodeState.PAUSED
+        return super().destroy_node()
 
     def _publish_status(self) -> None:
         with self.state_lock:
@@ -272,7 +283,8 @@ class DeployNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     excutor = rclpy.executors.MultiThreadedExecutor()
-    excutor.add_node(DeployNode())
+    node = DeployNode()
+    excutor.add_node(node)
 
     try:
         excutor.spin()
@@ -280,3 +292,4 @@ def main(args=None):
         pass
     finally:
         excutor.shutdown()
+        node.destroy_node()

@@ -41,6 +41,7 @@ def assert_stopped(node):
 
 def test_defaults_publish_only_override_candidates(node):
     assert node.teleop_frequency_hz == 30.0
+    assert node.stale_timeout_s == 0.5
     assert node.vr_topic == "/pico_bridge/vr_state"
     assert node.publishers[0].topic == "/hexfellow_teleop/cmd_vel"
     assert node.timers[0].period == pytest.approx(1 / 30)
@@ -140,7 +141,7 @@ def test_input_loss_stops_and_deactivates(node, invalid_controller):
     if invalid_controller:
         node._on_vr_state(vr_state(status=0))
     else:
-        node.time_s += 0.31
+        node.time_s += 0.51
         node._publish_cmd_vel()
     assert not node.control_active
     assert_stopped(node)
@@ -159,3 +160,27 @@ def test_timeout_discards_partial_long_press(node):
     node.time_s = 3.0
     node._on_vr_state(vr_state(axis_click=True))
     assert node.control_active
+
+
+@pytest.mark.parametrize("timeout", [None, 0.25, 1.0])
+def test_stale_timeout_stops_at_default_or_configured_boundary(timeout):
+    overrides = (
+        []
+        if timeout is None
+        else [SimpleNamespace(name="stale_timeout_s", value=timeout)]
+    )
+    node = load_node_module("chassis").HexfellowChassisPicoVRTeleOpNode(
+        parameter_overrides=overrides
+    )
+    timeout = 0.5 if timeout is None else timeout
+    activate(node)
+    node._on_vr_state(vr_state(axis_y=1.0))
+    received = node.time_s
+    node.time_s = received + timeout - 0.01
+    node._publish_cmd_vel()
+    assert node.control_active
+    assert node.publishers[0].messages[-1].linear.x == pytest.approx(0.2)
+    node.time_s = received + timeout
+    node._publish_cmd_vel()
+    assert not node.control_active
+    assert_stopped(node)

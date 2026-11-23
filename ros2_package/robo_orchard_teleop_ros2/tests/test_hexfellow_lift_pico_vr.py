@@ -38,6 +38,7 @@ def move(node, axis_y=1.0):
 
 def test_defaults_and_wait_for_feedback(node):
     assert node.teleop_frequency_hz == 30.0
+    assert node.stale_timeout_s == 0.5
     assert node.timers[0].period == pytest.approx(1 / 30)
     assert node.vr_topic == "/pico_bridge/vr_state"
     assert node.state_topic == "/lift/motor_states"
@@ -227,3 +228,40 @@ def test_output_and_feedback_topics_are_configurable():
     )
     assert node.publishers[0].topic == "/override/lift"
     assert node.subscriptions[1].topic == "/measured/lift"
+
+
+@pytest.mark.parametrize("timeout", [None, 0.25, 1.0])
+@pytest.mark.parametrize("source", ["vr", "feedback"])
+def test_stale_timeout_gates_each_source_at_boundary(timeout, source):
+    overrides = (
+        []
+        if timeout is None
+        else [SimpleNamespace(name="stale_timeout_s", value=timeout)]
+    )
+    node = load_node_module("lift").HexfellowLiftPicoVRTeleOpNode(
+        parameter_overrides=overrides
+    )
+    timeout = 0.5 if timeout is None else timeout
+    move(node)
+    node.time_s = timeout - 0.01
+    node._publish_joint_cmd()
+    assert node._has_fresh_vr_state()
+    assert node._has_fresh_state()
+    assert node._motion_active
+    count = len(node.publishers[0].messages)
+    node.time_s = timeout
+    if source == "vr":
+        feedback(node, 0.295)
+        assert not node._has_fresh_vr_state()
+        assert node._has_fresh_state()
+    else:
+        node._on_vr_state(vr_state(axis_y=1.0))
+        assert node._has_fresh_vr_state()
+        assert not node._has_fresh_state()
+    node._publish_joint_cmd()
+    if source == "vr":
+        assert len(node.publishers[0].messages) == count + 1
+        assert node.publishers[0].messages[-1].position == [0.295]
+        assert not node._motion_active
+    else:
+        assert len(node.publishers[0].messages) == count

@@ -214,9 +214,11 @@ def test_driver_and_manager_arguments_reach_existing_nodes(components):
         ("chassis", "max_linear_x", "0.2", "0.1"),
         ("chassis", "max_angular_z", "0.2", "0.15"),
         ("lift", "position_rate", "0.08", "0.04"),
+        ("chassis", "chassis_stale_timeout_s", "0.5", "0.25"),
+        ("lift", "lift_stale_timeout_s", "0.5", "0.75"),
     ],
 )
-def test_parent_speed_arguments_reach_hexfellow_nodes(
+def test_parent_arguments_reach_hexfellow_nodes(
     components, component, name, default, override
 ):
     path = (
@@ -241,7 +243,8 @@ def test_parent_speed_arguments_reach_hexfellow_nodes(
         and entity.kwargs["executable"]
         == f"hexfellow_{component}_pico_vr_teleop"
     )
-    parameter = node["parameters"][0][name]
+    parameter_name = "stale_timeout_s" if name.endswith("timeout_s") else name
+    parameter = node["parameters"][0][parameter_name]
     assert parameter.value_type is float
     for context, expected in (
         (parent_defaults, default),

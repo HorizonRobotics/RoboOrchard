@@ -8,6 +8,8 @@
   <license>Apache-2.0</license>
 
   <exec_depend>robo_orchard_deploy_msg_ros2</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
 
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-requests</exec_depend>

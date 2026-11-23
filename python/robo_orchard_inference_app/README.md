@@ -13,12 +13,15 @@ Freshness uses the same local receive-time `status_timeout_s` as inference
 and Recorder, with independent caches. Service replies acknowledge requests;
 they never replace reported control state.
 
-Manager owns command routing and reset sequencing: stop forwarding commands,
-disable configured inference services, reset configured hardware, then remain
-in STOP. The App does not call driver enable/reset services or disable
-inference as part of Reset. Reset is available in AUTO, TAKEOVER and STOP,
-but stays locked during an active or pending recording. STOP gates commands;
-it does not disable hardware, and TAKEOVER is not hardware teaching mode.
+Manager owns command routing and reset sequencing: block candidate commands
+and neutralize declared Twist outputs, disable configured inference services,
+reset configured hardware, then remain in STOP. The App does not call driver
+enable/reset services or disable inference as part of Reset. Reset is
+available in AUTO, TAKEOVER and STOP,
+but stays locked during an active or pending recording. STOP gates commands
+and sends best-effort zero Twist; it does not disable hardware, and TAKEOVER
+is not hardware teaching mode. Driver watchdogs remain necessary for command
+or process loss.
 
 Regenerate the HoloBrain launch configuration using the existing project
 scripts. They now start Manager instead of the muxer and select robot wiring

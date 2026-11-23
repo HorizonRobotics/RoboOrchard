@@ -74,6 +74,9 @@ class _FakeNode:
 
 def _joint_state(positions, names=None):
     return types.SimpleNamespace(
+        header=types.SimpleNamespace(
+            stamp=types.SimpleNamespace(sec=12, nanosec=34)
+        ),
         name=names
         if names is not None
         else [f"joint{index}" for index in range(1, len(positions) + 1)],
@@ -152,7 +155,8 @@ def test_a_frame_is_served_once(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert served["left_arm_state"] == {
+    assert served.reference_stamp == (12, 34)
+    assert served.data["left_arm_state"] == {
         "name": ["joint1", "joint2"],
         "position": [0.1, 0.2],
     }
@@ -168,7 +172,26 @@ def test_every_new_frame_is_served_again(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert served["left_arm_state"]["position"] == [0.3, 0.4]
+    assert served.data["left_arm_state"]["position"] == [0.3, 0.4]
+
+
+def test_snapshot_keeps_latest_synchronized_stamp_bound_to_payload(node):
+    config = _config()
+    config.observation_config.channels.append(
+        JointStateChannel(server_input_key="other", topic="/other")
+    )
+    manager = ObservationManager(node, config)
+    first, second = _joint_state([0.1]), _joint_state([0.2])
+    first.header.stamp.sec, first.header.stamp.nanosec = 5, 999
+    second.header.stamp.sec, second.header.stamp.nanosec = 6, 1
+    manager._observe_callback(first, second)
+    snapshot = manager.get_observations()
+    assert snapshot.reference_stamp == (6, 1)
+    second.header.stamp.sec = 100
+    manager._observe_callback(first, second)
+    assert manager.get_observations().reference_stamp == (100, 1)
+    assert snapshot.reference_stamp == (6, 1)
+    assert snapshot.data["other"]["position"] == [0.2]
 
 
 def test_an_identical_frame_still_counts_as_new(node):
@@ -204,4 +227,7 @@ def test_a_dropped_frame_does_not_hide_the_next_one(node):
 
     served = manager.get_observations()
     assert served is not None
-    assert served["left_arm_state"] == {"name": ["joint1"], "position": [0.7]}
+    assert served.data["left_arm_state"] == {
+        "name": ["joint1"],
+        "position": [0.7],
+    }

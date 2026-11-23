@@ -67,6 +67,25 @@ class FakeJointState:
         self.effort = []
 
 
+class FakePoseStamped:
+    def __init__(self):
+        self.header = types.SimpleNamespace(
+            stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id=""
+        )
+        self.pose = types.SimpleNamespace(
+            position=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=0.0),
+        )
+
+
+class FakePath:
+    def __init__(self):
+        self.header = types.SimpleNamespace(
+            stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id=""
+        )
+        self.poses = []
+
+
 class FakeInferenceStatus:
     ENABLED = "enabled"
     DISABLED = "disabled"
@@ -190,6 +209,18 @@ def _install_stub_modules():
     sensor_msgs.msg = sensor_msgs_msg
     sys.modules["sensor_msgs"] = sensor_msgs
     sys.modules["sensor_msgs.msg"] = sensor_msgs_msg
+
+    geometry_msgs = types.ModuleType("geometry_msgs")
+    geometry_msgs.msg = types.ModuleType("geometry_msgs.msg")
+    geometry_msgs.msg.PoseStamped = FakePoseStamped
+    sys.modules["geometry_msgs"] = geometry_msgs
+    sys.modules["geometry_msgs.msg"] = geometry_msgs.msg
+
+    nav_msgs = types.ModuleType("nav_msgs")
+    nav_msgs.msg = types.ModuleType("nav_msgs.msg")
+    nav_msgs.msg.Path = FakePath
+    sys.modules["nav_msgs"] = nav_msgs
+    sys.modules["nav_msgs.msg"] = nav_msgs.msg
 
 
 _install_stub_modules()

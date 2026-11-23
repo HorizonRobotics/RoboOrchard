@@ -1,0 +1,36 @@
+# Example wiring for dual Piper + HexFellow Pico tracking.
+# No autonomous or teleop source publishes directly to /chassis/cmd_vel.
+channels:
+  - name: left_arm
+    autonomous_topic: /left_algo_cmd
+    override_topic: /pico_teleop/joint_left
+    output_topic: /robot/left/joint_cmd
+  - name: right_arm
+    autonomous_topic: /right_algo_cmd
+    override_topic: /pico_teleop/joint_right
+    output_topic: /robot/right/joint_cmd
+  - name: lift
+    autonomous_topic: /lift_algo_cmd
+    override_topic: /hexfellow_teleop/lift_joint_cmd
+    output_topic: /lift/joint_cmd
+  - name: chassis_pose
+    msg_type: nav_msgs/msg/Path
+    autonomous_topic: /chassis_pose_algo_cmd
+    output_topic: /robot/chassis/pose_target
+  - name: chassis_teleop
+    msg_type: geometry_msgs/msg/Twist
+    override_topic: /hexfellow_teleop/cmd_vel
+    output_topic: /robot/chassis/teleop_cmd_vel
+enable_services:
+  - /robot/left/enable_ctrl
+  - /robot/right/enable_ctrl
+reset_services:
+  - /robot/left/reset_ctrl
+  - /robot/right/reset_ctrl
+inference_disable_services:
+  - /robot/inference_service/disable
+inference_node_candidates:
+  - /robot/inference_service/sync_node
+  - /robot/inference_service/async_node
+replay_time_s: 0.0
+status_publish_rate_hz: 1.0

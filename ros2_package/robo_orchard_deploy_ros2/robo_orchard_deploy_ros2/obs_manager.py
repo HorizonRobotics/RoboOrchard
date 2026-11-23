@@ -15,6 +15,8 @@
 # permissions and limitations under the License.
 
 import threading
+from dataclasses import dataclass
+from typing import Any
 
 from message_filters import ApproximateTimeSynchronizer
 from rclpy.node import Node
@@ -22,6 +24,19 @@ from rclpy.node import Node
 from robo_orchard_deploy_ros2 import codec
 from robo_orchard_deploy_ros2.config import DeployConfig
 from robo_orchard_deploy_ros2.topic_manager import TopicManager
+
+
+@dataclass(frozen=True)
+class ObservationSnapshot:
+    """Decoded payload and its local ROS reference time (sec, nanosec).
+
+    The latest message header stamp in an approximately synchronized set is
+    an approximate observation origin, not an exact common acquisition time.
+    This context stays local; only ``data`` is sent to the model service.
+    """
+
+    data: dict[str, Any]
+    reference_stamp: tuple[int, int]
 
 
 class ObservationManager:
@@ -35,7 +50,7 @@ class ObservationManager:
     def __init__(self, node: Node, config: DeployConfig):
         self._node = node
         self._config = config
-        self.current_observations = {}
+        self.current_observations: ObservationSnapshot | None = None
         self.obs_lock = threading.Lock()
         self.topic_manager = TopicManager(self._node)
         self._channels = list(config.observation_config.channels)
@@ -130,11 +145,17 @@ class ObservationManager:
                 return
 
         with self.obs_lock:
-            self.current_observations = _cur_observations
+            self.current_observations = ObservationSnapshot(
+                data=_cur_observations,
+                reference_stamp=max(
+                    (msg.header.stamp.sec, msg.header.stamp.nanosec)
+                    for msg in msgs
+                ),
+            )
             self._has_new_frame = True
 
-    def get_observations(self):
-        """Return the newest frame, or None if it was already served.
+    def get_observations(self) -> ObservationSnapshot | None:
+        """Return the newest snapshot, or None if already served.
 
         The caller polls at its own frequency, which is usually slower than
         the topics publish, so the same frame would otherwise be inferred
@@ -148,4 +169,7 @@ class ObservationManager:
                 )
                 return None
             self._has_new_frame = False
-            return self.current_observations.copy()
+            snapshot = self.current_observations
+            return ObservationSnapshot(
+                snapshot.data.copy(), snapshot.reference_stamp
+            )

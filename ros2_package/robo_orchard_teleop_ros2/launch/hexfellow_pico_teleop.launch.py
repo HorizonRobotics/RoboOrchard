@@ -50,6 +50,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("lift_read_only", default_value="false"),
             DeclareLaunchArgument("start_pico_bridge", default_value="true"),
             DeclareLaunchArgument(
+                "start_drivers",
+                default_value="true",
+                description="Start the official chassis/lift driver launch.",
+            ),
+            DeclareLaunchArgument(
                 "start_control_manager", default_value="true"
             ),
             DeclareLaunchArgument(
@@ -74,6 +79,16 @@ def generate_launch_description() -> LaunchDescription:
                 "lift_state_topic", default_value="/lift/motor_states"
             ),
             DeclareLaunchArgument("teleop_frequency_hz", default_value="30.0"),
+            DeclareLaunchArgument(
+                "chassis_stale_timeout_s",
+                default_value="0.5",
+                description="Chassis VR input timeout in seconds.",
+            ),
+            DeclareLaunchArgument(
+                "lift_stale_timeout_s",
+                default_value="0.5",
+                description="Lift VR input and feedback timeout in seconds.",
+            ),
             DeclareLaunchArgument(
                 "max_linear_x",
                 default_value="0.2",
@@ -100,6 +115,7 @@ def generate_launch_description() -> LaunchDescription:
                         ]
                     )
                 ),
+                condition=IfCondition(LaunchConfiguration("start_drivers")),
                 launch_arguments={
                     "chassis_url": LaunchConfiguration("chassis_url"),
                     "lift_url": LaunchConfiguration("lift_url"),
@@ -143,6 +159,10 @@ def generate_launch_description() -> LaunchDescription:
                         "cmd_vel_topic": LaunchConfiguration(
                             "chassis_override_topic"
                         ),
+                        "stale_timeout_s": ParameterValue(
+                            LaunchConfiguration("chassis_stale_timeout_s"),
+                            value_type=float,
+                        ),
                         "max_linear_x": ParameterValue(
                             LaunchConfiguration("max_linear_x"),
                             value_type=float,
@@ -169,6 +189,10 @@ def generate_launch_description() -> LaunchDescription:
                             "lift_override_topic"
                         ),
                         "state_topic": LaunchConfiguration("lift_state_topic"),
+                        "stale_timeout_s": ParameterValue(
+                            LaunchConfiguration("lift_stale_timeout_s"),
+                            value_type=float,
+                        ),
                         "position_rate": ParameterValue(
                             LaunchConfiguration("position_rate"),
                             value_type=float,

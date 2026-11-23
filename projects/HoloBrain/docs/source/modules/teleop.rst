@@ -15,8 +15,13 @@ The system exposes four control states:
 
 - Takeover Mode: Facilitates human-in-the-loop control, supporting teleoperation frameworks such as ALOHA and Pico VR.
 
-- Stop Mode: Closes command forwarding; it does not stop hardware or issue an emergency stop.
-- Resetting: Closes command forwarding while inference is paused and hardware is reset.
+- Stop Mode: Closes candidate command forwarding and publishes best-effort
+  zero Twist commands on declared velocity channels. This does not acknowledge
+  a physical stop, disable hardware, or provide an emergency stop.
+- Resetting: Closes candidate command forwarding and neutralizes Twist outputs
+  before pausing inference and resetting hardware, then returns to Stop Mode
+  even if a downstream service fails. Driver watchdogs remain necessary for
+  process or transport loss.
 
 The default HoloBrain launch configuration targets ALOHA hardware. It uses
 ``teleop/aloha_dagger.sh``. Pico VR uses ``teleop/pico_dagger.sh`` for DAgger

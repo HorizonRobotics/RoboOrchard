@@ -62,7 +62,7 @@ class HexfellowLiftPicoVRTeleOpNode(Node):
         )
         self.declare_parameter(
             "stale_timeout_s",
-            0.3,
+            0.5,
             ParameterDescriptor(
                 description="Timeout for VR input and lift position feedback."
             ),

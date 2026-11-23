@@ -73,6 +73,34 @@ def test_empty_channel_list_is_rejected():
         ControlManagerConfig.model_validate(_config(channels=[]))
 
 
+@pytest.mark.parametrize("side", ["autonomous_topic", "override_topic"])
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_one_sided_channels_round_trip(side, explicit_null):
+    channel = _channel()
+    if explicit_null:
+        channel[side] = None
+    else:
+        del channel[side]
+    config = ControlManagerConfig.model_validate(_config([channel]))
+    assert getattr(config.channels[0], side) is None
+    assert (
+        ControlManagerConfig.model_validate_json(config.model_dump_json())
+        == config
+    )
+
+
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_channels_without_any_input_are_rejected(explicit_null):
+    channel = _channel()
+    for side in ("autonomous_topic", "override_topic"):
+        if explicit_null:
+            channel[side] = None
+        else:
+            del channel[side]
+    with pytest.raises(ValidationError, match="At least one"):
+        ControlManagerConfig.model_validate(_config([channel]))
+
+
 def test_duplicate_channel_names_are_rejected():
     channels = [_channel("left_arm"), _channel("left_arm", "/other")]
 

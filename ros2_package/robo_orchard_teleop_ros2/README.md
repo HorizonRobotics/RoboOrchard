@@ -80,6 +80,44 @@ comparisons (`python3 -m pip install "ikpy==4.5.0"`). Missing extensions or
 test dependencies fail this target. Source-only checks under `tests/` do not
 validate the compiled IK implementation in `test/test_ik.py`.
 
+## Hexfellow tracking and routing
+
+The existing Hexfellow teleop launches route Twist commands directly to the
+official driver through Control Manager and do not require the optional
+[HexFellow tracking wrapper](../robo_orchard_hexfellow_ros2/). For autonomous
+chassis poses with the same Pico controls, use that package's combined launch.
+It starts the tracker and uses separate autonomous Path and override Twist
+channels, both ending at the tracker. The tracker must be the only publisher
+to the driver's chassis velocity topic. Do not run the old and new combined
+launches together.
+
+Hexfellow teleop launches accept `start_drivers:=false` when another launch
+owns the official chassis/lift drivers. Unlike `enable_*_bridge`, this omits
+the entire official `multi_bringup` include, including its driver adapters.
+The dual Piper compatibility composition inherits this switch.
+
+Hexfellow Pico launches accept `chassis_stale_timeout_s` and
+`lift_stale_timeout_s`, both defaulting to **0.5 seconds**, including the
+dual Piper and tracking compositions. Each forwards to its adapter's
+`stale_timeout_s` node parameter, whose default is also 0.5 seconds.
+The chassis stops and deactivates local control when valid VR input expires.
+The lift timeout covers both VR input and position feedback: expired input
+holds the latest measured position once when feedback is fresh; expired
+feedback suppresses commands until fresh feedback arrives. These are
+startup parameters and can be set independently, for example
+`chassis_stale_timeout_s:=0.5 lift_stale_timeout_s:=0.4`.
+
+Control Manager excludes Twist, Path and PoseStamped channels from history
+and replay. Set `replay_time_s: 0` only when joint-position replay (including
+lift commands) should also be disabled. With replay enabled, replayable
+channels still replay all-or-none.
+
+Manager STOP suppresses candidate forwarding and publishes neutral Twist
+commands on entry; source changes and RESET also neutralize velocity outputs.
+These are best-effort ROS publications, not physical stop acknowledgments.
+The hardware driver must implement command-timeout stopping; neither the
+adapter nor Manager can stop a robot after downstream communication fails.
+
 ## DAgger Control
 
 Use Control Manager to switch between autonomous inference and human takeover.

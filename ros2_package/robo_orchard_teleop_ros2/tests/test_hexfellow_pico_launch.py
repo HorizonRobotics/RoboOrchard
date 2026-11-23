@@ -70,6 +70,13 @@ def test_includes_vendor_multi_bringup_from_installed_package(driver_launch):
     assert dict(driver_launch.launch_arguments)["simple_mode"] == "true"
 
 
+def test_official_drivers_default_on_and_can_be_omitted(launch, driver_launch):
+    defaults = arguments(launch)
+    assert defaults["start_drivers"] == "true"
+    assert driver_launch.condition.evaluate(defaults)
+    assert not driver_launch.condition.evaluate({"start_drivers": "false"})
+
+
 def test_device_addresses_are_required_and_forwarded(launch, driver_launch):
     defaults = arguments(launch)
     forwarded = dict(driver_launch.launch_arguments)
@@ -240,3 +247,18 @@ def test_both_adapters_have_packaged_entrypoints():
         )
         assert f'"hexfellow_{component}_pico_vr_teleop|{module}"' in cmake
         assert (package_root / (module.replace(".", "/") + ".py")).is_file()
+
+
+@pytest.mark.parametrize("component", ["chassis", "lift"])
+def test_stale_timeouts_forward_defaults_and_overrides_as_float(
+    launch, component
+):
+    name = f"{component}_stale_timeout_s"
+    defaults = arguments(launch)
+    assert defaults[name] == "0.5"
+    node = nodes_by_executable(launch)[f"hexfellow_{component}_pico_vr_teleop"]
+    parameter = node["parameters"][0]["stale_timeout_s"]
+    assert parameter.value_type is float
+    assert parameter.value.name == name
+    assert parameter.value.perform(defaults) == "0.5"
+    assert parameter.value.perform({name: "0.25"}) == "0.25"

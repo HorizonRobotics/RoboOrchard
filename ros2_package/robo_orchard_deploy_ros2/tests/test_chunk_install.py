@@ -32,6 +32,7 @@ import pytest
 
 from robo_orchard_deploy_ros2.config import TrajectoryStitchConfig
 from robo_orchard_deploy_ros2.node.async_node import DeployNode, NodeState
+from robo_orchard_deploy_ros2.obs_manager import ObservationSnapshot
 from robo_orchard_deploy_ros2.trajectory_stitcher import (
     TrajectoryStitcher,
     _eval_cubic,
@@ -91,8 +92,11 @@ class _ActionExecutor:
     def action_step_count(self, actions):
         return len(actions["actions"])
 
-    def send_action(self, actions, index):
+    validated_step_count = action_step_count
+
+    def send_action(self, actions, index, observation_stamp=None):
         self.sent.append(actions["actions"][index])
+        return True
 
     def reset_limiter(self):
         pass
@@ -123,6 +127,7 @@ def _node(
     node.get_clock = Mock()
     node.state = NodeState.EXECUTING
     node.current_actions = current_actions
+    node._action_observation_stamp = (1, 0)
     node.current_action_idx = current_action_idx
     node._chunk_start_idx = chunk_start_idx
     node._pending_actions = None
@@ -136,7 +141,13 @@ def _node(
     node._logger = _Logger()
     node.get_logger = lambda: node._logger
     node.obs_manager = type(
-        "_Obs", (), {"get_observations": lambda self: {"image": 1}}
+        "_Obs",
+        (),
+        {
+            "get_observations": lambda self: ObservationSnapshot(
+                {"image": 1}, (2, 0)
+            )
+        },
     )()
 
     def request_inference(obs):
@@ -262,13 +273,13 @@ def test_an_excessive_round_trip_installs_nothing():
     assert any("Excessive latency" in m for m in node._logger.warnings)
 
 
-def test_an_unchanged_response_is_not_reinstalled():
+def test_an_identical_response_still_has_a_fresh_timeline():
     node = _node(dict(CHUNK), 30, 0, dict(CHUNK), elapsed=12)
 
     node._model_infer_timer_callback()
 
-    assert node._stitcher.calls == []
-    assert node.current_action_idx == 42
+    assert node._stitcher.calls == [(12, 42)]
+    assert node.current_action_idx == 12
 
 
 def test_a_solve_finishing_at_the_planned_step_switches_immediately():
@@ -598,10 +609,10 @@ def test_disable_waits_for_publication_of_selected_action():
     operations = []
     original_send = node.action_executor.send_action
 
-    def delayed_send(actions, action_index):
+    def delayed_send(actions, action_index, observation_stamp=None):
         selected.set()
         assert release_publish.wait(timeout=5)
-        original_send(actions, action_index)
+        original_send(actions, action_index, observation_stamp)
         operations.append("publish")
 
     def disable():

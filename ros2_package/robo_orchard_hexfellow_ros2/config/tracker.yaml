@@ -1,0 +1,22 @@
+hexfellow_tracker:
+  ros__parameters:
+    target_topic: /robot/chassis/pose_target
+    teleop_topic: /robot/chassis/teleop_cmd_vel
+    output_topic: /chassis/cmd_vel
+    odom_topic: /chassis/odom
+    mode_topic: /robot/control/status
+    inference_status_topic: /robot/inference_service/status
+    odom_frame: odom
+    # body_frame is shared with the official driver via the launch argument.
+    control_rate: 100.0
+    history_duration: 35.0
+    command_timeout: 0.5
+    odom_timeout: 0.5
+    status_timeout: 3.0
+    max_linear_speed: 0.3
+    max_angular_speed: 0.3
+    longitudinal_gain: 2.0
+    lateral_gain: 4.0
+    heading_gain: 4.0
+    reset_distance: 1.0
+    reset_angle: 1.0

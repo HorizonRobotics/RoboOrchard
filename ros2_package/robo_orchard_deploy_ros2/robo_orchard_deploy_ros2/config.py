@@ -29,6 +29,7 @@ __all__ = [
     "ObservationConfig",
     "ActionChannelBase",
     "JointCommandChannel",
+    "PoseCommandChannel",
     "ActionChannel",
     "TrajectoryStitchConfig",
     "ControlConfig",
@@ -226,8 +227,27 @@ class JointCommandChannel(ActionChannelBase):
         return self
 
 
+class PoseCommandChannel(ActionChannelBase):
+    """Observation-relative poses, ordered xyz meters and quaternion wxyz.
+
+    Each Path contains one PoseStamped. Its outer header identifies the
+    observation reference; the inner stamp identifies the model sample time.
+    Both use the configured body frame at the observation time. Tracking and
+    velocity control belong to the receiving controller, not Deploy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["pose_command"] = "pose_command"
+    msg_type: Literal["nav_msgs/msg/Path"] = "nav_msgs/msg/Path"
+    frame_id: str = Field(
+        min_length=1,
+        description="Reference body frame at the observation timestamp.",
+    )
+
+
 ActionChannel = Annotated[
-    Union[JointCommandChannel],
+    Union[JointCommandChannel, PoseCommandChannel],
     Field(discriminator="kind"),
 ]
 
@@ -303,8 +323,18 @@ class ControlConfig(BaseModel):
         description="Action channels published from the model response.",
     )
     control_frequency: float = Field(
-        default=25.0, description="Control frequency in Hz."
+        default=25.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Input sample and command publication frequency in Hz.",
     )
+
+    @model_validator(mode="after")
+    def _validate_output_keys(self) -> "ControlConfig":
+        keys = [channel.server_output_key for channel in self.channels]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Action server_output_key values must be unique")
+        return self
 
 
 class DeployConfig(BaseModel):
@@ -341,6 +371,8 @@ class DeployConfig(BaseModel):
             for channel in self.observation_config.channels
         } | {"instruction", "delay_horizon"}
         for channel in self.control_config.channels:
+            if not isinstance(channel, JointCommandChannel):
+                continue
             key = channel.server_remaining_key
             if key is None:
                 continue

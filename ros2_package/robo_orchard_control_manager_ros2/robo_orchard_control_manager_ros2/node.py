@@ -22,6 +22,8 @@ from enum import Enum
 from functools import partial
 
 import rclpy
+from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Path
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node, ParameterDescriptor
@@ -38,6 +40,7 @@ from robo_orchard_teleop_msg_ros2.msg import ControlMode, TakeOverEvent
 STATUS_TOPIC = "/robot/control/status"
 EVENTS_TOPIC = "/robot/control/events"
 _HISTORY_MARGIN_S = 2.0
+_LIVE_ONLY_TYPES = {Twist, PoseStamped, Path}
 AUTO_SERVICE = "/robot/control/auto"
 TAKEOVER_SERVICE = "/robot/control/takeover"
 STOP_SERVICE = "/robot/control/stop"
@@ -134,24 +137,21 @@ class ControlManagerNode(Node):
                 ),
             )
             self._channels[channel_config.name] = runtime
-            self._command_subscriptions.extend(
-                [
+            for topic, callback in (
+                (channel_config.autonomous_topic, self._autonomous_callback),
+                (channel_config.override_topic, self._override_callback),
+            ):
+                if topic is None:
+                    continue
+                self._command_subscriptions.append(
                     self.create_subscription(
                         self.message_types[channel_config.name],
-                        channel_config.autonomous_topic,
-                        partial(self._autonomous_callback, runtime),
+                        topic,
+                        partial(callback, runtime),
                         1,
                         callback_group=self._command_callback_group,
-                    ),
-                    self.create_subscription(
-                        self.message_types[channel_config.name],
-                        channel_config.override_topic,
-                        partial(self._override_callback, runtime),
-                        1,
-                        callback_group=self._command_callback_group,
-                    ),
-                ]
-            )
+                    )
+                )
 
         self._status_timer = self.create_timer(
             1.0 / self.config.status_publish_rate_hz,
@@ -191,7 +191,9 @@ class ControlManagerNode(Node):
                 callback_group=self._transition_callback_group,
             ),
         ]
-        self._publish_status()
+        with self._state_lock:
+            self._neutralize_twist_locked()
+            self._publish_status_locked()
         self.get_logger().info(
             f"Loaded {len(self.config.channels)} control command channels."
         )
@@ -223,7 +225,11 @@ class ControlManagerNode(Node):
         with self._state_lock:
             if self._state != ControlState.AUTO:
                 return
-            if self.config.replay_time_s > 0.0:
+            if (
+                self.config.replay_time_s > 0.0
+                and self.message_types[channel.config.name]
+                not in _LIVE_ONLY_TYPES
+            ):
                 now_ns = self.get_clock().now().nanoseconds
                 channel.history.append((now_ns, message))
                 self._prune_history_locked(channel, now_ns)
@@ -250,6 +256,22 @@ class ControlManagerNode(Node):
         for channel in self._channels.values():
             channel.history.clear()
 
+    def _neutralize_twist_locked(self) -> None:
+        """Stop velocity outputs while excluding concurrent source callbacks.
+
+        Joint-position channels retain their last target. Neutral commands
+        are best-effort ROS publications, not hardware stop acknowledgments.
+        Attempt every Twist channel even if another publisher fails.
+        """
+        for channel in self._channels.values():
+            if self.message_types[channel.config.name] is Twist:
+                try:
+                    channel.publisher.publish(Twist())
+                except Exception as error:
+                    self.get_logger().error(
+                        f"Cannot neutralize '{channel.config.name}': {error}"
+                    )
+
     def _replay_locked(self) -> bool:
         if self.config.replay_time_s <= 0.0:
             return False
@@ -259,6 +281,11 @@ class ControlManagerNode(Node):
         )
         replay_messages = []
         for channel in self._channels.values():
+            if (
+                channel.config.autonomous_topic is None
+                or self.message_types[channel.config.name] in _LIVE_ONLY_TYPES
+            ):
+                continue
             message = next(
                 (
                     message
@@ -271,11 +298,13 @@ class ControlManagerNode(Node):
                 return False
             replay_messages.append((channel, message))
 
+        if not replay_messages:
+            return False
         for channel, message in replay_messages:
             channel.publisher.publish(message)
         self._publish_event_locked(
             TakeOverEvent.REPLAY_COMMAND_SENT,
-            "Replayed one autonomous command for every channel.",
+            "Replayed one autonomous command for every eligible channel.",
         )
         return True
 
@@ -292,9 +321,12 @@ class ControlManagerNode(Node):
         """
         with self._state_lock:
             if target == self._state:
+                if target == ControlState.STOP:
+                    self._neutralize_twist_locked()
                 return False
 
             previous = self._state
+            self._neutralize_twist_locked()
             replayed = False
             if (
                 target == ControlState.TAKEOVER
@@ -416,6 +448,7 @@ class ControlManagerNode(Node):
         try:
             current = self.state
             if current == ControlState.STOP:
+                self._change_state(ControlState.STOP)
                 response.success = True
                 response.message = "Already in STOP."
                 return response

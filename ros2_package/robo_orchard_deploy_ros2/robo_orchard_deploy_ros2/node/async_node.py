@@ -26,7 +26,7 @@ from std_srvs.srv import Trigger
 
 from robo_orchard_deploy_msg_ros2.msg import InferenceEvent, InferenceStatus
 from robo_orchard_deploy_ros2.action_exec import ActionExecutor
-from robo_orchard_deploy_ros2.config import DeployConfig
+from robo_orchard_deploy_ros2.config import DeployConfig, JointCommandChannel
 from robo_orchard_deploy_ros2.model_request import ModelInferencer
 from robo_orchard_deploy_ros2.obs_manager import ObservationManager
 from robo_orchard_deploy_ros2.trajectory_stitcher import TrajectoryStitcher
@@ -75,11 +75,14 @@ class DeployNode(Node):
             callback_group=self._control_callback_group,
         )
         self.current_actions = None
+        self._action_observation_stamp: tuple[int, int] | None = None
         self.current_action_idx = 0
         # Where the live chunk began executing, so the next solve knows how
         # far it got.
         self._chunk_start_idx = 0
-        self._pending_actions: tuple[int, dict, int] | None = None
+        self._pending_actions: (
+            tuple[int, dict, int, tuple[int, int]] | None
+        ) = None
         self._stitch_lead_steps = 1
         self.state = NodeState.PAUSED
         self.shared_state_lock = threading.Lock()
@@ -115,13 +118,15 @@ class DeployNode(Node):
         else:
             self.max_delay_horizon = self.config.max_delay_horizon
 
+        joint_keys = [
+            channel.server_output_key
+            for channel in self.config.control_config.channels
+            if isinstance(channel, JointCommandChannel)
+        ]
         self._stitcher = TrajectoryStitcher(
-            self.config.trajectory_stitch,
+            self.config.trajectory_stitch if joint_keys else None,
             self.config.control_config.control_frequency,
-            [
-                channel.server_output_key
-                for channel in self.config.control_config.channels
-            ],
+            joint_keys,
             self.get_logger(),
         )
         if self._stitcher.enabled:
@@ -133,7 +138,7 @@ class DeployNode(Node):
         if self.current_actions is None:
             return {}, None
         remaining = self.action_executor.remaining_actions(
-            self.current_actions, self.current_action_idx
+            self.current_actions, self.current_action_idx - 1
         )
         if not remaining:
             return {}, None
@@ -171,12 +176,16 @@ class DeployNode(Node):
             remaining_actions, remaining_actions_start_idx = (
                 self._extract_remaining_actions()
             )
-        current_observations.update(remaining_actions)
-        predict_actions = self.model_inferencer.request_inference(
-            current_observations
-        )
+        request_data = current_observations.data.copy()
+        request_data.update(remaining_actions)
+        predict_actions = self.model_inferencer.request_inference(request_data)
         if predict_actions is None:
             self.get_logger().error("Model server returns no actions.")
+            return
+        new_step_count = self.action_executor.validated_step_count(
+            predict_actions
+        )
+        if not new_step_count:
             return
         new_action = predict_actions.copy()
 
@@ -190,8 +199,6 @@ class DeployNode(Node):
                 return
             if self.current_actions is None:
                 install_idx, prev_ran = 0, 0
-            elif new_action == self.current_actions:
-                return
             else:
                 prev_ran = self.current_action_idx - self._chunk_start_idx
                 if remaining_actions_start_idx is None:
@@ -224,9 +231,7 @@ class DeployNode(Node):
                         self._stitch_lead_steps,
                         int(self.max_delay_horizon) - install_idx,
                         current_step_count - switch_idx - 1,
-                        self.action_executor.action_step_count(new_action)
-                        - install_idx
-                        - 1,
+                        new_step_count - install_idx - 1,
                     ),
                 )
                 switch_idx += lead_steps
@@ -263,12 +268,17 @@ class DeployNode(Node):
                     )
                     return
                 if self.current_action_idx == switch_idx:
-                    self._switch_actions(new_action, install_idx)
+                    self._switch_actions(
+                        new_action,
+                        install_idx,
+                        current_observations.reference_stamp,
+                    )
                 else:
                     self._pending_actions = (
                         switch_idx,
                         new_action,
                         install_idx,
+                        current_observations.reference_stamp,
                     )
             return
 
@@ -291,11 +301,24 @@ class DeployNode(Node):
                         f"{self.max_delay_horizon}."
                     )
                     return
-            self._switch_actions(new_action, install_idx)
+            self._switch_actions(
+                new_action, install_idx, current_observations.reference_stamp
+            )
 
-    def _switch_actions(self, actions: dict, start_idx: int) -> None:
+    def _switch_actions(
+        self,
+        actions: dict,
+        start_idx: int,
+        observation_stamp: tuple[int, int],
+    ) -> None:
         """Switch chunks while holding ``shared_state_lock``."""
+        step_count = self.action_executor.action_step_count(actions)
+        if not 0 <= start_idx < step_count:
+            self._pending_actions = None
+            self._stitcher.discard_pending()
+            return
         self.current_actions = actions
+        self._action_observation_stamp = observation_stamp
         self.current_action_idx = start_idx
         self._chunk_start_idx = start_idx
         self._pending_actions = None
@@ -313,9 +336,9 @@ class DeployNode(Node):
                 return
 
             if self._pending_actions is not None:
-                switch_idx, actions, start_idx = self._pending_actions
+                switch_idx, actions, start_idx, stamp = self._pending_actions
                 if self.current_action_idx == switch_idx:
-                    self._switch_actions(actions, start_idx)
+                    self._switch_actions(actions, start_idx, stamp)
 
             if self.current_actions is None:
                 return
@@ -332,20 +355,34 @@ class DeployNode(Node):
             current_idx_local = self.current_action_idx
             self.current_action_idx += 1
 
-            self.action_executor.send_action(
-                current_action_local, current_idx_local
-            )
+            try:
+                self.action_executor.send_action(
+                    current_action_local,
+                    current_idx_local,
+                    self._action_observation_stamp,
+                )
+            except Exception as error:
+                self.get_logger().error(f"Error when sending action: {error}")
+                self._invalidate_actions_locked()
 
     def _invalidate_actions_locked(self) -> None:
         """Drop all action state while holding ``shared_state_lock``."""
         self._inference_generation += 1
         self.current_actions = None
+        self._action_observation_stamp = None
         self.current_action_idx = 0
         self._chunk_start_idx = 0
         self._pending_actions = None
         self._stitch_lead_steps = 1
         self.action_executor.reset_limiter()
         self._stitcher.reset()
+
+    def destroy_node(self) -> bool:
+        """Invalidate action state before destroying ROS publishers."""
+        with self.shared_state_lock:
+            self._invalidate_actions_locked()
+            self.state = NodeState.PAUSED
+        return super().destroy_node()
 
     def _initialize(self):
         self.declare_parameter(
@@ -449,3 +486,4 @@ def main(args=None):
         pass
     finally:
         excutor.shutdown()
+        deploy_node.destroy_node()

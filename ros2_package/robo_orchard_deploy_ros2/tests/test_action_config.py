@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from robo_orchard_deploy_ros2.config import (
     ControlConfig,
     JointCommandChannel,
+    PoseCommandChannel,
 )
 
 
@@ -74,7 +75,69 @@ def test_at_least_one_channel_is_required():
         ControlConfig(channels=[])
 
 
-def test_control_frequency_keeps_its_default():
+def test_control_frequency_defaults_to_25_hz():
     config = ControlConfig(channels=[_channel()])
 
     assert config.control_frequency == 25.0
+
+
+@pytest.mark.parametrize("frequency", [25.0, 200.0])
+def test_explicit_control_frequency_is_preserved(frequency):
+    assert (
+        ControlConfig(
+            channels=[_channel()], control_frequency=frequency
+        ).control_frequency
+        == frequency
+    )
+
+
+@pytest.mark.parametrize("frequency", [0, -1, float("nan"), float("inf")])
+def test_invalid_control_frequency_is_rejected(frequency):
+    with pytest.raises(ValidationError):
+        ControlConfig(channels=[_channel()], control_frequency=frequency)
+
+
+def test_pose_and_joint_channels_round_trip_independently():
+    config = ControlConfig(
+        channels=[
+            _channel(),
+            PoseCommandChannel(
+                server_output_key="base",
+                topic="/base_cmd",
+                frame_id="base_link",
+            ),
+        ]
+    )
+    reloaded = ControlConfig.model_validate_json(config.model_dump_json())
+    assert isinstance(reloaded.channels[0], JointCommandChannel)
+    assert isinstance(reloaded.channels[1], PoseCommandChannel)
+    assert reloaded.channels[1].msg_type == "nav_msgs/msg/Path"
+    assert reloaded == config
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"frame_id": ""},
+        {"msg_type": "sensor_msgs/msg/JointState"},
+        {"msg_type": "geometry_msgs/msg/PoseStamped"},
+        {"server_remaining_key": "remaining"},
+        {"joint_names": ["joint"]},
+    ],
+)
+def test_invalid_pose_contract_is_rejected(options):
+    options.setdefault("frame_id", "base_link")
+    with pytest.raises(ValidationError):
+        PoseCommandChannel(
+            server_output_key="base", topic="/base_cmd", **options
+        )
+
+
+def test_pose_reference_frame_is_required():
+    with pytest.raises(ValidationError):
+        PoseCommandChannel(server_output_key="base", topic="/base_cmd")
+
+
+def test_duplicate_output_keys_are_rejected():
+    with pytest.raises(ValidationError, match="unique"):
+        ControlConfig(channels=[_channel(), _channel()])

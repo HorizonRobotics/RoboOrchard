@@ -34,9 +34,10 @@ class DeclareLaunchArgument:
 
 
 class IncludeLaunchDescription:
-    def __init__(self, source, launch_arguments=None):
+    def __init__(self, source, launch_arguments=None, condition=None):
         self.source = source
         self.launch_arguments = list(launch_arguments or [])
+        self.condition = condition
 
 
 class GroupAction:

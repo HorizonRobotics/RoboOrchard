@@ -52,8 +52,24 @@ supports:
 - `JointStateChannel` for measured joint positions.
 
 Action channels derive from `ActionChannelBase`. The current implementation
-supports only `JointCommandChannel`, which publishes joint-position commands
-using `sensor_msgs/msg/JointState`.
+supports:
+
+- `JointCommandChannel`: joint-position commands using
+  `sensor_msgs/msg/JointState`.
+- `PoseCommandChannel`: observation-relative `[T, 7]` xyz meters and
+  quaternion wxyz, normalized and published as a `nav_msgs/msg/Path` with
+  exactly one PoseStamped per control tick.
+  The configured `frame_id` names the reference body frame at the original
+  observation timestamp. Every Path retains that request's reference stamp:
+  the latest ROS message header stamp in the approximately synchronized
+  snapshot (an approximate common acquisition reference). Timestamp context
+  stays local to the request/chunk, including async pending handovers; it
+  never changes HTTP payloads. The inner pose stamp is the observation time
+  plus `(original_row_index + 1) / control_frequency`, rounded to nanoseconds.
+  Both headers name the body frame at observation time. Inner sample times
+  determine velocity differences, not coordinate references or a new schedule.
+  Pose RTC tails are unsupported because their
+  origin cannot be reused without transformation.
 
 The optional `velocity` and `effort` fields populated by
 `JointCommandChannel` are auxiliary fields of that joint-position message;
@@ -94,9 +110,14 @@ they do not make the channel a velocity-control or force-control interface.
   generic node path.
 - Reject missing, malformed, or dimensionally inconsistent model outputs
   before publishing them.
-- Do not partially publish a multi-channel action step when the response is
-  inconsistent across channels.
+- Reject inconsistent channel horizons and malformed pose rows before
+  executing a chunk. Validate individual joint rows when publishing them.
 - Keep observation decoding and action encoding explicit and testable at the
   channel boundary.
+- Only joint-position channels enter joint limiters and stitchers.
+  Deploy never invents a zero/identity pose on exhaustion or
+  invalidation. Downstream controllers own tracking, odometry, velocity
+  generation, and stopping using fresh Deploy enabled status, routing state,
+  and target freshness/command timeout.
 - Preserve the separation between model transport, ROS 2 transport, and robot
   control semantics.

@@ -30,6 +30,7 @@ from unittest.mock import Mock
 import pytest
 
 from robo_orchard_deploy_ros2.node import async_node, sync_node
+from robo_orchard_deploy_ros2.obs_manager import ObservationSnapshot
 
 
 class _Logger:
@@ -56,6 +57,11 @@ class _Executor:
     def reset_limiter(self):
         self.resets += 1
 
+    def action_step_count(self, action):
+        return len(action["actions"])
+
+    validated_step_count = action_step_count
+
 
 def _async():
     node = async_node.DeployNode.__new__(async_node.DeployNode)
@@ -68,7 +74,7 @@ def _async():
     node.current_actions = {"actions": [[1.0]]}
     node.current_action_idx = 7
     node._chunk_start_idx = 3
-    node._pending_actions = (10, {"actions": [[2.0]]}, 0)
+    node._pending_actions = (10, {"actions": [[2.0]]}, 0, (1, 0))
     node.action_executor = _Executor()
     node._stitcher = type("_S", (), {"resets": 0, "reset": lambda s: None})()
     node._logger = _Logger()
@@ -170,7 +176,9 @@ def test_sync_late_response_cannot_restore_actions(resume):
     node.current_actions = None
     node.current_action_index = 0
     node.obs_manager = SimpleNamespace(
-        get_observations=lambda: {"observation": [1.0]}
+        get_observations=lambda: ObservationSnapshot(
+            {"observation": [1.0]}, (1, 0)
+        )
     )
 
     def delayed_response(observations):

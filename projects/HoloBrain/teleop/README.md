@@ -37,12 +37,26 @@ channels plus chassis `Twist` and lift `JointState` channels:
 | chassis | `/chassis_algo_cmd` | `/hexfellow_teleop/cmd_vel` | `/chassis/cmd_vel` |
 | lift | `/lift_algo_cmd` | `/hexfellow_teleop/lift_joint_cmd` | `/lift/joint_cmd` |
 
-The Hexfellow autonomous inputs are reserved for future Deploy channels;
-existing Deploy configs publish only arm commands. The configuration uses
-`replay_time_s=0` (including the Piper-only paths) so velocity control does
-not replay stale chassis commands. Reset services remain the two Piper arm
-services; the Hexfellow vendor drivers have no corresponding configured
-reset service. Request `/robot/control/takeover` before driving the robot.
+These are legacy direct-driver teleop mappings. Existing HoloBrain Deploy
+configs publish only arm commands; `/chassis_algo_cmd` is not a pose input.
+Autonomous chassis tracking now uses the optional
+[HexFellow wrapper](../../../ros2_package/robo_orchard_hexfellow_ros2/), with
+separate Pose/Twist Manager routes and the tracker as the sole velocity
+publisher. This project does not automatically select that wrapper or generate
+a mobile/lift model profile. Use its explicit launch and five-channel example
+instead of starting it alongside this legacy script. The configuration uses
+`replay_time_s=0` (including the Piper-only paths) to disable non-Twist
+joint-command replay. Manager always excludes Twist channels from history
+and replay, independently of this setting. Reset services remain the two
+Piper arm services; the Hexfellow vendor drivers have no corresponding
+configured reset service. Request `/robot/control/takeover` before driving
+the robot.
+
+When collecting DAgger data with Deploy running, pause inference before
+requesting TAKEOVER. Keep it paused until control has returned to AUTO, then
+resume inference. Switching modes alone does not invalidate in-flight
+inference: a result based on observations from TAKEOVER can arrive after
+returning to AUTO and be executed.
 
 The data recorder service uses the same `TELEOP_SOURCE` and
 `WITH_HEXFELLOW` environment switches. Pico sessions capture VR input and

@@ -45,6 +45,10 @@ class CommandChannel(BaseModel):
 
     The channel describes only ROS transport wiring. Action decoding and
     model response fields remain owned by the Deploy configuration.
+    Each input side is optional, but at least one must be configured. Use
+    separate channels and outputs for autonomous/override messages with
+    different types. ``msg_type`` determines routing semantics: Twist is
+    neutralized at transitions; Twist, PoseStamped and Path are never replayed.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -52,9 +56,16 @@ class CommandChannel(BaseModel):
     name: NonEmptyString
     kind: Literal["joint_command"] = "joint_command"
     msg_type: NonEmptyString = "sensor_msgs/msg/JointState"
-    autonomous_topic: NonEmptyString
-    override_topic: NonEmptyString
+    autonomous_topic: NonEmptyString | None = None
+    override_topic: NonEmptyString | None = None
     output_topic: NonEmptyString
+
+    def model_post_init(self, context: object) -> None:
+        """Reject routes without any command source."""
+        if self.autonomous_topic is None and self.override_topic is None:
+            raise ValueError(
+                "At least one autonomous_topic or override_topic is required"
+            )
 
 
 class ControlManagerConfig(BaseModel):

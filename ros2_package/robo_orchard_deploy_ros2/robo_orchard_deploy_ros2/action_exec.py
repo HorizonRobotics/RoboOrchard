@@ -1,6 +1,6 @@
 # Project RoboOrchard
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +14,36 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
+from geometry_msgs.msg import PoseStamped
+from numpy.typing import NDArray
 from rclpy.node import Node
 
 from robo_orchard_deploy_ros2.command_limiter import CommandLimiter
-from robo_orchard_deploy_ros2.config import DeployConfig
+from robo_orchard_deploy_ros2.config import (
+    DeployConfig,
+    JointCommandChannel,
+    PoseCommandChannel,
+)
 from robo_orchard_deploy_ros2.topic_manager import TopicManager
+
+if TYPE_CHECKING:
+    from rclpy.publisher import Publisher
+
+
+def _pose_values(row: Any) -> NDArray[np.float64]:
+    """Read a finite xyz,wxyz row with a nonzero quaternion."""
+    try:
+        values = np.asarray(row, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("expected seven finite pose values") from exc
+    if values.shape != (7,) or not np.isfinite(values).all():
+        raise ValueError("expected seven finite pose values")
+    if not values[3:].any():
+        raise ValueError("zero quaternion")
+    return values
 
 
 class ActionExecutor:
@@ -107,7 +131,65 @@ class ActionExecutor:
             goal_msg.effort = channel.efforts
         publisher.publish(goal_msg)
 
-    def action_step_count(self, action):
+    def _send_pose_action(
+        self,
+        channel: PoseCommandChannel,
+        publisher: "Publisher",
+        msg_type_class: type,
+        row: Any,
+        action_index: int,
+        observation_stamp: tuple[int, int] | None,
+    ) -> None:
+        if observation_stamp is None:
+            self._node.get_logger().error(
+                "Pose action requires its request's observation timestamp",
+                throttle_duration_sec=1,
+            )
+            return
+
+        try:
+            values = _pose_values(row)
+        except ValueError as exc:
+            self._node.get_logger().error(
+                f"Channel '{channel.server_output_key}' has invalid pose: "
+                f"{exc}.",
+                throttle_duration_sec=1,
+            )
+            return
+        quaternion = values[3:]
+        scale = np.max(np.abs(quaternion))
+        # Scale before taking the norm to avoid overflow/underflow.
+        quaternion = quaternion / scale
+        quaternion /= np.linalg.norm(quaternion)
+
+        message = msg_type_class()
+        message.header.stamp.sec, message.header.stamp.nanosec = (
+            observation_stamp
+        )
+        message.header.frame_id = channel.frame_id
+        pose = PoseStamped()
+        pose.header.frame_id = channel.frame_id
+        # Use the original row index and keep ROS time as an integer.
+        sample_ns = (
+            observation_stamp[0] * 1_000_000_000
+            + observation_stamp[1]
+            + round(
+                (action_index + 1)
+                * 1_000_000_000
+                / self._config.control_config.control_frequency
+            )
+        )
+        pose.header.stamp.sec, pose.header.stamp.nanosec = divmod(
+            sample_ns, 1_000_000_000
+        )
+        for axis, value in zip("xyz", values[:3], strict=True):
+            setattr(pose.pose.position, axis, float(value))
+        for axis, value in zip("wxyz", quaternion, strict=True):
+            setattr(pose.pose.orientation, axis, float(value))
+        message.poses = [pose]
+        publisher.publish(message)
+
+    def action_step_count(self, action: dict[str, Any]) -> int:
         """Return how many steps of ``action`` the channels can publish.
 
         The server returns one row per control step, so a sequence length
@@ -118,12 +200,19 @@ class ActionExecutor:
         Args:
             action (dict): The model server response.
         """
-        lengths = {
-            channel.server_output_key: len(
-                action.get(channel.server_output_key) or []
-            )
-            for channel, _, _ in self._outputs
-        }
+        lengths = {}
+        for channel, _, _ in self._outputs:
+            key = channel.server_output_key
+            sequence = action.get(key, [])
+            if isinstance(channel, PoseCommandChannel) and not isinstance(
+                sequence, list
+            ):
+                self._node.get_logger().error(
+                    f"Channel '{key}' expects an array of pose rows.",
+                    throttle_duration_sec=1,
+                )
+                return 0
+            lengths[key] = len(sequence or [])
         if len(set(lengths.values())) > 1:
             self._node.get_logger().error(
                 f"Action channels returned different step counts "
@@ -133,12 +222,38 @@ class ActionExecutor:
             return 0
         return min(lengths.values(), default=0)
 
-    def remaining_actions(self, action, after_index):
+    def validated_step_count(self, action: dict[str, Any]) -> int:
+        """Return the response horizon, or zero if any pose row is invalid."""
+        step_count = self.action_step_count(action)
+        if not step_count:
+            return 0
+        for channel, _, _ in self._outputs:
+            if not isinstance(channel, PoseCommandChannel):
+                continue
+            key = channel.server_output_key
+            for index, row in enumerate(action[key]):
+                try:
+                    _pose_values(row)
+                except ValueError as exc:
+                    self._node.get_logger().error(
+                        f"Channel '{key}' has invalid pose at row {index}: "
+                        f"{exc}; refusing to execute the response.",
+                        throttle_duration_sec=1,
+                    )
+                    return 0
+        return step_count
+
+    def remaining_actions(
+        self, action: dict[str, Any], after_index: int
+    ) -> dict[str, NDArray[np.float32]]:
         """Return the steps of ``action`` no channel has published yet.
 
         Each channel contributes its own rows under its own key, leaving
         the model server to assemble them the way its checkpoint expects.
         Channels without ``server_remaining_key`` contribute nothing.
+        Only joint channels contribute RTC tails. Pose rows belong to an
+        earlier observation origin and cannot be returned without a frame
+        transformation.
 
         Args:
             action (dict): The model server response being executed.
@@ -146,7 +261,10 @@ class ActionExecutor:
         """
         remaining = {}
         for channel, _, _ in self._outputs:
-            if channel.server_remaining_key is None:
+            if (
+                not isinstance(channel, JointCommandChannel)
+                or channel.server_remaining_key is None
+            ):
                 continue
             sequence = action.get(channel.server_output_key) or []
             rows = sequence[after_index + 1 :]
@@ -157,12 +275,18 @@ class ActionExecutor:
             )
         return remaining
 
-    def send_action(self, action, action_index):
+    def send_action(
+        self,
+        action: dict[str, Any],
+        action_index: int,
+        observation_stamp: tuple[int, int] | None = None,
+    ) -> None:
         """Publish step ``action_index`` of every configured channel.
 
         Args:
             action (dict): The model server response.
-            action_index (int): Step to publish within each action sequence.
+            action_index: Step to publish within each action sequence.
+            observation_stamp: Request reference (sec, nanosec) for poses.
         """
         for channel, publisher, msg_type_class in self._outputs:
             sequence = action.get(channel.server_output_key)
@@ -181,6 +305,17 @@ class ActionExecutor:
                     throttle_duration_sec=1,
                 )
                 continue
-            self._send_joint_action(
-                channel, publisher, msg_type_class, sequence[action_index]
-            )
+            row = sequence[action_index]
+            if isinstance(channel, PoseCommandChannel):
+                self._send_pose_action(
+                    channel,
+                    publisher,
+                    msg_type_class,
+                    row,
+                    action_index,
+                    observation_stamp,
+                )
+            else:
+                self._send_joint_action(
+                    channel, publisher, msg_type_class, row
+                )

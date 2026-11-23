@@ -243,6 +243,7 @@ class FakeNode:
         self, msg_type, topic, callback, depth, callback_group=None
     ):
         subscription = FakeSubscription(topic, callback)
+        subscription.msg_type = msg_type
         subscription.callback_group = callback_group
         self.subscriptions[topic] = subscription
         self._subscriptions.append(subscription)
@@ -274,6 +275,31 @@ class FakeNode:
 class FakeJointState:
     def __init__(self, data=None):
         self.data = data
+
+
+class FakeTwist:
+    def __init__(self):
+        self.linear = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        self.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
+
+
+class FakePoseStamped:
+    def __init__(self):
+        self.header = types.SimpleNamespace(
+            stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id=""
+        )
+        self.pose = types.SimpleNamespace(
+            position=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=0.0),
+        )
+
+
+class FakePath:
+    def __init__(self):
+        self.header = types.SimpleNamespace(
+            stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id=""
+        )
+        self.poses = []
 
 
 class FakeHeader:
@@ -341,9 +367,27 @@ def _install_stub_modules():
     rosidl_runtime_py = types.ModuleType("rosidl_runtime_py")
     rosidl_utilities = types.ModuleType("rosidl_runtime_py.utilities")
 
+    geometry_msgs = types.ModuleType("geometry_msgs")
+    geometry_msgs.msg = types.ModuleType("geometry_msgs.msg")
+    geometry_msgs.msg.Twist = FakeTwist
+    geometry_msgs.msg.PoseStamped = FakePoseStamped
+    nav_msgs = types.ModuleType("nav_msgs")
+    nav_msgs.msg = types.ModuleType("nav_msgs.msg")
+    nav_msgs.msg.Path = FakePath
+    for module in (geometry_msgs, geometry_msgs.msg, nav_msgs, nav_msgs.msg):
+        sys.modules[module.__name__] = module
+
     def get_message(msg_type):
+        if msg_type.count("/") == 1:
+            msg_type = msg_type.replace("/", "/msg/")
         if msg_type == "sensor_msgs/msg/JointState":
             return FakeJointState
+        if msg_type == "geometry_msgs/msg/Twist":
+            return FakeTwist
+        if msg_type == "geometry_msgs/msg/PoseStamped":
+            return FakePoseStamped
+        if msg_type == "nav_msgs/msg/Path":
+            return FakePath
         raise ModuleNotFoundError(msg_type)
 
     rosidl_utilities.get_message = get_message
