@@ -19,10 +19,18 @@ import os
 import xacro
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext, LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
+from launch.actions import (
+    DeclareLaunchArgument,
+    OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events.process import ProcessExited
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _create_robot_nodes(
@@ -118,6 +126,62 @@ def generate_launch_description() -> LaunchDescription:
     arm_id = LaunchConfiguration("arm_id")
     use_rviz = LaunchConfiguration("use_rviz")
     load_gripper = LaunchConfiguration("load_gripper")
+    robot_setup = Node(
+        package="robo_orchard_franka_ros2",
+        executable="configure_franka.py",
+        parameters=[
+            {
+                "joint_stiffness": ParameterValue(
+                    LaunchConfiguration("joint_stiffness"), value_type=str
+                ),
+                "robot_config_file": ParameterValue(
+                    LaunchConfiguration("robot_config_file"), value_type=str
+                ),
+            }
+        ],
+        output="screen",
+    )
+
+    def register_controller_start(
+        context: LaunchContext,
+    ) -> list[RegisterEventHandler]:
+        # The including launch's namespace scope may end before setup exits.
+        namespace = context.launch_configurations.get("ros_namespace", "")
+        manager = namespace.removesuffix("/") + "/controller_manager"
+        # The robot-state broadcaster publishes the TCP Pico caches on startup.
+        spawners = [
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=[controller, "--controller-manager", manager],
+                output="screen",
+            )
+            for controller in (
+                "franka_robot_state_broadcaster",
+                "joint_position_command_controller",
+            )
+        ]
+
+        def start_configured_controllers(
+            event: ProcessExited, context: LaunchContext
+        ) -> list[Node]:
+            if context.is_shutdown:
+                return []
+            if event.returncode != 0:
+                raise RuntimeError(
+                    "Franka robot configuration setup failed "
+                    f"(exit code {event.returncode})"
+                )
+            return spawners
+
+        return [
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=robot_setup,
+                    on_exit=start_configured_controllers,
+                )
+            )
+        ]
 
     rviz_config = os.path.join(
         get_package_share_directory("franka_description"),
@@ -146,6 +210,24 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="false",
                 description="Visualize the robot in RViz.",
             ),
+            DeclareLaunchArgument(
+                "joint_stiffness",
+                default_value=(
+                    "[3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]"
+                ),
+                description=(
+                    "Seven joint stiffness gains in joint1..joint7 order "
+                    "(Nm/rad); applied before position-controller activation."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "robot_config_file",
+                default_value="",
+                description=(
+                    "Optional YAML file of official Franka robot settings; "
+                    "YAML joint stiffness overrides the launch gains."
+                ),
+            ),
             OpaqueFunction(
                 function=_create_robot_nodes,
                 args=[robot_ip, arm_id, load_gripper],
@@ -156,19 +238,8 @@ def generate_launch_description() -> LaunchDescription:
                 arguments=["joint_state_broadcaster"],
                 output="screen",
             ),
-            Node(
-                package="controller_manager",
-                executable="spawner",
-                arguments=["franka_robot_state_broadcaster"],
-                parameters=[{"arm_id": arm_id}],
-                output="screen",
-            ),
-            Node(
-                package="controller_manager",
-                executable="spawner",
-                arguments=["joint_position_command_controller"],
-                output="screen",
-            ),
+            OpaqueFunction(function=register_controller_start),
+            robot_setup,
             Node(
                 package="rviz2",
                 executable="rviz2",

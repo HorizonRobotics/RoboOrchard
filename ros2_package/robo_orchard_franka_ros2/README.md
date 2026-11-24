@@ -50,6 +50,24 @@ ros2 service call /robot/franka/reset_ctrl std_srvs/srv/Trigger "{}"
 Reset discards queued arm commands. Send fresh targets after the reset service
 returns; commands sent before or during reset are not resumed.
 
+## Startup configuration
+
+`joint_position_control.launch.py` and `franka_pico_teleop.launch.py` accept:
+
+- `joint_stiffness`: seven integer or floating-point gains, in joint order
+  (Nm/rad). The launch applies libfranka's reference gains by default.
+- `robot_config_file`: optional path to a plain YAML file. See
+  [robot.example.yaml](config/robot.example.yaml) for joint and Cartesian
+  stiffness, payload, TCP and stiffness frames, and collision settings.
+
+YAML joint stiffness overrides the launch argument. Other omitted settings
+are left unchanged.
+
+Settings are applied once before the Franka robot-state broadcaster and
+joint position controller start. Configuration failure exits with a nonzero
+status without rolling back settings already applied. Restart to reapply
+settings; an arm reset does not reapply them.
+
 ## Optional native Franka gripper
 
 Build the official `franka_gripper` package from the same `franka_ros2`

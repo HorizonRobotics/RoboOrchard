@@ -1,4 +1,4 @@
-controller_manager:
+/**/controller_manager:
   ros__parameters:
     update_rate: 1000
 
@@ -11,12 +11,12 @@ controller_manager:
     franka_robot_state_broadcaster:
       type: robo_orchard_franka_ros2/FrankaRobotStateBroadcaster
 
-franka_robot_state_broadcaster:
+/**/franka_robot_state_broadcaster:
   ros__parameters:
     arm_id: fr3
     publish_rate: 100.0
 
-joint_position_command_controller:
+/**/joint_position_command_controller:
   ros__parameters:
     arm_id: fr3
     command_topic: /robot/franka/joint_cmd

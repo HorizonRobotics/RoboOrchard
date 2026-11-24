@@ -1,0 +1,43 @@
+# Only joint stiffness is enabled. Numeric examples are from libfranka 0.18.0
+# setDefaultBehavior, not factory values or safety recommendations:
+# https://github.com/frankarobotics/libfranka/blob/0.18.0/examples/examples_common.cpp
+joint_stiffness:
+  joint_stiffness: [3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]
+
+# Optional sections are commented out. Replace placeholders before enabling.
+# Cartesian gains: translation in N/m, rotation in Nm/rad.
+# cartesian_stiffness:
+#   cartesian_stiffness: [3000.0, 3000.0, 3000.0, 300.0, 300.0, 300.0]
+
+# Carried payload only, not the end effector.
+# load:
+#   mass: <measured payload mass in kg>
+#   center_of_mass: <3 measured flange-frame coordinates in m>
+#   load_inertia: <9 measured column-major inertia entries in kg*m^2>
+
+# Robot-side 4x4 transforms (translation in m); URDF and IK are unchanged.
+# tcp_frame:
+#   transformation: <16 task-specific column-major NE_T_EE entries>
+# stiffness_frame:
+#   transformation: <16 task-specific column-major EE_T_K entries>
+
+# Enable at most one collision section. Validate thresholds before use:
+# lower indicates contact, upper triggers a collision stop.
+# Torque: joint1..joint7 (Nm); wrench: XYZ (N), roll/pitch/yaw (Nm).
+# Simplified: the same limits apply in both movement phases.
+# force_torque_collision_behavior:
+#   lower_torque_thresholds_nominal: <7 user-chosen contact torques in Nm>
+#   upper_torque_thresholds_nominal: <7 user-chosen collision torques in Nm>
+#   lower_force_thresholds_nominal: <6 user-chosen contact wrench thresholds in N/Nm>
+#   upper_force_thresholds_nominal: <6 user-chosen collision wrench thresholds in N/Nm>
+
+# Full: separate acceleration/deceleration and nominal thresholds.
+# full_collision_behavior:
+#   lower_torque_thresholds_acceleration: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+#   upper_torque_thresholds_acceleration: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+#   lower_torque_thresholds_nominal: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+#   upper_torque_thresholds_nominal: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+#   lower_force_thresholds_acceleration: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+#   upper_force_thresholds_acceleration: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+#   lower_force_thresholds_nominal: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+#   upper_force_thresholds_nominal: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]

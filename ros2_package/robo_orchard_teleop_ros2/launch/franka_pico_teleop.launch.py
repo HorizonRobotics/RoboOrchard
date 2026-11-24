@@ -52,7 +52,6 @@ def _launch_nodes(context: LaunchContext) -> list:
     control_manager_config_file = LaunchConfiguration(
         "control_manager_config_file"
     )
-
     nodes = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -69,6 +68,8 @@ def _launch_nodes(context: LaunchContext) -> list:
                 "arm_id": "fr3",
                 "use_rviz": use_rviz,
                 "load_gripper": load_gripper,
+                "joint_stiffness": LaunchConfiguration("joint_stiffness"),
+                "robot_config_file": LaunchConfiguration("robot_config_file"),
             }.items(),
         ),
         Node(
@@ -210,6 +211,21 @@ def generate_launch_description() -> LaunchDescription:
                 "load_gripper",
                 default_value="false",
                 description="Start the native gripper without Pico control.",
+            ),
+            DeclareLaunchArgument(
+                "joint_stiffness",
+                default_value=(
+                    "[3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]"
+                ),
+                description=(
+                    "Seven arm stiffness gains in joint1..joint7 order "
+                    "(Nm/rad); applied before position-controller activation."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "robot_config_file",
+                default_value="",
+                description="Optional YAML file of official Franka settings.",
             ),
             DeclareLaunchArgument(
                 "enable_robotiq",

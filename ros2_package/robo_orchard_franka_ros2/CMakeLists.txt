@@ -64,6 +64,7 @@ install(
 )
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/configure_franka.py DESTINATION lib/${PROJECT_NAME})
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME}_controller)
@@ -84,7 +85,14 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(lifecycle_msgs REQUIRED)
+  ament_add_pytest_test(
+    joint_stiffness_setup_test tests/test_joint_stiffness_setup.py TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    joint_stiffness_launch_test tests/test_joint_stiffness_launch.py TIMEOUT 60
+  )
   ament_add_gtest(
     joint_position_command_controller_test
     tests/joint_position_command_controller_test.cpp

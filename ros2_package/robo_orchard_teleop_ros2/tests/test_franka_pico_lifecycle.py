@@ -110,6 +110,54 @@ assert node.teleop.control_state.is_active
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_pico_caches_tcp_only_after_driver_setup():
+    _run_script(
+        """
+        from test_franka_pico_teleop_launch import LAUNCH_PATH, _load_module
+
+        driver = LAUNCH_PATH.parents[2] / (
+            "robo_orchard_franka_ros2/launch/joint_position_control.launch.py"
+        )
+        module = _load_module(driver)
+        actions = module.generate_launch_description().entities
+        context = SimpleNamespace(launch_configurations={}, is_shutdown=False)
+        registration = next(
+            action for action in actions
+            if isinstance(action, module.OpaqueFunction)
+            and action.function.__name__ == "register_controller_start"
+        )
+        [handler] = registration.function(context)
+        on_exit = handler.event_handler.kwargs["on_exit"]
+
+        def publish_robot_state(actions, tcp_x):
+            if any(
+                isinstance(action, module.Node)
+                and "franka_robot_state_broadcaster"
+                in action.kwargs.get("arguments", [])
+                for action in actions
+            ):
+                tcp = teleop_stubs._make_pose(x=tcp_x)
+                node._robot_state_callback(
+                    SimpleNamespace(f_t_ee=pico_vr.PoseStamped(pose=tcp))
+                )
+
+        pico_vr.np = teleop_stubs.numpy_module
+        node._tcp_transform_logged = False
+        publish_robot_state(actions, tcp_x=0.125)
+        assert node._ee_to_flange_matrix is None
+
+        configured_actions = on_exit(SimpleNamespace(returncode=0), context)
+        publish_robot_state(configured_actions, tcp_x=0.25)
+        feedback = []
+        node.teleop.update_robot_ee_pose = feedback.append
+        node._ee_pose_callback(
+            pico_vr.PoseStamped(pose=teleop_stubs._make_pose(x=1.25))
+        )
+        assert [pose.position.x for pose in feedback] == [1.0]
+        """
+    )
+
+
 @pytest.mark.parametrize("success", [True, False])
 @pytest.mark.parametrize("response_order", ["before", "during", "after"])
 def test_reset_waits_for_response_and_manager_then_requires_rearm(

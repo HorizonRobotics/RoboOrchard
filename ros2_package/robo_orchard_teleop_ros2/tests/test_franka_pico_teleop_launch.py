@@ -86,6 +86,16 @@ class _OpaqueFunction:
         self.args = args
 
 
+class _RegisterEventHandler:
+    def __init__(self, event_handler):
+        self.event_handler = event_handler
+
+
+class _OnProcessExit:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
 class _IfCondition:
     def __init__(self, predicate):
         self.predicate = predicate
@@ -102,7 +112,12 @@ def _load_module(path=LAUNCH_PATH):
     launch_actions.DeclareLaunchArgument = _DeclareLaunchArgument
     launch_actions.IncludeLaunchDescription = _IncludeLaunchDescription
     launch_actions.OpaqueFunction = _OpaqueFunction
+    launch_actions.RegisterEventHandler = _RegisterEventHandler
     launch_actions.Shutdown = object
+    launch_event_handlers = types.ModuleType("launch.event_handlers")
+    launch_event_handlers.OnProcessExit = _OnProcessExit
+    launch_events_process = types.ModuleType("launch.events.process")
+    launch_events_process.ProcessExited = object
     launch_conditions = types.ModuleType("launch.conditions")
     launch_conditions.IfCondition = _IfCondition
     launch_description_sources = types.ModuleType(
@@ -132,6 +147,8 @@ def _load_module(path=LAUNCH_PATH):
         "launch",
         "launch.actions",
         "launch.conditions",
+        "launch.event_handlers",
+        "launch.events.process",
         "launch.launch_description_sources",
         "launch.substitutions",
         "launch_ros",
@@ -146,6 +163,8 @@ def _load_module(path=LAUNCH_PATH):
     sys.modules["launch"] = launch_module
     sys.modules["launch.actions"] = launch_actions
     sys.modules["launch.conditions"] = launch_conditions
+    sys.modules["launch.event_handlers"] = launch_event_handlers
+    sys.modules["launch.events.process"] = launch_events_process
     sys.modules["launch.launch_description_sources"] = (
         launch_description_sources
     )
@@ -218,6 +237,20 @@ def test_launch_starts_driver_bridge_teleop_and_one_manager():
     assert driver.launch_arguments["arm_id"] == "fr3"
     assert driver.launch_arguments["use_rviz"].name == "use_rviz"
     assert driver.launch_arguments["load_gripper"].name == "load_gripper"
+    assert driver.launch_arguments["joint_stiffness"].name == "joint_stiffness"
+    assert (
+        driver.launch_arguments["robot_config_file"].name
+        == "robot_config_file"
+    )
+    stiffness_argument = next(
+        entity
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+        and entity.name == "joint_stiffness"
+    )
+    assert stiffness_argument.default_value == (
+        "[3000.0, 3000.0, 3000.0, 2500.0, 2500.0, 2000.0, 2000.0]"
+    )
     gripper_argument = next(
         entity
         for entity in description.entities
@@ -276,6 +309,8 @@ def test_launch_requires_project_manager_config():
         "robot_ip",
         "use_rviz",
         "load_gripper",
+        "joint_stiffness",
+        "robot_config_file",
         "enable_robotiq",
         "robotiq_use_fake",
         "auto_enable",
@@ -308,6 +343,50 @@ def test_launch_requires_project_manager_config():
     assert manager.kwargs["parameters"][0]["config_file"].name == (
         "control_manager_config_file"
     )
+
+
+@pytest.mark.parametrize("enable_robotiq", ["false", "true"])
+def test_launch_forwards_explicit_joint_stiffness_to_driver(enable_robotiq):
+    gains = "[500.0, 500.0, 500.0, 500.0, 500.0, 500.0, 500.0]"
+    description = _description(
+        joint_stiffness=gains, enable_robotiq=enable_robotiq
+    )
+    driver = next(
+        entity
+        for entity in description.entities
+        if isinstance(entity, _IncludeLaunchDescription)
+    )
+    forwarded = driver.launch_arguments["joint_stiffness"]
+    assert isinstance(forwarded, _LaunchConfiguration)
+    context = types.SimpleNamespace(
+        perform_substitution=lambda substitution: {"joint_stiffness": gains}[
+            substitution.name
+        ]
+    )
+    assert context.perform_substitution(forwarded) == gains
+
+
+@pytest.mark.parametrize("enable_robotiq", ["false", "true"])
+def test_launch_forwards_robot_config_file_to_driver(enable_robotiq):
+    path = "/config/franka.yaml"
+    description = _description(
+        robot_config_file=path, enable_robotiq=enable_robotiq
+    )
+    argument = next(
+        entity
+        for entity in description.entities
+        if isinstance(entity, _DeclareLaunchArgument)
+        and entity.name == "robot_config_file"
+    )
+    assert argument.default_value == ""
+    driver = next(
+        entity
+        for entity in description.entities
+        if isinstance(entity, _IncludeLaunchDescription)
+    )
+    forwarded = driver.launch_arguments["robot_config_file"]
+    assert isinstance(forwarded, _LaunchConfiguration)
+    assert forwarded.name == "robot_config_file"
 
 
 def test_manifest_has_no_redundant_runtime_dependencies():
